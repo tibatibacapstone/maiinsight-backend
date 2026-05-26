@@ -1,0 +1,39 @@
+{
+  "name": "maiinsight-backend",
+  "version": "1.0.0",
+  "description": "Express.js API for MaiinSight customer segmentation and marketing insights.",
+  "type": "module",
+  "main": "src/server.js",
+  "scripts": {
+    "dev": "nodemon src/server.js",
+    "start": "node src/server.js",
+    "lint": "eslint src",
+    "test": "node --test"
+  },
+  "keywords": [
+    "express",
+    "api",
+    "customer-segmentation",
+    "rfm",
+    "k-means"
+  ],
+  "author": "",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@google/generative-ai": "^0.24.1",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "helmet": "^8.0.0",
+    "morgan": "^1.10.0",
+    "pg": "^8.13.1"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.19.0",
+    "eslint": "^9.19.0",
+    "nodemon": "^3.1.9"
+  }
+}
