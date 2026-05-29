@@ -1,12 +1,8 @@
-import pg from "pg";
+import mysql from "mysql2/promise";
 import { env } from "./env.js";
 
-const { Pool } = pg;
-
 export const pool = env.databaseUrl
-  ? new Pool({
-      connectionString: env.databaseUrl,
-    })
+  ? mysql.createPool(env.databaseUrl)
   : null;
 
 export const checkDatabaseConnection = async () => {
@@ -17,10 +13,10 @@ export const checkDatabaseConnection = async () => {
     };
   }
 
-  const result = await pool.query("select 1 as ok");
+  const [rows] = await pool.query("SELECT 1 AS ok");
 
   return {
-    ok: result.rows[0]?.ok === 1,
+    ok: rows[0]?.ok === 1,
     message: "Database connection is healthy",
   };
 };
