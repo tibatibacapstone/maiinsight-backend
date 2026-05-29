@@ -39,7 +39,7 @@ dashboardRouter.get("/activity", authorize("admin", "it_support"), async (req, r
   }
 });
 
-dashboardRouter.get("/notifications", authorize("marketing", "management", "admin", "it_support"), async (req, res, next) => {
+dashboardRouter.get("/notifications", authorize( "management", "admin", "it_support"), async (req, res, next) => {
   try {
     const notifications = await prisma.notification.findMany({
       where: { role: req.user.role },

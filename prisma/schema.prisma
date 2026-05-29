@@ -9,19 +9,18 @@ datasource db {
 
 enum Role {
   admin
-  marketing
   management
   it_support
 }
 
 model User {
-  id        Int      @id @default(autoincrement())
-  email     String   @unique
+  id        Int           @id @default(autoincrement())
+  email     String        @unique
   name      String
   password  String
-  role      Role     @default(marketing)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  role      Role          @default(admin)
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
   logs      ActivityLog[]
 }
 
@@ -41,4 +40,194 @@ model Notification {
   role      Role
   read      Boolean  @default(false)
   createdAt DateTime @default(now())
+}
+
+enum ImportStatus {
+  uploaded
+  processing
+  completed
+  failed
+}
+
+model ImportBatch {
+  id           Int          @id @default(autoincrement())
+  fileName     String
+  rowCount     Int          @default(0)
+  headers      Json
+  status       ImportStatus @default(uploaded)
+  errorMessage String?      @db.Text
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  rawTransactions RawTransactionTable[]
+
+  @@map("import_batches")
+}
+
+model RawTransactionTable {
+  id           Int      @id @default(autoincrement())
+  batchId      Int
+  rowNumber    Int
+  data         Json
+  status       String   @default("raw")
+  errorMessage String?  @db.Text
+  createdAt    DateTime @default(now())
+
+  batch ImportBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+
+  @@index([batchId])
+  @@map("raw_transaction_table")
+}
+
+model MetaRawResponse {
+  id           String   @id @default(cuid()) @db.VarChar(30)
+  source       String   @db.VarChar(100)
+  endpoint     String   @db.Text
+  method       String   @default("GET") @db.VarChar(20)
+  params       Json?
+  responseJson Json?
+  status       String   @db.VarChar(50)
+  errorMessage String?  @db.Text
+  fetchedAt    DateTime @default(now())
+
+  @@map("meta_raw_responses")
+}
+
+model InstagramAccount {
+  id             String   @id @default(cuid()) @db.VarChar(30)
+  igUserId       String   @unique @db.VarChar(100)
+  username       String?  @db.VarChar(100)
+  name           String?  @db.VarChar(150)
+  followersCount Int?
+  followsCount   Int?
+  mediaCount     Int?
+  rawJson        Json?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  media            InstagramMedia[]
+  accountInsights  InstagramAccountInsight[]
+  snapshots        InstagramAccountSnapshot[]
+  audienceInsights InstagramAudienceInsight[]
+
+  @@map("instagram_accounts")
+}
+
+model InstagramAccountSnapshot {
+  id             String   @id @default(cuid()) @db.VarChar(30)
+  accountId      String   @db.VarChar(30)
+  followersCount Int?
+  followsCount   Int?
+  mediaCount     Int?
+  snapshotDate   DateTime
+  rawJson        Json?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  account InstagramAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@unique([accountId, snapshotDate])
+  @@map("instagram_account_snapshots")
+}
+
+model InstagramMedia {
+  id               String    @id @default(cuid()) @db.VarChar(30)
+  igMediaId        String    @unique @db.VarChar(100)
+  accountId        String    @db.VarChar(30)
+  caption          String?   @db.Text
+  mediaType        String?   @db.VarChar(50)
+  mediaProductType String?   @db.VarChar(50)
+  mediaUrl         String?   @db.Text
+  thumbnailUrl     String?   @db.Text
+  permalink        String?   @db.Text
+  postedAt         DateTime?
+  rawJson          Json?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  account  InstagramAccount        @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  insights InstagramMediaInsight[]
+
+  @@map("instagram_media")
+}
+
+model InstagramMediaInsight {
+  id          String   @id @default(cuid()) @db.VarChar(30)
+  mediaId     String   @db.VarChar(30)
+  metricName  String   @db.VarChar(100)
+  metricValue Float?
+  period      String   @default("lifetime") @db.VarChar(50)
+  insightDate DateTime
+  rawJson     Json?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  media InstagramMedia @relation(fields: [mediaId], references: [id], onDelete: Cascade)
+
+  @@unique([mediaId, metricName, insightDate, period])
+  @@index([metricName])
+  @@map("instagram_media_insights")
+}
+
+model InstagramAccountInsight {
+  id          String   @id @default(cuid()) @db.VarChar(30)
+  accountId   String   @db.VarChar(30)
+  metricName  String   @db.VarChar(100)
+  metricValue Float?
+  period      String   @db.VarChar(50)
+  insightDate DateTime
+  rawJson     Json?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  account InstagramAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@unique([accountId, metricName, insightDate, period])
+  @@index([metricName])
+  @@map("instagram_account_insights")
+}
+
+model InstagramAudienceInsight {
+  id             String   @id @default(cuid()) @db.VarChar(30)
+  accountId      String   @db.VarChar(30)
+  metricName     String   @db.VarChar(100)
+  breakdownType  String   @db.VarChar(50)
+  breakdownValue String   @db.VarChar(191)
+  metricValue    Float?
+  period         String   @db.VarChar(50)
+  insightDate    DateTime
+  rawJson        Json?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  account InstagramAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@unique([accountId, metricName, breakdownType, breakdownValue, insightDate, period])
+  @@map("instagram_audience_insights")
+}
+
+model InstagramContentSummary {
+  id                 String    @id @default(cuid()) @db.VarChar(30)
+  mediaId            String    @db.VarChar(30)
+  summary            String?   @db.Text
+  performanceInsight String?   @db.Text
+  recommendation     String?   @db.Text
+  generatedBy        String?   @db.VarChar(100)
+  generatedAt        DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  @@index([mediaId])
+  @@map("instagram_content_summaries")
+}
+
+model MetaSyncLog {
+  id         String    @id @default(cuid()) @db.VarChar(30)
+  syncType   String    @db.VarChar(100)
+  status     String    @db.VarChar(50)
+  message    String?   @db.Text
+  startedAt  DateTime  @default(now())
+  finishedAt DateTime?
+
+  @@map("meta_sync_logs")
 }

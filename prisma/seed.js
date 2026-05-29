@@ -8,7 +8,6 @@ async function main() {
 
   const users = [
     { email: "admin@maiin.com", name: "Admin User", role: "admin" },
-    { email: "marketing@maiin.com", name: "Marketing User", role: "marketing" },
     { email: "management@maiin.com", name: "Management User", role: "management" },
     { email: "support@maiin.com", name: "IT Support", role: "it_support" },
   ];
@@ -29,14 +28,14 @@ async function main() {
   await prisma.notification.upsert({
     where: { id: 1 },
     update: {
-      title: "Marketing campaign ready",
-      message: "A new campaign is ready for review.",
-      role: "marketing",
+      title: "Admin campaign ready",
+      message: "Your admin dashboard is ready. A new campaign is Waiting for review.",
+      role: "admin",
     },
     create: {
-      title: "Marketing campaign ready",
-      message: "A new campaign is ready for review.",
-      role: "marketing",
+      title: "Admin campaign ready",
+      message: "Your admin dashboard is ready. A new campaign is Waiting for review.",
+      role: "admin",
     },
   });
 
@@ -67,20 +66,12 @@ async function main() {
       role: "it_support",
     },
   });
+  await prisma.user.deleteMany({
+  where: {
+    email: "marketing@maiin.com",
+  },
+});
 
-  await prisma.notification.upsert({
-    where: { id: 4 },
-    update: {
-      title: "Admin access granted",
-      message: "Your admin dashboard is ready.",
-      role: "admin",
-    },
-    create: {
-      title: "Admin access granted",
-      message: "Your admin dashboard is ready.",
-      role: "admin",
-    },
-  });
 }
 
 main()

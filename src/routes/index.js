@@ -4,6 +4,7 @@ import { healthRouter } from "./health.routes.js";
 import { authRouter } from "./auth.routes.js";
 import { dashboardRouter } from "./dashboard.routes.js";
 import { aiStrategyRouter } from "./aiStrategyRoute.js";
+import { importRouter } from "./importRoutes.js";
 
 export const apiRouter = Router();
 
@@ -11,6 +12,7 @@ apiRouter.use("/health", healthRouter);
 apiRouter.use("/auth", authRouter);
 apiRouter.use("/dashboard", dashboardRouter);
 apiRouter.use("/ai-strategy", aiStrategyRouter);
+apiRouter.use("/imports", importRouter);
 
 apiRouter.get("/", (req, res) => {
   res.json({
