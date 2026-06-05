@@ -36,7 +36,11 @@
   "dependencies": {
     "@google/genai": "^2.6.0",
     "@google/generative-ai": "^0.24.1",
+<<<<<<< Updated upstream
     "@prisma/client": "^5.22.0",
+=======
+    "@prisma/client": "^5.13.0",
+>>>>>>> Stashed changes
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.6",
     "csv-parse": "^6.2.1",
@@ -45,10 +49,15 @@
     "helmet": "^8.0.0",
     "jsonwebtoken": "^9.0.2",
     "morgan": "^1.10.0",
+<<<<<<< Updated upstream
     "multer": "^2.1.1",
     "node-cron": "^4.2.1",
     "mysql2": "^3.5.0",
     "prisma": "^5.22.0"
+=======
+    "pg": "^8.21.0",
+    "prisma": "^5.13.0"
+>>>>>>> Stashed changes
   },
   "devDependencies": {
     "@eslint/js": "^9.19.0",
