@@ -6,7 +6,7 @@ export const dashboardRouter = Router();
 
 dashboardRouter.use(authenticate);
 
-dashboardRouter.get("/overview", authorize("admin", "marketing", "management", "it_support"), async (req, res, next) => {
+dashboardRouter.get("/overview", authorize("marketing", "management", "it_support"), async (req, res, next) => {
   try {
     const totalUsers = await prisma.user.count();
     const activityCount = await prisma.activityLog.count();
@@ -25,7 +25,7 @@ dashboardRouter.get("/overview", authorize("admin", "marketing", "management", "
   }
 });
 
-dashboardRouter.get("/activity", authorize("admin", "it_support"), async (req, res, next) => {
+dashboardRouter.get("/activity", authorize("marketing", "it_support"), async (req, res, next) => {
   try {
     const logs = await prisma.activityLog.findMany({
       orderBy: { createdAt: "desc" },
@@ -39,7 +39,7 @@ dashboardRouter.get("/activity", authorize("admin", "it_support"), async (req, r
   }
 });
 
-dashboardRouter.get("/notifications", authorize( "management", "admin", "it_support"), async (req, res, next) => {
+dashboardRouter.get("/notifications", authorize("marketing", "management", "it_support"), async (req, res, next) => {
   try {
     const notifications = await prisma.notification.findMany({
       where: { role: req.user.role },
@@ -52,7 +52,7 @@ dashboardRouter.get("/notifications", authorize( "management", "admin", "it_supp
   }
 });
 
-dashboardRouter.get("/data-center", authorize("admin", "it_support"), async (req, res, next) => {
+dashboardRouter.get("/data-center", authorize("marketing", "it_support"), async (req, res, next) => {
   try {
     const recentActivities = await prisma.activityLog.findMany({ take: 10, orderBy: { createdAt: "desc" } });
     const totalNotifications = await prisma.notification.count();
@@ -68,7 +68,7 @@ dashboardRouter.get("/data-center", authorize("admin", "it_support"), async (req
   }
 });
 
-dashboardRouter.post("/activity", authorize("admin", "it_support"), async (req, res, next) => {
+dashboardRouter.post("/activity", authorize("marketing", "it_support"), async (req, res, next) => {
   try {
     const { action, metadata } = req.body;
     const log = await prisma.activityLog.create({

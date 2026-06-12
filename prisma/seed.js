@@ -8,7 +8,7 @@ async function main() {
   const passwordHash = await bcrypt.hash("Password123!", 10);
 
   const users = [
-    { email: "admin@maiin.com", name: "Admin User", role: "admin" },
+    { email: "marketing@maiin.com", name: "Marketing User", role: "marketing" },
     { email: "management@maiin.com", name: "Management User", role: "management" },
     { email: "support@maiin.com", name: "IT Support", role: "it_support" },
   ];
@@ -29,14 +29,14 @@ async function main() {
   await prisma.notification.upsert({
     where: { id: 1 },
     update: {
-      title: "Admin campaign ready",
-      message: "Your admin dashboard is ready. A new campaign is Waiting for review.",
-      role: "admin",
+      title: "Marketing campaign ready",
+      message: "Your marketing dashboard is ready. A new campaign is waiting for review.",
+      role: "marketing",
     },
     create: {
-      title: "Admin campaign ready",
-      message: "Your admin dashboard is ready. A new campaign is Waiting for review.",
-      role: "admin",
+      title: "Marketing campaign ready",
+      message: "Your marketing dashboard is ready. A new campaign is waiting for review.",
+      role: "marketing",
     },
   });
 
@@ -67,12 +67,6 @@ async function main() {
       role: "it_support",
     },
   });
-  await prisma.user.deleteMany({
-  where: {
-    email: "marketing@maiin.com",
-  },
-});
-
 }
 
 main()

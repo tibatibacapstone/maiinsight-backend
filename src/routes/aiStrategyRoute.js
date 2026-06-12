@@ -1,10 +1,12 @@
 import { Router } from "express";
 
+import { authenticate, authorize } from "../middleware/auth.js";
+import { logItSupportActivity } from "../services/activityLog.service.js";
 import { generateMaiinStrategy } from "../services/geminiService.js";
 
 export const aiStrategyRouter = Router();
 
-aiStrategyRouter.post("/generate", async (req, res, next) => {
+aiStrategyRouter.post("/generate", authenticate, authorize("marketing", "it_support"), async (req, res, next) => {
   try {
     const strategyContext = req.body;
 
@@ -16,6 +18,10 @@ aiStrategyRouter.post("/generate", async (req, res, next) => {
     }
 
     const result = await generateMaiinStrategy(strategyContext);
+
+    await logItSupportActivity(req, "IT_SUPPORT_AI_STRATEGY_GENERATE", {
+      selectedFilters: strategyContext.selected_filters || null,
+    });
 
     return res.status(200).json({
       success: true,

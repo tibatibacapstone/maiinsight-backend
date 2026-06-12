@@ -3,6 +3,7 @@ import multer from "multer";
 import { parse } from "csv-parse/sync";
 import { prisma } from "../config/prisma.js";
 import { authenticate, authorize } from "../middleware/auth.js";
+import { logItSupportActivity } from "../services/activityLog.service.js";
 
 const router = Router();
 
@@ -27,7 +28,7 @@ const upload = multer({
 router.use(authenticate);
 
 // Admin + IT boleh lihat history jobs
-router.get("/jobs", authorize("admin", "it_support"), async (req, res, next) => {
+router.get("/jobs", authorize("marketing", "it_support"), async (req, res, next) => {
   try {
     const jobs = await prisma.importBatch.findMany({
       orderBy: {
@@ -54,10 +55,10 @@ router.get("/jobs", authorize("admin", "it_support"), async (req, res, next) => 
   }
 });
 
-// Admin only boleh upload CSV
+// Marketing owns imports; IT support may test/troubleshoot upload behavior.
 router.post(
   "/upload-csv",
-  authorize("admin"),
+  authorize("marketing", "it_support"),
   upload.single("file"),
   async (req, res, next) => {
     try {
@@ -104,6 +105,12 @@ router.post(
         })),
       });
 
+      await logItSupportActivity(req, "IT_SUPPORT_IMPORT_UPLOAD", {
+        batchId: batch.id,
+        fileName: batch.fileName,
+        rowCount: records.length,
+      });
+
       res.status(201).json({
         success: true,
         message: "CSV uploaded successfully.",
@@ -122,7 +129,7 @@ router.post(
 );
 
 // Admin + IT boleh lihat raw data
-router.get("/batches/:id/rows", authorize("admin", "it_support"), async (req, res, next) => {
+router.get("/batches/:id/rows", authorize("marketing", "it_support"), async (req, res, next) => {
   try {
     const batchId = Number(req.params.id);
 
@@ -165,6 +172,11 @@ router.get("/batches/:id/rows", authorize("admin", "it_support"), async (req, re
       },
     });
 
+    await logItSupportActivity(req, "IT_SUPPORT_RAW_IMPORT_VIEW", {
+      batchId,
+      rowCount: rows.length,
+    });
+
     return res.json({
       success: true,
       message: "Raw transaction rows fetched successfully.",
@@ -178,8 +190,8 @@ router.get("/batches/:id/rows", authorize("admin", "it_support"), async (req, re
   }
 });
 
-// Admin only boleh delete history + raw data
-router.delete("/jobs/:id", authorize("admin"), async (req, res, next) => {
+// Marketing owns import deletion; IT support may test/troubleshoot deletion behavior.
+router.delete("/jobs/:id", authorize("marketing", "it_support"), async (req, res, next) => {
   try {
     const batchId = Number(req.params.id);
 
@@ -215,6 +227,12 @@ router.delete("/jobs/:id", authorize("admin"), async (req, res, next) => {
         },
       }),
     ]);
+
+    await logItSupportActivity(req, "IT_SUPPORT_IMPORT_DELETE", {
+      batchId,
+      fileName: existingBatch.fileName,
+      rowCount: existingBatch.rowCount,
+    });
 
     return res.json({
       success: true,

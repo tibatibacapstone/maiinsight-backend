@@ -1,6 +1,8 @@
 import jwt from "jsonwebtoken";
 import { env } from "../config/env.js";
 
+const validRoles = new Set(["marketing", "management", "it_support"]);
+
 export const authenticate = (req, res, next) => {
   const authHeader = req.headers.authorization;
   const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
@@ -11,6 +13,11 @@ export const authenticate = (req, res, next) => {
 
   try {
     const payload = jwt.verify(token, env.jwtSecret);
+
+    if (!validRoles.has(payload.role)) {
+      return res.status(401).json({ error: "Invalid or expired token" });
+    }
+
     req.user = payload;
     return next();
   } catch (error) {
