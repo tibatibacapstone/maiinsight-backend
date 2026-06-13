@@ -54,11 +54,74 @@ dashboardRouter.get("/notifications", authorize("marketing", "management", "it_s
 
 dashboardRouter.get("/data-center", authorize("marketing", "it_support"), async (req, res, next) => {
   try {
-    const recentActivities = await prisma.activityLog.findMany({ take: 10, orderBy: { createdAt: "desc" } });
-    const totalNotifications = await prisma.notification.count();
+    const [
+      importBatchCount,
+      latestImportBatch,
+      metaRawCount,
+      latestMetaRawResponse,
+      aiStrategyCount,
+      latestAiStrategyLog,
+      recentActivities,
+      totalNotifications,
+    ] = await Promise.all([
+      prisma.importBatch.count(),
+      prisma.importBatch.findFirst({
+        orderBy: { updatedAt: "desc" },
+        select: { rowCount: true, updatedAt: true, createdAt: true },
+      }),
+      prisma.metaRawResponse.count(),
+      prisma.metaRawResponse.findFirst({
+        orderBy: { fetchedAt: "desc" },
+        select: { fetchedAt: true },
+      }),
+      prisma.activityLog.count({
+        where: { action: "IT_SUPPORT_AI_STRATEGY_GENERATE" },
+      }),
+      prisma.activityLog.findFirst({
+        where: { action: "IT_SUPPORT_AI_STRATEGY_GENERATE" },
+        orderBy: { createdAt: "desc" },
+        select: { createdAt: true },
+      }),
+      prisma.activityLog.findMany({ take: 10, orderBy: { createdAt: "desc" } }),
+      prisma.notification.count(),
+    ]);
+
+    const formatSyncValue = (dateValue) => {
+      if (!dateValue) return "Not synced yet";
+      return new Intl.DateTimeFormat("en-US", {
+        dateStyle: "medium",
+        timeStyle: "short",
+      }).format(new Date(dateValue));
+    };
 
     res.json({
       dataCenter: {
+        sources: [
+          {
+            id: "1",
+            name: "MaiinSight Database",
+            type: "database",
+            status: "connected",
+            lastSync: formatSyncValue(latestImportBatch?.updatedAt || latestImportBatch?.createdAt),
+            records: importBatchCount,
+          },
+          {
+            id: "2",
+            name: "Meta Graph API",
+            type: "api",
+            status: "connected",
+            lastSync: formatSyncValue(latestMetaRawResponse?.fetchedAt),
+            records: metaRawCount,
+          },
+          {
+            id: "3",
+            name: "AI Strategy Engine",
+            type: "api",
+            status: "connected",
+            lastSync: formatSyncValue(latestAiStrategyLog?.createdAt),
+            records: aiStrategyCount,
+          },
+        ],
         recentActivities,
         totalNotifications,
       },
