@@ -8,7 +8,7 @@ datasource db {
 }
 
 enum Role {
-  marketing
+  operational
   management
   it_support
 }
@@ -18,7 +18,7 @@ model User {
   email     String        @unique
   name      String
   password  String
-  role      Role          @default(marketing)
+  role      Role          @default(operational)
   createdAt DateTime      @default(now())
   updatedAt DateTime      @updatedAt
   logs      ActivityLog[]

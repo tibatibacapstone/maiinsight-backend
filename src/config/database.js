@@ -1,4 +1,4 @@
-import mysql from "mysql2/promise";
+import mysql from "mysql2";
 import { env } from "./env.js";
 
 export const pool = env.databaseUrl

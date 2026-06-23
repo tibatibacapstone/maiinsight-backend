@@ -28,7 +28,7 @@ const upload = multer({
 router.use(authenticate);
 
 // Admin + IT boleh lihat history jobs
-router.get("/jobs", authorize("marketing", "it_support"), async (req, res, next) => {
+router.get("/jobs", authorize("operational", "it_support"), async (req, res, next) => {
   try {
     const jobs = await prisma.importBatch.findMany({
       orderBy: {
@@ -58,7 +58,7 @@ router.get("/jobs", authorize("marketing", "it_support"), async (req, res, next)
 // Marketing owns imports; IT support may test/troubleshoot upload behavior.
 router.post(
   "/upload-csv",
-  authorize("marketing", "it_support"),
+  authorize("operational", "it_support"),
   upload.single("file"),
   async (req, res, next) => {
     try {
@@ -129,7 +129,7 @@ router.post(
 );
 
 // Admin + IT boleh lihat raw data
-router.get("/batches/:id/rows", authorize("marketing", "it_support"), async (req, res, next) => {
+router.get("/batches/:id/rows", authorize("operational", "it_support"), async (req, res, next) => {
   try {
     const batchId = Number(req.params.id);
 
@@ -191,7 +191,7 @@ router.get("/batches/:id/rows", authorize("marketing", "it_support"), async (req
 });
 
 // Marketing owns import deletion; IT support may test/troubleshoot deletion behavior.
-router.delete("/jobs/:id", authorize("marketing", "it_support"), async (req, res, next) => {
+router.delete("/jobs/:id", authorize("operational", "it_support"), async (req, res, next) => {
   try {
     const batchId = Number(req.params.id);
 

@@ -8,7 +8,7 @@ async function main() {
   const passwordHash = await bcrypt.hash("Password123!", 10);
 
   const users = [
-    { email: "marketing@maiin.com", name: "Marketing User", role: "marketing" },
+    { email: "operational@maiin.com", name: "Marketing User", role: "operational" },
     { email: "management@maiin.com", name: "Management User", role: "management" },
     { email: "support@maiin.com", name: "IT Support", role: "it_support" },
   ];
@@ -31,12 +31,12 @@ async function main() {
     update: {
       title: "Marketing campaign ready",
       message: "Your marketing dashboard is ready. A new campaign is waiting for review.",
-      role: "marketing",
+      role: "operational",
     },
     create: {
       title: "Marketing campaign ready",
       message: "Your marketing dashboard is ready. A new campaign is waiting for review.",
-      role: "marketing",
+      role: "operational",
     },
   });
 
