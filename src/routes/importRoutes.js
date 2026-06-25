@@ -4,7 +4,7 @@ import { parse } from "csv-parse/sync";
 import { prisma } from "../config/prisma.js";
 import { authenticate, authorize } from "../middleware/auth.js";
 import { logItSupportActivity } from "../services/activityLog.service.js";
-
+import { mapRawRowToFacilityTransaction } from "../services/facilityTransactionMapper.js"
 const router = Router();
 
 const upload = multer({
@@ -87,12 +87,12 @@ router.post(
 
       const headers = Object.keys(records[0]);
 
-      const batch = await prisma.importBatch.create({
+            const batch = await prisma.importBatch.create({
         data: {
           fileName: req.file.originalname,
           rowCount: records.length,
           headers,
-          status: "uploaded",
+          status: "processing",
         },
       });
 
@@ -105,22 +105,40 @@ router.post(
         })),
       });
 
+      const facilityTransactions = records.map((row, index) =>
+        mapRawRowToFacilityTransaction(row, batch.id, index + 1)
+      );
+
+      await prisma.facilityTransaction.createMany({
+        data: facilityTransactions,
+      });
+
+      const updatedBatch = await prisma.importBatch.update({
+        where: {
+          id: batch.id,
+        },
+        data: {
+          status: "completed",
+        },
+      });
+
       await logItSupportActivity(req, "IT_SUPPORT_IMPORT_UPLOAD", {
-        batchId: batch.id,
-        fileName: batch.fileName,
+        batchId: updatedBatch.id,
+        fileName: updatedBatch.fileName,
         rowCount: records.length,
+        facilityTransactionCount: facilityTransactions.length,
       });
 
       res.status(201).json({
         success: true,
         message: "CSV uploaded successfully.",
         data: {
-          batchId: batch.id,
-          fileName: batch.fileName,
-          rowCount: records.length,
-          headers,
-          status: batch.status,
-        },
+        batchId: updatedBatch.id,
+        fileName: updatedBatch.fileName,
+        rowCount: records.length,
+        headers,
+        status: updatedBatch.status,
+      },
       });
     } catch (error) {
       next(error);
@@ -216,17 +234,22 @@ router.delete("/jobs/:id", authorize("operational", "it_support"), async (req, r
     }
 
     await prisma.$transaction([
-      prisma.rawTransactionTable.deleteMany({
-        where: {
-          batchId,
-        },
-      }),
-      prisma.importBatch.delete({
-        where: {
-          id: batchId,
-        },
-      }),
-    ]);
+  prisma.facilityTransaction.deleteMany({
+    where: {
+      batchId,
+    },
+  }),
+  prisma.rawTransactionTable.deleteMany({
+    where: {
+      batchId,
+    },
+  }),
+  prisma.importBatch.delete({
+    where: {
+      id: batchId,
+    },
+  }),
+]);
 
     await logItSupportActivity(req, "IT_SUPPORT_IMPORT_DELETE", {
       batchId,

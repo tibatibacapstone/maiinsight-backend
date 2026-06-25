@@ -5,7 +5,6 @@ import { env } from "../config/env.js";
 import { prisma } from "../config/prisma.js";
 
 const router = Router();
-const allowedRoles = new Set(["marketing", "management", "it_support"]);
 
 const createToken = (user) => {
   return jwt.sign(
@@ -24,14 +23,9 @@ const createToken = (user) => {
 router.post("/register", async (req, res, next) => {
   try {
     const { email, name, password, role } = req.body;
-    const userRole = role || "marketing";
 
     if (!email || !name || !password) {
       return res.status(400).json({ error: "Email, name and password are required" });
-    }
-
-    if (!allowedRoles.has(userRole)) {
-      return res.status(400).json({ error: "Invalid role" });
     }
 
     const existingUser = await prisma.user.findUnique({ where: { email } });
@@ -47,7 +41,7 @@ router.post("/register", async (req, res, next) => {
         email,
         name,
         password: hashedPassword,
-        role: userRole,
+        role,
       },
     });
 
@@ -70,7 +64,7 @@ router.post("/login", async (req, res, next) => {
     const user = await prisma.user.findUnique({ where: { email } });
 
     if (!user) {
-      return res.status(401).json({ error: "Invalid credentials" });
+      return res.status(401).json({ error: "Invalid" });
     }
 
     const passwordMatch = await bcrypt.compare(password, user.password);

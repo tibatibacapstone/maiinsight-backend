@@ -59,7 +59,8 @@ model ImportBatch {
   createdAt    DateTime     @default(now())
   updatedAt    DateTime     @updatedAt
 
-  rawTransactions RawTransactionTable[]
+  rawTransactions      RawTransactionTable[]
+  facilityTransactions FacilityTransaction[]
 
   @@map("import_batches")
 }
@@ -77,6 +78,134 @@ model RawTransactionTable {
 
   @@index([batchId])
   @@map("raw_transaction_table")
+}
+
+model FacilityTransaction {
+  id Int @id @default(autoincrement())
+
+  batchId   Int?
+  rowNumber Int?
+
+  orderId         String? @db.VarChar(100)
+  nama            String? @db.VarChar(191)
+  email           String? @db.VarChar(191)
+  noTelepon       String? @db.VarChar(50)
+  customerProfile String? @db.VarChar(100)
+
+  tanggalTransaksi DateTime?
+  tanggalMain      DateTime?
+  jamMain          String?   @db.VarChar(50)
+
+  venue    String? @db.VarChar(100)
+  lapangan String? @db.VarChar(100)
+
+  hargaBersih Decimal? @db.Decimal(14, 2)
+  addOns      String?  @db.Text
+  hargaAddOns Decimal? @db.Decimal(14, 2)
+
+  tipeVoucher  String?  @db.VarChar(100)
+  hargaVoucher Decimal? @db.Decimal(14, 2)
+
+  status     String? @db.VarChar(100)
+  reschedule String? @db.VarChar(50)
+  promosi    String? @db.Text
+  keperluan  String? @db.VarChar(100)
+  deskripsi  String? @db.Text
+
+  period        String? @db.VarChar(20)
+  startHour     Int?
+  playTimeGroup String? @db.VarChar(30)
+
+  rawData Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  batch ImportBatch? @relation(fields: [batchId], references: [id], onDelete: SetNull)
+
+  @@index([batchId])
+  @@index([orderId])
+  @@index([nama])
+  @@index([email])
+  @@index([period])
+  @@index([tanggalMain])
+  @@index([status])
+  @@index([playTimeGroup])
+  @@map("facility_transactions")
+}
+
+model PlaytimeMlRun {
+  id             Int     @id @default(autoincrement())
+  period         String? @db.VarChar(20)
+  algorithm      String  @default("KMeans") @db.VarChar(50)
+  clusterCount   Int
+  totalCustomers Int
+  totalSessions  Int
+  status         String  @default("completed") @db.VarChar(50)
+  errorMessage   String? @db.Text
+
+  sessionByTime Json?
+  heatmapData   Json?
+  topHourData   Json?
+
+  createdAt DateTime @default(now())
+
+  customerSegments PlaytimeCustomerSegment[]
+  segmentSummaries PlaytimeSegmentSummary[]
+
+  @@map("playtime_ml_runs")
+}
+
+model PlaytimeCustomerSegment {
+  id    Int @id @default(autoincrement())
+  runId Int
+
+  customerName String @db.VarChar(191)
+
+  sesiPagi  Int
+  sesiSiang Int
+  sesiMalam Int
+  totalSesi Int
+
+  ratioPagi  Float
+  ratioSiang Float
+  ratioMalam Float
+
+  playtimeCluster Int
+  playtimeSegment String  @db.VarChar(100)
+  activityLevel   String? @db.VarChar(100)
+
+  run PlaytimeMlRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@index([runId])
+  @@index([customerName])
+  @@index([playtimeSegment])
+  @@map("playtime_customer_segments")
+}
+
+model PlaytimeSegmentSummary {
+  id    Int @id @default(autoincrement())
+  runId Int
+
+  playtimeCluster Int
+  playtimeSegment String @db.VarChar(100)
+
+  totalCustomers Int
+
+  avgRatioPagi  Float
+  avgRatioSiang Float
+  avgRatioMalam Float
+
+  avgSesiPagi  Float
+  avgSesiSiang Float
+  avgSesiMalam Float
+  avgTotalSesi Float
+
+  run PlaytimeMlRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@index([runId])
+  @@index([playtimeSegment])
+  @@map("playtime_segment_summaries")
 }
 
 model MetaRawResponse {

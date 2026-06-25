@@ -5,6 +5,7 @@ import { authRouter } from "./auth.routes.js";
 import { dashboardRouter } from "./dashboard.routes.js";
 import { aiStrategyRouter } from "./aiStrategyRoute.js";
 import { importRouter } from "./importRoutes.js";
+import { mlRouter } from "./ml.routes.js"
 
 export const apiRouter = Router();
 
@@ -13,6 +14,7 @@ apiRouter.use("/auth", authRouter);
 apiRouter.use("/dashboard", dashboardRouter);
 apiRouter.use("/ai-strategy", aiStrategyRouter);
 apiRouter.use("/imports", importRouter);
+apiRouter.use("/ml", mlRouter)
 
 apiRouter.get("/", (req, res) => {
   res.json({

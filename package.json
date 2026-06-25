@@ -9,17 +9,9 @@
     "start": "node src/server.js",
     "lint": "eslint src",
     "test": "node --test",
-    "seed": "node prisma/seed.js"
-  },
-  "prisma": {
-    "schema": "prisma/schema.prisma",
-    "client": {
-      "output": "src/prisma/client"
-    },
-    "migrations": {
-      "directory": "prisma/migrations"
-    },
-    "seed": "node prisma/seed.js"
+    "seed": "node prisma/seed.js",
+    "prisma:generate": "prisma generate",
+    "prisma:push": "prisma db push"
   },
   "keywords": [
     "express",
@@ -46,15 +38,14 @@
     "jsonwebtoken": "^9.0.2",
     "morgan": "^1.10.0",
     "multer": "^2.1.1",
-    "mysql2": "^3.22.5",
-    "node-cron": "^4.2.1",
-    "prisma": "^5.22.0"
+    "node-cron": "^4.2.1"
   },
   "devDependencies": {
     "@eslint/js": "^9.19.0",
     "eslint": "^9.19.0",
     "globals": "^17.6.0",
-    "nodemon": "^3.1.9"
+    "nodemon": "^3.1.9",
+    "prisma": "^5.22.0"
   },
   "repository": {
     "type": "git",
@@ -63,12 +54,5 @@
   "bugs": {
     "url": "https://github.com/tibatibacapstone/maiinsight-backend/issues"
   },
-  "homepage": "https://github.com/tibatibacapstone/maiinsight-backend#readme",
-  "allowScripts": {
-    "@google/genai@2.6.0": true,
-    "@prisma/client@5.22.0": true,
-    "@prisma/engines@5.22.0": true,
-    "prisma@5.22.0": true,
-    "protobufjs@7.6.1": true
-  }
+  "homepage": "https://github.com/tibatibacapstone/maiinsight-backend#readme"
 }
