@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { authenticate, authorize } from "../middleware/auth.js";
 import { prisma } from "../config/prisma.js";
+import { getDashboardAnalytics } from "../services/dashboardAnalytics.service.js";
 
 export const dashboardRouter = Router();
 
@@ -126,6 +127,15 @@ dashboardRouter.get("/data-center", authorize("marketing", "it_support"), async 
         totalNotifications,
       },
     });
+  } catch (error) {
+    next(error);
+  }
+});
+
+dashboardRouter.get("/analytics", authorize("marketing", "management", "it_support"), async (req, res, next) => {
+  try {
+    const data = await getDashboardAnalytics(req.query);
+    res.json({ success: true, data });
   } catch (error) {
     next(error);
   }

@@ -59,9 +59,147 @@ model ImportBatch {
   createdAt    DateTime     @default(now())
   updatedAt    DateTime     @updatedAt
 
-  rawTransactions RawTransactionTable[]
+  rawTransactions     RawTransactionTable[]
+  FacilityTransaction FacilityTransaction[]
 
   @@map("import_batches")
+}
+
+model Customer {
+  id                    Int      @id @default(autoincrement())
+  customerKey           String   @unique
+  name                  String?
+  email                 String?
+  phone                 String?
+  customerProfile       Json?
+  customerKeyType       String
+  customerKeyConfidence Float?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  transactions FacilityTransaction[]
+  rfmScores    CustomerRfmScore[]
+
+  @@map("customers")
+}
+
+model SegmentationRun {
+  id              Int      @id @default(autoincrement())
+  k               Int
+  analysisDate    DateTime
+  totalCustomers  Int      @default(0)
+  status          String   @default("completed")
+  createdAt       DateTime @default(now())
+
+  customerScores  CustomerRfmScore[]
+  clusterProfiles ClusterProfile[]
+
+  @@map("segmentation_runs")
+}
+
+model CustomerRfmScore {
+  id                Int      @id @default(autoincrement())
+  runId             Int
+  customerId        Int
+  recency           Int
+  frequency         Int
+  monetary          Decimal  @db.Decimal(14, 2)
+  recencyScore      Int
+  frequencyScore    Int
+  monetaryScore     Int
+  scaledRecency     Float
+  scaledFrequency   Float
+  scaledMonetary    Float
+  clusterId         Int
+  segmentName       String
+  createdAt         DateTime @default(now())
+
+  run       SegmentationRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  customer  Customer        @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@unique([runId, customerId])
+  @@index([runId])
+  @@index([customerId])
+  @@map("customer_rfm_scores")
+}
+
+model ClusterProfile {
+  id                Int      @id @default(autoincrement())
+  runId             Int
+  clusterId         Int
+  segmentName       String
+  size              Int
+  centroidRecency   Float
+  centroidFrequency Float
+  centroidMonetary  Float
+  createdAt         DateTime @default(now())
+
+  run SegmentationRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@unique([runId, clusterId])
+  @@index([runId])
+  @@map("cluster_profiles")
+}
+
+model FacilityTransaction {
+  id              Int       @id @default(autoincrement())
+  batchId         Int
+  rawRowId        Int       @unique
+  rowNumber       Int
+  orderId         String?
+  customerId      Int?
+  customerKey     String
+  customerName    String?
+  normalizedEmail String?
+  normalizedPhone String?
+  transactionDate DateTime?
+  playDate        DateTime?
+  playTime        String?
+  startHour       String?
+  endHour         String?
+  durationHours   Float
+  court           String
+  courtType       String?
+  bookingType     String
+  validBooking    Boolean   @default(false)
+  bookingEventKey String
+  bookingRangeKey String    @unique
+  netRevenue      Decimal   @db.Decimal(12, 2)
+  addOnRevenue    Decimal   @db.Decimal(12, 2)
+  voucherDiscount Decimal   @db.Decimal(12, 2)
+  status          String?
+  promoName       String?
+  sportPurpose    String?
+  description     String?   @db.Text
+  createdAt       DateTime  @default(now())
+
+  batch      ImportBatch      @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  customer   Customer?        @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  courtHours CourtHourUsage[]
+
+  @@index([batchId])
+  @@index([customerId])
+  @@index([playDate])
+  @@map("facility_transactions")
+}
+
+model CourtHourUsage {
+  id            Int      @id @default(autoincrement())
+  transactionId Int
+  batchId       Int
+  playDate      DateTime
+  hourStart     String
+  court         String
+  courtType     String?
+  courtHourKey  String   @unique
+  hourlyRevenue Decimal  @db.Decimal(12, 2)
+  createdAt     DateTime @default(now())
+
+  transaction FacilityTransaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+
+  @@index([batchId])
+  @@index([playDate])
+  @@map("court_hour_usages")
 }
 
 model RawTransactionTable {
