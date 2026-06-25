@@ -1,9 +1,11 @@
 import { Router } from "express";
 import multer from "multer";
 import { parse } from "csv-parse/sync";
+import * as XLSX from "xlsx";
 import { prisma } from "../config/prisma.js";
 import { authenticate, authorize } from "../middleware/auth.js";
 import { logItSupportActivity } from "../services/activityLog.service.js";
+import { processTransactionBatch } from "../services/transactionCleaning.service.js";
 
 const router = Router();
 
@@ -15,14 +17,36 @@ const upload = multer({
   fileFilter: (req, file, cb) => {
     if (
       file.mimetype === "text/csv" ||
-      file.originalname.toLowerCase().endsWith(".csv")
+      file.mimetype === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" ||
+      file.originalname.toLowerCase().endsWith(".csv") ||
+      file.originalname.toLowerCase().endsWith(".xlsx")
     ) {
       cb(null, true);
     } else {
-      cb(new Error("Only CSV files are allowed."));
+      cb(new Error("Only CSV or XLSX files are allowed."));
     }
   },
 });
+
+const parseUploadFile = (file) => {
+  const originalName = file.originalname.toLowerCase();
+
+  if (originalName.endsWith(".xlsx")) {
+    const workbook = XLSX.read(file.buffer, { type: "buffer" });
+    const firstSheetName = workbook.SheetNames[0];
+    if (!firstSheetName) return [];
+    const sheet = workbook.Sheets[firstSheetName];
+    return XLSX.utils.sheet_to_json(sheet, { defval: null, raw: false });
+  }
+
+  const csvText = file.buffer.toString("utf8");
+  return parse(csvText, {
+    columns: true,
+    skip_empty_lines: true,
+    trim: true,
+    bom: true,
+  });
+};
 
 // Semua route import wajib login
 router.use(authenticate);
@@ -65,23 +89,16 @@ router.post(
       if (!req.file) {
         return res.status(400).json({
           success: false,
-          message: "CSV file is required.",
+          message: "CSV or XLSX file is required.",
         });
       }
 
-      const csvText = req.file.buffer.toString("utf8");
-
-      const records = parse(csvText, {
-        columns: true,
-        skip_empty_lines: true,
-        trim: true,
-        bom: true,
-      });
+      const records = parseUploadFile(req.file);
 
       if (!records.length) {
         return res.status(400).json({
           success: false,
-          message: "CSV file is empty or has no valid rows.",
+          message: "Uploaded file is empty or has no valid rows.",
         });
       }
 
@@ -113,7 +130,7 @@ router.post(
 
       res.status(201).json({
         success: true,
-        message: "CSV uploaded successfully.",
+        message: "File uploaded successfully.",
         data: {
           batchId: batch.id,
           fileName: batch.fileName,
@@ -127,6 +144,47 @@ router.post(
     }
   },
 );
+
+router.post("/batches/:id/process", authorize("marketing", "it_support"), async (req, res, next) => {
+  try {
+    const batchId = Number(req.params.id);
+
+    if (!batchId || Number.isNaN(batchId)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid import batch ID.",
+      });
+    }
+
+    const batch = await prisma.importBatch.findUnique({
+      where: { id: batchId },
+    });
+
+    if (!batch) {
+      return res.status(404).json({
+        success: false,
+        message: "Import batch not found.",
+      });
+    }
+
+    const summary = await processTransactionBatch(batchId);
+
+    await logItSupportActivity(req, "IT_SUPPORT_IMPORT_PROCESS", {
+      batchId,
+      fileName: batch.fileName,
+      rowCount: batch.rowCount,
+      summary,
+    });
+
+    return res.json({
+      success: true,
+      message: "Transaction batch processed successfully.",
+      data: summary,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
 
 // Admin + IT boleh lihat raw data
 router.get("/batches/:id/rows", authorize("marketing", "it_support"), async (req, res, next) => {
