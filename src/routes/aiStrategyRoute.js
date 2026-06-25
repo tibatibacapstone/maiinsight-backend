@@ -6,7 +6,7 @@ import { generateMaiinStrategy } from "../services/geminiService.js";
 
 export const aiStrategyRouter = Router();
 
-aiStrategyRouter.post("/generate", authenticate, authorize("marketing", "it_support"), async (req, res, next) => {
+aiStrategyRouter.post("/generate", authenticate, authorize("operational", "it_support"), async (req, res, next) => {
   try {
     const strategyContext = req.body;
 
