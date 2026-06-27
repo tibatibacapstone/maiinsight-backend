@@ -1,9 +1,238 @@
 import { Router } from "express";
 import { authenticate, authorize } from "../middleware/auth.js";
-import { prisma } from "../config/prisma.js"
+import { prisma } from "../config/prisma.js";
+import {
+  buildCourtHourUsageWhere,
+  buildFacilityTransactionWhere,
+  buildOccupancyTrendPeriods,
+  EXCLUDED_IMPORT_BATCH_FILE_NAMES,
+  formatHourLabel,
+  getAvailableCourtHours,
+  getCourtCount,
+  getPreviousComparisonRange,
+  getWeekdayLabel,
+  normalizeCourtTypeFilter,
+  resolveSelectedDateRange,
+} from "../services/dashboardPeriod.service.js";
+
 export const dashboardRouter = Router();
 
+const COURT_TYPES = ["mini_soccer", "basketball"];
+const COURT_TYPE_LABELS = {
+  mini_soccer: "Mini Soccer",
+  basketball: "Basketball",
+};
+
 dashboardRouter.use(authenticate);
+
+const buildSelectedFilters = (query) => ({
+  month: query.month ?? "All Month",
+  year: query.year ?? String(new Date().getFullYear()),
+  periodType: query.periodType ?? "MTD",
+  venue: query.venue ?? query.courtType ?? "All Venue",
+  customerType: query.customerType ?? "All Type",
+  bookingType: query.bookingType ?? "all",
+});
+
+const SESSION_DEFINITIONS = [
+  { name: "Morning", startHour: 6, endHour: 11 },
+  { name: "Afternoon", startHour: 12, endHour: 15 },
+  { name: "Evening", startHour: 16, endHour: 18 },
+  { name: "Night", startHour: 19, endHour: 23 },
+];
+const EARLY_MONTH_REFERENCE_THRESHOLD_DAYS = 7;
+
+const cloneDate = (value) => new Date(value.getTime());
+
+const startOfDay = (value) => {
+  const date = cloneDate(value);
+  date.setHours(0, 0, 0, 0);
+  return date;
+};
+
+const endOfDay = (value) => {
+  const date = cloneDate(value);
+  date.setHours(23, 59, 59, 999);
+  return date;
+};
+
+const getRangeDayCount = (startDate, endDate) =>
+  Math.max(
+    0,
+    Math.round(
+      (endOfDay(endDate).getTime() - startOfDay(startDate).getTime()) / 86400000
+    )
+  ) + 1;
+
+const resolveSessionNameByHour = (hourStart) => {
+  const parsedHour = Number(String(hourStart ?? "").split(":")[0]);
+
+  if (!Number.isFinite(parsedHour)) return null;
+
+  return (
+    SESSION_DEFINITIONS.find(
+      (session) =>
+        parsedHour >= session.startHour && parsedHour <= session.endHour
+    )?.name || null
+  );
+};
+
+const getPreviousMonthRange = (referenceDate) => {
+  const year = referenceDate.getFullYear();
+  const monthIndex = referenceDate.getMonth();
+
+  return {
+    startDate: startOfDay(new Date(year, monthIndex - 1, 1)),
+    endDate: endOfDay(new Date(year, monthIndex, 0)),
+  };
+};
+
+const getLowSessionSummary = async ({
+  startDate,
+  endDate,
+  courtType,
+  customerType,
+  bookingType,
+  periodType,
+}) => {
+  const selectedStartDate = startOfDay(new Date(startDate));
+  const selectedEndDate = endOfDay(new Date(endDate));
+  const selectedRangeDays = getRangeDayCount(selectedStartDate, selectedEndDate);
+
+  let referenceStartDate = selectedStartDate;
+  let referenceEndDate = selectedEndDate;
+  let lowSessionBasis = "selected_period";
+  let lowSessionDetail =
+    "Based on historical occupancy within the selected play-date period.";
+
+  const isSingleMonthRange =
+    selectedStartDate.getFullYear() === selectedEndDate.getFullYear() &&
+    selectedStartDate.getMonth() === selectedEndDate.getMonth();
+
+  if (
+    periodType === "MTD" &&
+    isSingleMonthRange &&
+    selectedStartDate.getDate() === 1 &&
+    selectedRangeDays <= EARLY_MONTH_REFERENCE_THRESHOLD_DAYS
+  ) {
+    const previousMonthRange = getPreviousMonthRange(selectedStartDate);
+    referenceStartDate = previousMonthRange.startDate;
+    referenceEndDate = previousMonthRange.endDate;
+    lowSessionBasis = "previous_month";
+    lowSessionDetail = `Predicted from the previous month because the selected month only has ${selectedRangeDays} uploaded play day(s) so far.`;
+  }
+
+  const rangeDays = [];
+  const cursor = new Date(referenceStartDate);
+
+  while (cursor <= referenceEndDate) {
+    rangeDays.push(new Date(cursor));
+    cursor.setDate(cursor.getDate() + 1);
+  }
+
+  if (!rangeDays.length) {
+    return {
+      lowSessionLabel: "No Data",
+      lowSessionCount: 0,
+      lowSessionBasis: "no_data",
+      lowSessionDetail: "No historical session data is available for the selected period.",
+    };
+  }
+
+  const trackedCourtTypes = courtType ? [courtType] : COURT_TYPES;
+  const usageRows = await prisma.courtHourUsage.findMany({
+    where: buildCourtHourUsageWhere({
+      startDate: referenceStartDate,
+      endDate: referenceEndDate,
+      courtType,
+      customerType,
+      bookingType,
+    }),
+    select: {
+      hourStart: true,
+      courtType: true,
+    },
+  });
+
+  const usageByBucket = new Map();
+
+  for (const row of usageRows) {
+    const sessionName = resolveSessionNameByHour(row.hourStart);
+    if (!sessionName || !row.courtType) continue;
+
+    const bucketKey = `${sessionName}|${row.courtType}`;
+    usageByBucket.set(bucketKey, (usageByBucket.get(bucketKey) || 0) + 1);
+  }
+
+  let selectedBucket = null;
+
+  for (const session of SESSION_DEFINITIONS) {
+    const sessionHourCount = session.endHour - session.startHour + 1;
+
+    for (const trackedCourtType of trackedCourtTypes) {
+      const bucketKey = `${session.name}|${trackedCourtType}`;
+      const occupiedCourtHours = usageByBucket.get(bucketKey) || 0;
+      const availableCourtHours = rangeDays.length * sessionHourCount;
+      const occupancyRate =
+        availableCourtHours > 0 ? occupiedCourtHours / availableCourtHours : 0;
+
+      const candidate = {
+        sessionName: session.name,
+        courtType: trackedCourtType,
+        occupiedCourtHours,
+        availableCourtHours,
+        occupancyRate,
+      };
+
+      if (!selectedBucket) {
+        selectedBucket = candidate;
+        continue;
+      }
+
+      if (candidate.occupancyRate < selectedBucket.occupancyRate) {
+        selectedBucket = candidate;
+        continue;
+      }
+
+      if (
+        candidate.occupancyRate === selectedBucket.occupancyRate &&
+        candidate.occupiedCourtHours < selectedBucket.occupiedCourtHours
+      ) {
+        selectedBucket = candidate;
+        continue;
+      }
+
+      if (
+        candidate.occupancyRate === selectedBucket.occupancyRate &&
+        candidate.occupiedCourtHours === selectedBucket.occupiedCourtHours &&
+        candidate.sessionName.localeCompare(selectedBucket.sessionName) < 0
+      ) {
+        selectedBucket = candidate;
+      }
+    }
+  }
+
+  if (!selectedBucket) {
+    return {
+      lowSessionLabel: "No Data",
+      lowSessionCount: 0,
+      lowSessionBasis: "no_data",
+      lowSessionDetail: "No historical session data is available for the selected period.",
+    };
+  }
+
+  const courtSuffix = courtType
+    ? ""
+    : ` - ${COURT_TYPE_LABELS[selectedBucket.courtType] || selectedBucket.courtType}`;
+  const occupancyPercent = Number((selectedBucket.occupancyRate * 100).toFixed(1));
+
+  return {
+    lowSessionLabel: `${selectedBucket.sessionName}${courtSuffix}`,
+    lowSessionCount: selectedBucket.occupiedCourtHours,
+    lowSessionBasis,
+    lowSessionDetail: `${lowSessionDetail} Historical occupancy was ${occupancyPercent}% for this session bucket${courtSuffix ? " in the referenced venue" : ""}.`,
+  };
+};
 
 dashboardRouter.get("/overview", authorize("operational", "management", "it_support"), async (req, res, next) => {
   try {
@@ -60,29 +289,69 @@ dashboardRouter.get(
         totalBatches,
         totalRawRows,
         totalFacilityTransactions,
+        totalCourtHourUsages,
         completedBatches,
         failedBatches,
         latestBatch,
       ] = await Promise.all([
-        prisma.importBatch.count(),
-
-        prisma.rawTransactionTable.count(),
-
-        prisma.facilityTransaction.count(),
-
+        prisma.importBatch.count({
+          where: {
+            fileName: {
+              notIn: EXCLUDED_IMPORT_BATCH_FILE_NAMES,
+            },
+          },
+        }),
+        prisma.rawTransactionTable.count({
+          where: {
+            batch: {
+              fileName: {
+                notIn: EXCLUDED_IMPORT_BATCH_FILE_NAMES,
+              },
+            },
+          },
+        }),
+        prisma.facilityTransaction.count({
+          where: {
+            batch: {
+              fileName: {
+                notIn: EXCLUDED_IMPORT_BATCH_FILE_NAMES,
+              },
+            },
+          },
+        }),
+        prisma.courtHourUsage.count({
+          where: {
+            transaction: {
+              batch: {
+                fileName: {
+                  notIn: EXCLUDED_IMPORT_BATCH_FILE_NAMES,
+                },
+              },
+            },
+          },
+        }),
         prisma.importBatch.count({
           where: {
             status: "completed",
+            fileName: {
+              notIn: EXCLUDED_IMPORT_BATCH_FILE_NAMES,
+            },
           },
         }),
-
         prisma.importBatch.count({
           where: {
             status: "failed",
+            fileName: {
+              notIn: EXCLUDED_IMPORT_BATCH_FILE_NAMES,
+            },
           },
         }),
-
         prisma.importBatch.findFirst({
+          where: {
+            fileName: {
+              notIn: EXCLUDED_IMPORT_BATCH_FILE_NAMES,
+            },
+          },
           orderBy: {
             createdAt: "desc",
           },
@@ -95,7 +364,7 @@ dashboardRouter.get(
             updatedAt: true,
           },
         }),
-      ])
+      ]);
 
       res.json({
         success: true,
@@ -104,16 +373,17 @@ dashboardRouter.get(
           totalBatches,
           totalRawRows,
           totalFacilityTransactions,
+          totalCourtHourUsages,
           completedBatches,
           failedBatches,
           latestBatch,
         },
-      })
+      });
     } catch (error) {
-      next(error)
+      next(error);
     }
   }
-)
+);
 
 dashboardRouter.post("/activity", authorize("operational", "it_support"), async (req, res, next) => {
   try {
@@ -131,677 +401,226 @@ dashboardRouter.post("/activity", authorize("operational", "it_support"), async 
     next(error);
   }
 });
-const monthMap = {
-  Jan: 0,
-  Feb: 1,
-  Mar: 2,
-  Apr: 3,
-  May: 4,
-  Jun: 5,
-  Jul: 6,
-  Aug: 7,
-  Sept: 8,
-  Sep: 8,
-  Oct: 9,
-  Nov: 10,
-  Dec: 11,
-}
 
-const playtimeLabelMap = {
-  Pagi: "Morning",
-  Siang: "Afternoon",
-  Malam: "Night",
-}
+dashboardRouter.get(
+  "/overview-kpis",
+  authorize("operational", "management", "it_support"),
+  async (req, res, next) => {
+    try {
+      const filters = buildSelectedFilters(req.query);
+      const courtType = normalizeCourtTypeFilter(filters.venue);
+      const selectedRange = resolveSelectedDateRange({
+        selectedYear: filters.year,
+        selectedMonth: filters.month,
+        periodType: filters.periodType,
+      });
 
-const dayNames = [
-  "Sunday",
-  "Monday",
-  "Tuesday",
-  "Wednesday",
-  "Thursday",
-  "Friday",
-  "Saturday",
-]
-
-const getDateRange = ({ selectedYear, selectedMonth }) => {
-  const year = Number(selectedYear)
-
-  if (!year || Number.isNaN(year)) {
-    throw new Error("Invalid year.")
-  }
-
-  if (selectedMonth && selectedMonth !== "All Month") {
-    const monthIndex = monthMap[selectedMonth]
-
-    if (monthIndex === undefined) {
-      throw new Error("Invalid month.")
-    }
-
-    const startDate = new Date(year, monthIndex, 1)
-    const endDate = new Date(year, monthIndex + 1, 0, 23, 59, 59, 999)
-
-    return {
-      startDate,
-      endDate,
-    }
-  }
-
-  return {
-    startDate: new Date(year, 0, 1),
-    endDate: new Date(year, 11, 31, 23, 59, 59, 999),
-  }
-}
-
-const getPreviousDateRange = ({ selectedYear, selectedMonth }) => {
-  const year = Number(selectedYear)
-
-  if (selectedMonth && selectedMonth !== "All Month") {
-    const monthIndex = monthMap[selectedMonth]
-    const previousMonthDate = new Date(year, monthIndex - 1, 1)
-
-    return {
-      startDate: new Date(previousMonthDate.getFullYear(), previousMonthDate.getMonth(), 1),
-      endDate: new Date(
-        previousMonthDate.getFullYear(),
-        previousMonthDate.getMonth() + 1,
-        0,
-        23,
-        59,
-        59,
-        999
-      ),
-    }
-  }
-
-  return {
-    startDate: new Date(year - 1, 0, 1),
-    endDate: new Date(year - 1, 11, 31, 23, 59, 59, 999),
-  }
-}
-
-const getFieldCount = (selectedVenue) => {
-  if (selectedVenue === "Mini Soccer") return 1
-  if (selectedVenue === "Basket") return 1
-
-  // Sesuaikan kalau nanti jumlah lapangan bertambah
-  return 2
-}
-
-const getAvailableSessions = (startDate, endDate, fieldCount) => {
-  let totalSlots = 0
-  const currentDate = new Date(startDate)
-
-  while (currentDate <= endDate) {
-    const day = currentDate.getDay()
-
-    // Senin-Jumat: 08:00-22:00 = 14 slot
-    // Sabtu-Minggu: 06:00-22:00 = 16 slot
-    const dailySlots = day === 0 || day === 6 ? 16 : 14
-
-    totalSlots += dailySlots * fieldCount
-    currentDate.setDate(currentDate.getDate() + 1)
-  }
-
-  return totalSlots
-}
-
-const buildTransactionWhere = ({
-  startDate,
-  endDate,
-  selectedVenue,
-  selectedCustomerType,
-}) => {
-  const validStatusFilter = {
-    OR: [
-      {
-        status: {
-          contains: "Payment Completed",
-        },
-      },
-      {
-        status: {
-          contains: "Manual/Walk-in",
-        },
-      },
-    ],
-  }
-
-  const where = {
-    AND: [
-      {
-        tanggalMain: {
-          gte: startDate,
-          lte: endDate,
-        },
-      },
-      validStatusFilter,
-      {
-        playTimeGroup: {
-          in: ["Pagi", "Siang", "Malam"],
-        },
-      },
-    ],
-  }
-
-  if (selectedVenue && selectedVenue !== "All Venue") {
-    where.AND.push({
-      lapangan: {
-        contains: selectedVenue === "Basket" ? "Basket" : selectedVenue,
-      },
-    })
-  }
-
-  if (selectedCustomerType && selectedCustomerType !== "All Type") {
-    if (selectedCustomerType === "Membership") {
-      where.AND.push({
-        status: {
-          contains: "Payment Completed",
-        },
-      })
-    }
-
-    if (
-      selectedCustomerType === "Non Membership" ||
-      selectedCustomerType === "Manual/Walk-in"
-    ) {
-      where.AND.push({
-        status: {
-          contains: "Manual/Walk-in",
-        },
-      })
-    }
-  }
-
-  return where
-}
-
-
-dashboardRouter.get("/overview-kpis", async (req, res, next) => {
-  try {
-    const {
-      month = "All Month",
-      year = "2026",
-      venue = "All Venue",
-      customerType = "All Type",
-    } = req.query
-  
-
-    const { startDate, endDate } = getDateRange({
-      selectedYear: year,
-      selectedMonth: month,
-    })
-
-    const previousRange = getPreviousDateRange({
-      selectedYear: year,
-      selectedMonth: month,
-    })
-
-   const where = buildTransactionWhere({
-  startDate,
-  endDate,
-  selectedVenue: venue,
-  selectedCustomerType: customerType,
-})
-
-    const previousWhere = buildTransactionWhere({
-  startDate: previousRange.startDate,
-  endDate: previousRange.endDate,
-  selectedVenue: venue,
-  selectedCustomerType: customerType,
-})
-
-
-    const totalBookedSessions = await prisma.facilityTransaction.count({
-      where,
-    })
-
-    const previousBookedSessions = await prisma.facilityTransaction.count({
-      where: previousWhere,
-    })
-
-    const revenueResult = await prisma.facilityTransaction.aggregate({
-      where,
-      _sum: {
-        hargaBersih: true,
-      },
-    })
-
-    const previousRevenueResult = await prisma.facilityTransaction.aggregate({
-      where: previousWhere,
-      _sum: {
-        hargaBersih: true,
-      },
-    })
-
-    const totalRevenue = Number(revenueResult._sum.hargaBersih || 0)
-    const previousRevenue = Number(previousRevenueResult._sum.hargaBersih || 0)
-
-    const fieldCount = getFieldCount(venue)
-    const availableSessions = getAvailableSessions(startDate, endDate, fieldCount)
-    const previousAvailableSessions = getAvailableSessions(
-      previousRange.startDate,
-      previousRange.endDate,
-      fieldCount
-    )
-
-    const occupancyRate =
-      availableSessions > 0 ? (totalBookedSessions / availableSessions) * 100 : 0
-
-    const previousOccupancyRate =
-      previousAvailableSessions > 0
-        ? (previousBookedSessions / previousAvailableSessions) * 100
-        : 0
-
-    const occupancyChange = occupancyRate - previousOccupancyRate
-
-    const revenueChange =
-      previousRevenue > 0
-        ? ((totalRevenue - previousRevenue) / previousRevenue) * 100
-        : 0
-
-    const sessions = await prisma.facilityTransaction.findMany({
-      where,
-      select: {
-        tanggalMain: true,
-        playTimeGroup: true,
-      },
-    })
-
-    const sessionBucket = {}
-
-    for (const day of dayNames) {
-      for (const group of ["Pagi", "Siang", "Malam"]) {
-        sessionBucket[`${day} ${group}`] = {
-          day,
-          playTimeGroup: group,
-          count: 0,
-        }
+      if (!selectedRange) {
+        return res.json({
+          success: true,
+          message: "Overview KPI fetched successfully.",
+          data: {
+            occupancyRate: 0,
+            occupancyChange: 0,
+            totalRevenue: 0,
+            revenueChange: 0,
+            lowSessionLabel: "No Data",
+            lowSessionCount: 0,
+            lowSessionBasis: "no_data",
+            lowSessionDetail: "No historical session data is available for the selected period.",
+            totalBookedSessions: 0,
+            availableSessions: 0,
+          },
+        });
       }
-    }
 
-    for (const item of sessions) {
-      if (!item.tanggalMain || !item.playTimeGroup) continue
+      const previousRange = getPreviousComparisonRange(selectedRange);
 
-      const date = new Date(item.tanggalMain)
-      const dayName = dayNames[date.getDay()]
-      const key = `${dayName} ${item.playTimeGroup}`
+      const transactionWhere = buildFacilityTransactionWhere({
+        startDate: selectedRange.startDate,
+        endDate: selectedRange.endDate,
+        courtType,
+        customerType: filters.customerType,
+        bookingType: filters.bookingType,
+      });
 
-      if (sessionBucket[key]) {
-        sessionBucket[key].count += 1
-      }
-    }
+      const previousTransactionWhere = buildFacilityTransactionWhere({
+        startDate: previousRange.startDate,
+        endDate: previousRange.endDate,
+        courtType,
+        customerType: filters.customerType,
+        bookingType: filters.bookingType,
+      });
 
-    const lowSession = Object.values(sessionBucket).sort(
-      (a, b) => a.count - b.count
-    )[0]
+      const courtHourWhere = buildCourtHourUsageWhere({
+        startDate: selectedRange.startDate,
+        endDate: selectedRange.endDate,
+        courtType,
+        customerType: filters.customerType,
+        bookingType: filters.bookingType,
+      });
 
-    const lowSessionLabel = lowSession
-      ? `${lowSession.day} ${playtimeLabelMap[lowSession.playTimeGroup]}`
-      : "No Data"
+      const previousCourtHourWhere = buildCourtHourUsageWhere({
+        startDate: previousRange.startDate,
+        endDate: previousRange.endDate,
+        courtType,
+        customerType: filters.customerType,
+        bookingType: filters.bookingType,
+      });
 
-    res.json({
-      success: true,
-      message: "Overview KPI fetched successfully.",
-      data: {
-        occupancyRate: Number(occupancyRate.toFixed(1)),
-        occupancyChange: Number(occupancyChange.toFixed(1)),
-
-        totalRevenue,
-        revenueChange: Number(revenueChange.toFixed(1)),
-
-        lowSessionLabel,
-        lowSessionCount: lowSession?.count || 0,
-
+      const [
+        revenueResult,
+        previousRevenueResult,
         totalBookedSessions,
-        availableSessions,
-      },
-    })
-  } catch (error) {
-    next(error)
+        previousBookedSessions,
+        lowSession,
+      ] = await Promise.all([
+        prisma.facilityTransaction.aggregate({
+          where: transactionWhere,
+          _sum: {
+            netRevenue: true,
+          },
+        }),
+        prisma.facilityTransaction.aggregate({
+          where: previousTransactionWhere,
+          _sum: {
+            netRevenue: true,
+          },
+        }),
+        prisma.courtHourUsage.count({
+          where: courtHourWhere,
+        }),
+        prisma.courtHourUsage.count({
+          where: previousCourtHourWhere,
+        }),
+        getLowSessionSummary({
+          startDate: selectedRange.startDate,
+          endDate: selectedRange.endDate,
+          courtType,
+          customerType: filters.customerType,
+          bookingType: filters.bookingType,
+          periodType: filters.periodType,
+        }),
+      ]);
+
+      const totalRevenue = Number(revenueResult._sum.netRevenue || 0);
+      const previousRevenue = Number(previousRevenueResult._sum.netRevenue || 0);
+
+      const courtCount = getCourtCount(courtType);
+      const availableSessions = getAvailableCourtHours(
+        selectedRange.startDate,
+        selectedRange.endDate,
+        courtCount
+      );
+      const previousAvailableSessions = getAvailableCourtHours(
+        previousRange.startDate,
+        previousRange.endDate,
+        courtCount
+      );
+
+      const occupancyRate =
+        availableSessions > 0 ? (totalBookedSessions / availableSessions) * 100 : 0;
+      const previousOccupancyRate =
+        previousAvailableSessions > 0
+          ? (previousBookedSessions / previousAvailableSessions) * 100
+          : 0;
+
+      const occupancyChange = occupancyRate - previousOccupancyRate;
+      const revenueChange =
+        previousRevenue > 0
+          ? ((totalRevenue - previousRevenue) / previousRevenue) * 100
+          : 0;
+
+      const normalizedLowSession =
+        totalBookedSessions > 0
+          ? lowSession
+          : {
+              lowSessionLabel: "-",
+              lowSessionCount: 0,
+              lowSessionBasis: "no_data",
+              lowSessionDetail: "No data is available for the selected period.",
+            };
+
+      return res.json({
+        success: true,
+        message: "Overview KPI fetched successfully.",
+        data: {
+          occupancyRate: Number(occupancyRate.toFixed(1)),
+          occupancyChange: Number(occupancyChange.toFixed(1)),
+          totalRevenue,
+          revenueChange: Number(revenueChange.toFixed(1)),
+          lowSessionLabel: normalizedLowSession.lowSessionLabel,
+          lowSessionCount: normalizedLowSession.lowSessionCount,
+          lowSessionBasis: normalizedLowSession.lowSessionBasis,
+          lowSessionDetail: normalizedLowSession.lowSessionDetail,
+          totalBookedSessions,
+          availableSessions,
+        },
+      });
+    } catch (error) {
+      next(error);
+    }
   }
-dashboardRouter.get("/occupancy-trend", async (req, res, next) => {
-  try {
-    const {
-      month = "All Month",
-      year = "2025",
-      periodType = "MTD",
-      venue = "All Venue",
-      customerType = "All Type",
-    } = req.query
+);
 
-    const selectedYear = Number(year)
-    const today = new Date()
+dashboardRouter.get(
+  "/occupancy-trend",
+  authorize("operational", "management", "it_support"),
+  async (req, res, next) => {
+    try {
+      const filters = buildSelectedFilters(req.query);
+      const courtType = normalizeCourtTypeFilter(filters.venue);
+      const trendPeriods = buildOccupancyTrendPeriods({
+        selectedYear: filters.year,
+        selectedMonth: filters.month,
+        periodType: filters.periodType,
+      });
 
-    const currentYear = today.getFullYear()
-    const currentMonthIndex = today.getMonth()
-    const currentDate = today.getDate()
+      const courtCount = getCourtCount(courtType);
 
-    if (!selectedYear || Number.isNaN(selectedYear)) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid year.",
-      })
-    }
+      const trend = await Promise.all(
+        trendPeriods.map(async (period) => {
+          const bookedSessions = await prisma.courtHourUsage.count({
+            where: buildCourtHourUsageWhere({
+              startDate: period.startDate,
+              endDate: period.endDate,
+              courtType,
+              customerType: filters.customerType,
+              bookingType: filters.bookingType,
+            }),
+          });
 
-    const monthNames = [
-      "Jan",
-      "Feb",
-      "Mar",
-      "Apr",
-      "May",
-      "Jun",
-      "Jul",
-      "Aug",
-      "Sept",
-      "Oct",
-      "Nov",
-      "Dec",
-    ]
+          const availableSessions = getAvailableCourtHours(
+            period.startDate,
+            period.endDate,
+            courtCount
+          );
 
-    const monthMap = {
-      Jan: 0,
-      Feb: 1,
-      Mar: 2,
-      Apr: 3,
-      May: 4,
-      Jun: 5,
-      Jul: 6,
-      Aug: 7,
-      Sept: 8,
-      Sep: 8,
-      Oct: 9,
-      Nov: 10,
-      Dec: 11,
-    }
-
-    const getFieldCount = (selectedVenue) => {
-      if (selectedVenue === "Mini Soccer") return 1
-      if (selectedVenue === "Basket") return 1
-      return 2
-    }
-
-    const getAvailableSessions = (startDate, endDate, fieldCount) => {
-      let totalSlots = 0
-      const currentDateLoop = new Date(startDate)
-
-      while (currentDateLoop <= endDate) {
-        const day = currentDateLoop.getDay()
-
-        // Senin-Jumat: 08:00-22:00 = 14 slot
-        // Sabtu-Minggu: 06:00-22:00 = 16 slot
-        const dailySlots = day === 0 || day === 6 ? 16 : 14
-
-        totalSlots += dailySlots * fieldCount
-        currentDateLoop.setDate(currentDateLoop.getDate() + 1)
-      }
-
-      return totalSlots
-    }
-
-    const buildWhere = (startDate, endDate) => {
-      const where = {
-        AND: [
-          {
-            tanggalMain: {
-              gte: startDate,
-              lte: endDate,
-            },
-          },
-          {
-            OR: [
-              {
-                status: {
-                  contains: "Payment Completed",
-                },
-              },
-              {
-                status: {
-                  contains: "Manual/Walk-in",
-                },
-              },
-            ],
-          },
-          {
-            playTimeGroup: {
-              in: ["Pagi", "Siang", "Malam"],
-            },
-          },
-        ],
-      }
-
-      if (venue && venue !== "All Venue") {
-        where.AND.push({
-          lapangan: {
-            contains: venue === "Basket" ? "Basket" : venue,
-          },
-        })
-      }
-
-      if (customerType && customerType !== "All Type") {
-        if (customerType === "Membership") {
-          where.AND.push({
-            status: {
-              contains: "Payment Completed",
-            },
-          })
-        }
-
-        if (customerType === "Non Membership") {
-          where.AND.push({
-            status: {
-              contains: "Manual/Walk-in",
-            },
-          })
-        }
-      }
-
-      return where
-    }
-
-    const getSafeMonthEndDate = (yearValue, monthIndex) => {
-      const isCurrentYear = yearValue === currentYear
-      const isCurrentMonth = monthIndex === currentMonthIndex
-
-      // Kalau tahun dan bulan yang dipilih adalah bulan sekarang,
-      // maka end date hanya sampai hari ini.
-      if (isCurrentYear && isCurrentMonth) {
-        return new Date(yearValue, monthIndex, currentDate, 23, 59, 59, 999)
-      }
-
-      // Kalau bulan sudah lewat atau tahun sebelumnya, pakai full month.
-      return new Date(yearValue, monthIndex + 1, 0, 23, 59, 59, 999)
-    }
-
-    const getLastVisibleMonthIndex = () => {
-      // Kalau tahun yang dipilih adalah tahun sekarang,
-      // jangan tampilkan bulan setelah bulan hari ini.
-      if (selectedYear === currentYear) {
-        return currentMonthIndex
-      }
-
-      // Kalau tahun sebelumnya, tampilkan sampai Dec.
-      if (selectedYear < currentYear) {
-        return 11
-      }
-
-      // Kalau tahun masa depan, tidak ada data real.
-      return -1
-    }
-
-    const fieldCount = getFieldCount(venue)
-    let trendPeriods = []
-
-    // CASE 1:
-    // Month dipilih + MTD
-    // Contoh:
-    // Apr 2025 MTD -> daily 1 Apr - 30 Apr
-    // Jun 2026 MTD -> daily 1 Jun - today
-    if (month !== "All Month" && periodType === "MTD") {
-      const monthIndex = monthMap[month]
-
-      if (monthIndex === undefined) {
-        return res.status(400).json({
-          success: false,
-          message: "Invalid month.",
-        })
-      }
-
-      const endDate = getSafeMonthEndDate(selectedYear, monthIndex)
-
-      const lastDay = endDate.getDate()
-
-      trendPeriods = Array.from({ length: lastDay }, (_, index) => {
-        const day = index + 1
-
-        const startDate = new Date(selectedYear, monthIndex, day)
-        const dailyEndDate = new Date(
-          selectedYear,
-          monthIndex,
-          day,
-          23,
-          59,
-          59,
-          999
-        )
-
-        return {
-          label: `${day} ${month}`,
-          date: `${selectedYear}-${String(monthIndex + 1).padStart(
-            2,
-            "0"
-          )}-${String(day).padStart(2, "0")}`,
-          startDate,
-          endDate: dailyEndDate,
-        }
-      })
-    }
-
-    // CASE 2:
-    // Month dipilih + YTD
-    // Contoh:
-    // Apr 2025 YTD -> Jan, Jan-Feb, Jan-Mar, Jan-Apr
-    // Jun 2026 YTD -> Jan, Jan-Feb, ..., Jan-today
-    if (month !== "All Month" && periodType === "YTD") {
-      const selectedMonthIndex = monthMap[month]
-
-      if (selectedMonthIndex === undefined) {
-        return res.status(400).json({
-          success: false,
-          message: "Invalid month.",
-        })
-      }
-
-      const maxMonthIndex =
-        selectedYear === currentYear
-          ? Math.min(selectedMonthIndex, currentMonthIndex)
-          : selectedMonthIndex
-
-      trendPeriods = monthNames
-        .slice(0, maxMonthIndex + 1)
-        .map((monthName, monthIndex) => {
-          const startDate = new Date(selectedYear, 0, 1)
-          const endDate = getSafeMonthEndDate(selectedYear, monthIndex)
+          const rate =
+            availableSessions > 0 ? (bookedSessions / availableSessions) * 100 : 0;
 
           return {
-            label: monthName,
-            month: monthName,
-            startDate,
-            endDate,
-          }
+            label: period.label,
+            month: period.month,
+            date: period.date,
+            bookedSessions,
+            availableSessions,
+            rate: Number(rate.toFixed(1)),
+          };
         })
+      );
+
+      return res.json({
+        success: true,
+        message: "Occupancy trend fetched successfully.",
+        data: trend,
+      });
+    } catch (error) {
+      next(error);
     }
-
-    // CASE 3:
-    // All Month + MTD
-    // Contoh:
-    // 2025 -> monthly Jan-Dec, per bulan berdiri sendiri
-    // 2026 -> monthly Jan sampai bulan today, bulan today sampai today
-    if (month === "All Month" && periodType === "MTD") {
-      const lastMonthIndex = getLastVisibleMonthIndex()
-
-      if (lastMonthIndex < 0) {
-        trendPeriods = []
-      } else {
-        trendPeriods = monthNames
-          .slice(0, lastMonthIndex + 1)
-          .map((monthName, monthIndex) => {
-            const startDate = new Date(selectedYear, monthIndex, 1)
-            const endDate = getSafeMonthEndDate(selectedYear, monthIndex)
-
-            return {
-              label: monthName,
-              month: monthName,
-              startDate,
-              endDate,
-            }
-          })
-      }
-    }
-
-    // CASE 4:
-    // All Month + YTD
-    // Contoh:
-    // 2025 -> Jan, Jan-Feb, ..., Jan-Dec
-    // 2026 -> Jan, Jan-Feb, ..., Jan-today
-    if (month === "All Month" && periodType === "YTD") {
-      const lastMonthIndex = getLastVisibleMonthIndex()
-
-      if (lastMonthIndex < 0) {
-        trendPeriods = []
-      } else {
-        trendPeriods = monthNames
-          .slice(0, lastMonthIndex + 1)
-          .map((monthName, monthIndex) => {
-            const startDate = new Date(selectedYear, 0, 1)
-            const endDate = getSafeMonthEndDate(selectedYear, monthIndex)
-
-            return {
-              label: monthName,
-              month: monthName,
-              startDate,
-              endDate,
-            }
-          })
-      }
-    }
-
-    const trend = await Promise.all(
-      trendPeriods.map(async (period) => {
-        const where = buildWhere(period.startDate, period.endDate)
-
-        const bookedSessions = await prisma.facilityTransaction.count({
-          where,
-        })
-
-        const availableSessions = getAvailableSessions(
-          period.startDate,
-          period.endDate,
-          fieldCount
-        )
-
-        const rate =
-          availableSessions > 0
-            ? (bookedSessions / availableSessions) * 100
-            : 0
-
-        return {
-          label: period.label,
-          month: period.month,
-          date: period.date,
-          bookedSessions,
-          availableSessions,
-          rate: Number(rate.toFixed(1)),
-        }
-      })
-    )
-
-    return res.json({
-      success: true,
-      message: "Occupancy trend fetched successfully.",
-      data: trend,
-    })
-  } catch (error) {
-    next(error)
   }
-})
-})
+);
+
+
+
+

@@ -1,7 +1,8 @@
+import { env } from "../config/env.js";
 import { prisma } from "../config/prisma.js";
 
-const GRAPH_VERSION = process.env.META_GRAPH_VERSION || "v25.0";
-const ACCESS_TOKEN = process.env.META_ACCESS_TOKEN;
+const GRAPH_VERSION = env.metaApiVersion;
+const ACCESS_TOKEN = env.metaAccessToken;
 
 function sanitizeParams(params) {
   const cleanParams = { ...params };
@@ -10,8 +11,13 @@ function sanitizeParams(params) {
 }
 
 export async function metaGet(endpoint, params = {}) {
+  if (!ACCESS_TOKEN) {
+    throw new Error("META_ACCESS_TOKEN is not configured.");
+  }
+
   const cleanEndpoint = endpoint.replace(/^\//, "");
-  const url = new URL(`https://graph.facebook.com/${GRAPH_VERSION}/${cleanEndpoint}`);
+  const baseUrl = env.metaApiBaseUrl || "https://graph.facebook.com";
+  const url = new URL(`${baseUrl.replace(/\/$/, "")}/${GRAPH_VERSION}/${cleanEndpoint}`);
 
   Object.entries(params).forEach(([key, value]) => {
     if (value !== undefined && value !== null && value !== "") {
@@ -51,7 +57,7 @@ export async function metaGet(endpoint, params = {}) {
         params: sanitizeParams(params),
         responseJson: null,
         status: "FAILED",
-        errorMessage: error.message,
+        errorMessage: error instanceof Error ? error.message : "Meta API request failed",
       },
     });
 
