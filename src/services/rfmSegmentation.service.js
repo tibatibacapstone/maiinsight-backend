@@ -1122,6 +1122,28 @@ const buildRunResultPayload = (run, clusterProfiles = [], customerResult = null)
   }
 }
 
+const fetchPreviousSegmentationRun = async (currentRunId) => {
+  if (!currentRunId) return null
+
+  return prisma.segmentationRun.findFirst({
+    where: {
+      id: {
+        lt: currentRunId,
+      },
+    },
+    orderBy: {
+      runDate: "desc",
+    },
+    select: {
+      id: true,
+      runDate: true,
+      totalCustomers: true,
+      kValue: true,
+      status: true,
+    },
+  })
+}
+
 const getRunInclude = () => ({
   clusterProfiles: {
     orderBy: {
@@ -1407,6 +1429,8 @@ export const getLatestSegmentationResult = async (input = {}) => {
     }
   }
 
+  const previousRun = await fetchPreviousSegmentationRun(latestRun.id)
+
   const customerResult = input.includeCustomers
     ? await fetchCustomerScoresPage({
         runId: latestRun.id,
@@ -1416,7 +1440,10 @@ export const getLatestSegmentationResult = async (input = {}) => {
       })
     : null
 
-  return buildRunResultPayload(latestRun, latestRun.clusterProfiles || [], customerResult)
+  return {
+    ...buildRunResultPayload(latestRun, latestRun.clusterProfiles || [], customerResult),
+    previousRun,
+  }
 }
 
 export const getSegmentationSummary = async (input = {}) => {
