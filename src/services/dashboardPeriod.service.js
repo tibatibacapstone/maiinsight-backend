@@ -122,31 +122,24 @@ export const resolveSelectedDateRange = ({
   }
 
   if (isAllMonth(selectedMonth)) {
-    const lastVisibleMonthIndex = getLastVisibleMonthIndex(year, today)
-
-    if (lastVisibleMonthIndex < 0) return null
-
     return {
       startDate: startOfDay(new Date(year, 0, 1)),
-      endDate: getSafeMonthEndDate(year, lastVisibleMonthIndex, today),
+      endDate: year === today.getFullYear() ? endOfDay(today) : endOfDay(new Date(year, 11, 31)),
       selectedYear: year,
-      selectedMonthIndex: lastVisibleMonthIndex,
+      selectedMonthIndex: year === today.getFullYear() ? today.getMonth() : 11,
       isAllMonth: true,
       periodType,
     }
   }
 
   const requestedMonthIndex = getMonthIndex(selectedMonth)
+  if (requestedMonthIndex === null) {
+    throw new Error("Invalid month.")
+  }
 
-  if (periodType === "MTD") {
-    if (year > today.getFullYear()) return null
-
-    if (year === today.getFullYear() && requestedMonthIndex > today.getMonth()) {
-      return null
-    }
-
+  if (periodType === "YTD") {
     return {
-      startDate: startOfDay(new Date(year, requestedMonthIndex, 1)),
+      startDate: startOfDay(new Date(year, 0, 1)),
       endDate: getSafeMonthEndDate(year, requestedMonthIndex, today),
       selectedYear: year,
       selectedMonthIndex: requestedMonthIndex,
@@ -155,15 +148,11 @@ export const resolveSelectedDateRange = ({
     }
   }
 
-  const effectiveMonthIndex = getEffectiveSelectedMonthIndex(year, requestedMonthIndex, today)
-
-  if (effectiveMonthIndex < 0) return null
-
   return {
-    startDate: startOfDay(new Date(year, 0, 1)),
-    endDate: getSafeMonthEndDate(year, effectiveMonthIndex, today),
+    startDate: startOfDay(new Date(year, requestedMonthIndex, 1)),
+    endDate: getSafeMonthEndDate(year, requestedMonthIndex, today),
     selectedYear: year,
-    selectedMonthIndex: effectiveMonthIndex,
+    selectedMonthIndex: requestedMonthIndex,
     isAllMonth: false,
     periodType,
   }
@@ -410,5 +399,6 @@ export const buildOccupancyTrendPeriods = ({
 
 export const getWeekdayLabel = (date) =>
   ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][date.getDay()]
+
 
 

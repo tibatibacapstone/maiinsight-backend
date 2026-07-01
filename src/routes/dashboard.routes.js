@@ -6,16 +6,26 @@ import {
   buildFacilityTransactionWhere,
   buildOccupancyTrendPeriods,
   EXCLUDED_IMPORT_BATCH_FILE_NAMES,
-  formatHourLabel,
   getAvailableCourtHours,
   getCourtCount,
   getPreviousComparisonRange,
-  getWeekdayLabel,
   normalizeCourtTypeFilter,
   resolveSelectedDateRange,
 } from "../services/dashboardPeriod.service.js";
 
 export const dashboardRouter = Router();
+
+const calculatePercentChange = (currentValue, previousValue) => {
+  const current = Number(currentValue || 0);
+  const previous = Number(previousValue || 0);
+
+  if (previous === 0) {
+    if (current === 0) return 0;
+    return 100;
+  }
+
+  return ((current - previous) / previous) * 100;
+};
 
 const COURT_TYPES = ["mini_soccer", "basketball"];
 const COURT_TYPE_LABELS = {
@@ -428,6 +438,8 @@ dashboardRouter.get(
             lowSessionCount: 0,
             lowSessionBasis: "no_data",
             lowSessionDetail: "No historical session data is available for the selected period.",
+            peakSessionLabel: "-",
+            peakSessionRevenue: 0,
             totalBookedSessions: 0,
             availableSessions: 0,
           },
@@ -474,6 +486,7 @@ dashboardRouter.get(
         totalBookedSessions,
         previousBookedSessions,
         lowSession,
+        transactions,
       ] = await Promise.all([
         prisma.facilityTransaction.aggregate({
           where: transactionWhere,
@@ -501,10 +514,47 @@ dashboardRouter.get(
           bookingType: filters.bookingType,
           periodType: filters.periodType,
         }),
+        prisma.facilityTransaction.findMany({
+          where: transactionWhere,
+          select: {
+            startHour: true,
+            netRevenue: true,
+          },
+        }),
       ]);
 
       const totalRevenue = Number(revenueResult._sum.netRevenue || 0);
       const previousRevenue = Number(previousRevenueResult._sum.netRevenue || 0);
+
+      // Calculate peak session revenue
+      const sessionRevenue = {
+        Morning: 0,
+        Afternoon: 0,
+        Evening: 0,
+        Night: 0,
+      };
+
+      transactions.forEach((tx) => {
+        const hourStr = tx.startHour || "";
+        const hour = Number(String(hourStr).split(":")[0]);
+
+        let session = "Night";
+        if (hour >= 6 && hour <= 11) session = "Morning";
+        else if (hour >= 12 && hour <= 15) session = "Afternoon";
+        else if (hour >= 16 && hour <= 18) session = "Evening";
+
+        sessionRevenue[session] += Number(tx.netRevenue || 0);
+      });
+
+      const peakSession =
+        transactions.length > 0
+          ? Object.entries(sessionRevenue).reduce((max, [session, revenue]) =>
+              revenue > max[1] ? [session, revenue] : max
+            )
+          : null;
+
+      const peakSessionLabel = peakSession ? peakSession[0] : "No Data";
+      const peakSessionRevenue = peakSession ? peakSession[1] : 0;
 
       const courtCount = getCourtCount(courtType);
       const availableSessions = getAvailableCourtHours(
@@ -525,11 +575,8 @@ dashboardRouter.get(
           ? (previousBookedSessions / previousAvailableSessions) * 100
           : 0;
 
-      const occupancyChange = occupancyRate - previousOccupancyRate;
-      const revenueChange =
-        previousRevenue > 0
-          ? ((totalRevenue - previousRevenue) / previousRevenue) * 100
-          : 0;
+      const occupancyChange = calculatePercentChange(occupancyRate, previousOccupancyRate);
+      const revenueChange = calculatePercentChange(totalRevenue, previousRevenue);
 
       const normalizedLowSession =
         totalBookedSessions > 0
@@ -553,6 +600,8 @@ dashboardRouter.get(
           lowSessionCount: normalizedLowSession.lowSessionCount,
           lowSessionBasis: normalizedLowSession.lowSessionBasis,
           lowSessionDetail: normalizedLowSession.lowSessionDetail,
+          peakSessionLabel,
+          peakSessionRevenue,
           totalBookedSessions,
           availableSessions,
         },
@@ -620,7 +669,5 @@ dashboardRouter.get(
     }
   }
 );
-
-
 
 

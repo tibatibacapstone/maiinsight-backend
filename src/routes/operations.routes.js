@@ -8,12 +8,61 @@ import {
   EXCLUDED_IMPORT_BATCH_FILE_NAMES,
   getAvailableCourtHours,
   getCourtCount,
+  getPreviousComparisonRange,
   normalizeCourtTypeFilter,
 } from "../services/dashboardPeriod.service.js"
 
 const router = Router()
 
 router.use(authenticate)
+
+const REPORT_VALID_STATUSES = ["Manual/Walk-in", "Payment Completed"]
+const SESSION_DEFINITIONS = [
+  { name: "Morning", startHour: 6, endHour: 11 },
+  { name: "Afternoon", startHour: 12, endHour: 15 },
+  { name: "Evening", startHour: 16, endHour: 18 },
+  { name: "Night", startHour: 19, endHour: 23 },
+]
+const REPORT_COURT_TYPES = ["mini_soccer", "basketball"]
+
+const toNumber = (value) => Number(value || 0)
+const roundTo = (value, digits = 1) => Number(Number(value || 0).toFixed(digits))
+
+const formatCourtTypeLabel = (courtType) => {
+  if (courtType === "mini_soccer") return "Mini Soccer"
+  if (courtType === "basketball") return "Basketball"
+  return "Unknown"
+}
+
+const getSessionNameByHour = (hourStart) => {
+  const hour = Number(String(hourStart ?? "").split(":")[0])
+  if (!Number.isFinite(hour)) return null
+  return SESSION_DEFINITIONS.find((session) => hour >= session.startHour && hour <= session.endHour)?.name || null
+}
+
+const getSessionHours = (sessionName) => {
+  const session = SESSION_DEFINITIONS.find((item) => item.name === sessionName)
+  return session ? session.endHour - session.startHour + 1 : 0
+}
+
+const withValidStatus = (where) => ({
+  ...where,
+  status: { in: REPORT_VALID_STATUSES },
+})
+
+const withCourtHourValidStatus = (where) => ({
+  ...where,
+  transaction: {
+    ...(where.transaction || {}),
+    status: { in: REPORT_VALID_STATUSES },
+  },
+})
+
+const buildComparison = (current, previous) => ({
+  current: roundTo(current, 2),
+  previous: roundTo(previous, 2),
+  changePct: previous > 0 ? roundTo(((current - previous) / previous) * 100, 1) : null,
+})
 
 const ACTIVITY_TYPE_MAP = {
   login: "auth",
@@ -763,13 +812,14 @@ router.get(
             netRevenue: true,
             bookingType: true,
             courtType: true,
-            customerProfile: true,
+            customerKey: true,
           },
         }),
         prisma.courtHourUsage.count({ where: courtHourWhere }),
         prisma.segmentationRun.findFirst({
           orderBy: { runDate: "desc" },
           select: {
+            id: true,
             runDate: true,
             totalCustomers: true,
           },
@@ -778,11 +828,12 @@ router.get(
 
       const courtCount = getCourtCount(courtType)
       const availableSessions = getAvailableCourtHours(startDate, endDate, courtCount)
+      const totalBookings = transactions.length
       const totalRevenue = transactions.reduce(
         (sum, item) => sum + Number(item.netRevenue || 0),
         0
       )
-      const avgRevenuePerBooking = transactions.length > 0 ? totalRevenue / transactions.length : 0
+      const avgRevenuePerBooking = totalBookings > 0 ? totalRevenue / totalBookings : 0
       const occupancyRate = availableSessions > 0 ? (courtHourCount / availableSessions) * 100 : 0
 
       const groupedTrend = new Map()
@@ -820,6 +871,189 @@ router.get(
         accumulator[key] = (accumulator[key] || 0) + 1
         return accumulator
       }, {})
+      const previousRange = getPreviousComparisonRange({ startDate, endDate })
+      const previousTransactionWhere = withValidStatus(
+        buildFacilityTransactionWhere({
+          startDate: previousRange.startDate,
+          endDate: previousRange.endDate,
+          courtType,
+          customerType,
+          bookingType,
+        })
+      )
+      const previousCourtHourWhere = withCourtHourValidStatus(
+        buildCourtHourUsageWhere({
+          startDate: previousRange.startDate,
+          endDate: previousRange.endDate,
+          courtType,
+          customerType,
+          bookingType,
+        })
+      )
+
+      const [previousTransactions, currentCourtHourRows, previousCourtHourCount] = await Promise.all([
+        prisma.facilityTransaction.findMany({
+          where: previousTransactionWhere,
+          select: {
+            netRevenue: true,
+          },
+        }),
+        prisma.courtHourUsage.findMany({
+          where: courtHourWhere,
+          select: {
+            hourStart: true,
+            courtType: true,
+            hourlyRevenue: true,
+          },
+        }),
+        prisma.courtHourUsage.count({ where: previousCourtHourWhere }),
+      ])
+
+      const segmentationCustomers = latestSegmentationRun?.id
+        ? await prisma.customerRfmScore.findMany({
+            where: { runId: latestSegmentationRun.id },
+            select: {
+              customerKey: true,
+              segmentName: true,
+            },
+          })
+        : []
+      const segmentByCustomerKey = new Map(
+        segmentationCustomers.map((item) => [item.customerKey, item.segmentName || "Unsegmented"])
+      )
+
+      const reportDays = Math.max(1, Math.round((endDate.getTime() - startDate.getTime()) / 86400000) + 1)
+      const previousAvailableSessions = getAvailableCourtHours(
+        previousRange.startDate,
+        previousRange.endDate,
+        courtCount
+      )
+      const previousRevenue = previousTransactions.reduce((sum, item) => sum + toNumber(item.netRevenue), 0)
+      const previousBookings = previousTransactions.length
+      const previousOccupancyRate = previousAvailableSessions > 0 ? (previousCourtHourCount / previousAvailableSessions) * 100 : 0
+      const previousAvgRevenuePerBooking = previousBookings > 0 ? previousRevenue / previousBookings : 0
+
+      const revenueComparison = buildComparison(totalRevenue, previousRevenue)
+      const bookingsComparison = buildComparison(totalBookings, previousBookings)
+      const occupancyComparison = buildComparison(occupancyRate, previousOccupancyRate)
+      const avgRevenueComparison = buildComparison(avgRevenuePerBooking, previousAvgRevenuePerBooking)
+
+      const courtTypePerformance = REPORT_COURT_TYPES.map((type) => {
+        const courtTransactions = transactions.filter((item) => item.courtType === type)
+        const courtHourUsage = currentCourtHourRows.filter((item) => item.courtType === type)
+        const bookedHours = courtHourUsage.length
+        const availableHours = reportDays * 18
+        const courtOccupancyRate = availableHours > 0 ? (bookedHours / availableHours) * 100 : 0
+
+        return {
+          courtType: type,
+          courtLabel: formatCourtTypeLabel(type),
+          revenue: courtTransactions.reduce((sum, item) => sum + toNumber(item.netRevenue), 0),
+          bookings: courtTransactions.length,
+          bookedHours,
+          availableHours,
+          occupancyRate: roundTo(courtOccupancyRate, 1),
+        }
+      })
+
+      const sessionOccupancy = SESSION_DEFINITIONS.map((session) => {
+        const sessionHours = getSessionHours(session.name)
+        const availableHours = reportDays * courtCount * sessionHours
+        const sessionRows = currentCourtHourRows.filter((item) => getSessionNameByHour(item.hourStart) === session.name)
+        const bookedHours = sessionRows.length
+        const revenue = sessionRows.reduce((sum, item) => sum + toNumber(item.hourlyRevenue), 0)
+        const sessionOccupancyRate = availableHours > 0 ? (bookedHours / availableHours) * 100 : 0
+
+        return {
+          sessionName: session.name,
+          bookedHours,
+          availableHours,
+          occupancyRate: roundTo(sessionOccupancyRate, 1),
+          revenue: roundTo(revenue, 2),
+        }
+      })
+
+      const lowOccupancySessions = [...sessionOccupancy]
+        .sort((left, right) => left.occupancyRate - right.occupancyRate)
+        .slice(0, 2)
+
+      const highOccupancySessions = [...sessionOccupancy]
+        .sort((left, right) => right.occupancyRate - left.occupancyRate)
+        .slice(0, 2)
+
+      const segmentContribution = [...segmentByCustomerKey.entries()].length
+        ? transactions.reduce((accumulator, item) => {
+            const segmentName = segmentByCustomerKey.get(item.customerKey) || "Unsegmented"
+            const existing = accumulator.get(segmentName) || {
+              segmentName,
+              revenue: 0,
+              bookings: 0,
+            }
+
+            existing.revenue += toNumber(item.netRevenue)
+            existing.bookings += 1
+            accumulator.set(segmentName, existing)
+            return accumulator
+          }, new Map())
+        : transactions.reduce((accumulator, item) => {
+            const existing = accumulator.get("Unsegmented") || {
+              segmentName: "Unsegmented",
+              revenue: 0,
+              bookings: 0,
+            }
+
+            existing.revenue += toNumber(item.netRevenue)
+            existing.bookings += 1
+            accumulator.set("Unsegmented", existing)
+            return accumulator
+          }, new Map())
+
+      const segmentContributionRows = [...segmentContribution.values()]
+        .map((item) => ({
+          ...item,
+          revenueShare: totalRevenue > 0 ? roundTo((item.revenue / totalRevenue) * 100, 1) : 0,
+          bookingShare: totalBookings > 0 ? roundTo((item.bookings / totalBookings) * 100, 1) : 0,
+        }))
+        .sort((left, right) => right.revenue - left.revenue)
+
+      const topRevenueCourtType = [...courtTypePerformance].sort((left, right) => right.revenue - left.revenue)[0] || null
+      const topOccupancyCourtType = [...courtTypePerformance].sort((left, right) => right.occupancyRate - left.occupancyRate)[0] || null
+      const highestOccupancySession = [...sessionOccupancy].sort((left, right) => right.occupancyRate - left.occupancyRate)[0] || null
+      const lowestOccupancySession = [...sessionOccupancy].sort((left, right) => left.occupancyRate - right.occupancyRate)[0] || null
+      const topSegmentContribution = segmentContributionRows[0] || null
+
+      const keyFindings = [
+        revenueComparison.changePct !== null
+          ? `Revenue is ${revenueComparison.changePct >= 0 ? "up" : "down"} ${Math.abs(revenueComparison.changePct).toFixed(1)}% versus the previous period.`
+          : "Previous-period revenue is unavailable, so growth comparison cannot be calculated yet.",
+        topRevenueCourtType
+          ? `${topRevenueCourtType.courtLabel} generated the highest revenue.`
+          : "Court-type revenue data is not available for this period.",
+        topOccupancyCourtType
+          ? `${topOccupancyCourtType.courtLabel} has the strongest utilization.`
+          : "Court-type occupancy data is not available for this period.",
+        highestOccupancySession && lowestOccupancySession
+          ? `${highestOccupancySession.sessionName} is the strongest session by occupancy, while ${lowestOccupancySession.sessionName} is the weakest.`
+          : "Session occupancy data is not available for this period.",
+        topSegmentContribution
+          ? `${topSegmentContribution.segmentName} contributes the largest share of revenue and bookings.`
+          : "Segment contribution data is not available for this period.",
+      ]
+
+      const actionPlan = [
+        lowestOccupancySession
+          ? `Promote ${lowestOccupancySession.sessionName} with targeted offers and reminders because it has the weakest occupancy.`
+          : "Use low-demand sessions for targeted promotions once session data is available.",
+        topRevenueCourtType
+          ? `Protect and upsell ${topRevenueCourtType.courtLabel} inventory with premium bundles because it drives the most revenue.` 
+          : "Prioritize the highest-revenue court type with bundle and upsell offers once data is available.",
+        topOccupancyCourtType
+          ? `Use ${topOccupancyCourtType.courtLabel} as the benchmark for demand planning and replicate its positioning in weaker periods because it has the best utilization.` 
+          : "Use the strongest court type as the benchmark for demand planning once occupancy data is available.",
+        topSegmentContribution
+          ? `Run retention and reactivation campaigns for ${topSegmentContribution.segmentName} customers because they already contribute the most value.`
+          : "Use the strongest customer segment for retention and reactivation once segmentation data is available.",
+      ]
 
       const occupancyInsight =
         occupancyRate === 0
@@ -853,15 +1087,36 @@ router.get(
           hasData: transactions.length > 0,
           summary: {
             totalRevenue,
-            totalBookings: transactions.length,
+            totalBookings,
             courtHourCount,
             availableSessions,
             occupancyRate: Number(occupancyRate.toFixed(1)),
             avgRevenuePerBooking: Number(avgRevenuePerBooking.toFixed(2)),
           },
+          period: {
+            startDate: startDate.toISOString(),
+            endDate: endDate.toISOString(),
+            label: new Intl.DateTimeFormat("en-US", { dateStyle: "medium" }).format(startDate) + " - " + new Intl.DateTimeFormat("en-US", { dateStyle: "medium" }).format(endDate),
+          },
+          comparisonPeriod: {
+            startDate: previousRange.startDate.toISOString(),
+            endDate: previousRange.endDate.toISOString(),
+            label: new Intl.DateTimeFormat("en-US", { dateStyle: "medium" }).format(previousRange.startDate) + " - " + new Intl.DateTimeFormat("en-US", { dateStyle: "medium" }).format(previousRange.endDate),
+          },
           revenueTrend,
           bookingTypeBreakdown,
+          courtTypePerformance,
+          sessionOccupancy,
+          lowOccupancySessions,
+          highOccupancySessions,
+          segmentContribution: segmentContributionRows,
           segmentationSummary: latestSegmentationRun,
+          comparison: {
+            revenue: revenueComparison,
+            bookings: bookingsComparison,
+            occupancyRate: occupancyComparison,
+            avgRevenuePerBooking: avgRevenueComparison,
+          },
           insights: {
             executiveSummary:
               transactions.length > 0
@@ -872,6 +1127,8 @@ router.get(
             segmentationInsight: latestSegmentationRun
               ? `The latest customer value segmentation covered ${latestSegmentationRun.totalCustomers} customers.`
               : "Customer value segmentation has not been generated yet.",
+            keyFindings,
+            actionPlan,
             recommendations,
           },
         },
@@ -883,6 +1140,11 @@ router.get(
 )
 
 export const operationsRouter = router
+
+
+
+
+
 
 
 

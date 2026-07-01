@@ -59,16 +59,20 @@ export const isAzureAiConfigured = () =>
   );
 
 const resolveSelectedProvider = () => {
-  if (env.aiProvider === "azure") {
+  if (env.aiProvider === "azure" && isAzureAiConfigured()) {
     return "azure";
   }
 
-  if (env.aiProvider === "gemini") {
+  if (env.aiProvider === "gemini" && isGeminiConfigured()) {
     return "gemini";
   }
 
   if (isGeminiConfigured()) {
     return "gemini";
+  }
+
+  if (isAzureAiConfigured()) {
+    return "azure";
   }
 
   return "gemini";
@@ -89,7 +93,7 @@ const buildPrompt = (strategyContext) => {
     system: `You are MaiinSight AI Strategy Assistant for Maiin Gandaria.
 You help Marketing Operational users create practical campaign recommendations from summarized business data.
 Use only the data provided in the prompt. Never invent unavailable metrics. Never include personal customer data.
-Keep the tone professional, concise, action-oriented, and suitable for a business dashboard.
+Keep strategy fields professional, concise, action-oriented, and suitable for a business dashboard. For WhatsApp copy, use a warm, friendly, natural admin tone. When the mode is overview_summary, ground the audience recommendation in the supplied business signals instead of generic assumptions.
 Unless another language is explicitly requested, write the response in Bahasa Indonesia.
 Return valid JSON only.`,
     user: `Create exactly one business strategy JSON object with this structure:
@@ -114,11 +118,14 @@ Requirements:
 - Target customer group must mention the segment or outreach target if available.
 - Customer behavior reasoning must explain why this group should be prioritized based on the provided context.
 - Suggested offer must be realistic for a sports venue campaign.
-- WhatsApp message must be ready to use, professional, concise, and not too pushy.
+- WhatsApp message must be ready to use, warm, friendly, conversational, concise, and not too pushy. Use a natural Indonesian admin tone with "Kak" when appropriate.
+- If business_context.slotTimeLabel or business_context.sessionStartHour/sessionEndHour exists, whatsappMessage must clearly mention the exact slot time and date. Do not only say Morning/Afternoon/Evening/Night.
 - Follow-up plan must be concrete and operationally actionable.
 - Expected business impact must describe likely occupancy, conversion, or revenue effect without guarantees.
 - Data limitation must clearly mention missing or weak data if any context is incomplete.
 - If low occupancy outreach context exists, tailor the WhatsApp message and follow-up plan to that context.
+- For overview_summary mode, use the provided planning_context, audience_context, transaction_signal_context, business_context, and customer_segment_summary to infer the best audience from real observed patterns. Frame it as next-month planning guidance, not a generic description of the current state.
+- Do not claim a customer group such as "never tried night" unless the provided context explicitly supports that statement.
 - Every field in the JSON object must be a plain string. Do not return nested objects or arrays.
 - Do not wrap the JSON in markdown fences.`,
   };
@@ -157,10 +164,79 @@ const normalizeStrategy = (parsed) => ({
   dataLimitation: toReadableText(parsed?.dataLimitation) || "Beberapa data penting untuk strategi ini belum tersedia atau belum lengkap.",
 });
 
+const isLowOccupancyOutreachContext = (strategyContext) =>
+  strategyContext?.selected_filters?.mode === "low_occupancy_outreach" ||
+  Boolean(strategyContext?.business_context?.lowOccupancyTargeting);
+
+const getOutreachSlotLabel = (strategyContext) => {
+  const businessContext = strategyContext?.business_context || {};
+
+  if (businessContext.slotTimeLabel) {
+    return String(businessContext.slotTimeLabel);
+  }
+
+  if (businessContext.sessionStartHour && businessContext.sessionEndHour) {
+    return String(businessContext.sessionStartHour) + " - " + String(businessContext.sessionEndHour);
+  }
+
+  return null;
+};
+
+const ensureOutreachSlotInWhatsappMessage = (strategy, strategyContext) => {
+  if (!isLowOccupancyOutreachContext(strategyContext)) return strategy;
+
+  const slotLabel = getOutreachSlotLabel(strategyContext);
+  if (!slotLabel) return strategy;
+
+  const dateLabel = strategyContext?.business_context?.date
+    ? String(strategyContext.business_context.date)
+    : "tanggal yang dipilih";
+  const currentMessage = toReadableText(strategy?.whatsappMessage).trim();
+  const normalizedMessage = currentMessage.toLowerCase();
+  const normalizedSlot = slotLabel.toLowerCase();
+  const [slotStart, slotEnd] = slotLabel.split("-").map((value) => value.trim().toLowerCase());
+  const alreadyMentionsSlot =
+    normalizedMessage.includes(normalizedSlot) ||
+    (slotStart && slotEnd && normalizedMessage.includes(slotStart) && normalizedMessage.includes(slotEnd));
+
+  if (alreadyMentionsSlot) return strategy;
+
+  const slotSentence = "Slot yang kami tawarkan: " + dateLabel + ", jam " + slotLabel + ".";
+  const friendlyClose = "Kalau Kakak tertarik, kami bantu cek ketersediaannya ya.";
+
+  return {
+    ...strategy,
+    whatsappMessage: currentMessage
+      ? currentMessage + " " + slotSentence + " " + friendlyClose
+      : "Halo Kak, kami dari Maiin Gandaria. " + slotSentence + " " + friendlyClose,
+  };
+};
+
 const parseJsonResponse = (text, providerLabel) => {
+  const trimmedText = typeof text === "string" ? text.trim() : "";
+
+  if (!trimmedText) {
+    throw createAiServiceError({
+      errorCode: "AI_GENERATION_FAILED",
+      message: "AI strategy could not be generated.",
+      suggestion: "Please try again or contact IT Support if the issue continues.",
+      technicalMessage: `${providerLabel} returned an empty response.`,
+    });
+  }
+
   try {
-    return JSON.parse(text);
+    return JSON.parse(trimmedText);
   } catch (error) {
+    const jsonMatch = trimmedText.match(/\{[\s\S]*\}/);
+
+    if (jsonMatch) {
+      try {
+        return JSON.parse(jsonMatch[0]);
+      } catch {
+        // fall through to shared error below
+      }
+    }
+
     throw createAiServiceError({
       errorCode: "AI_GENERATION_FAILED",
       message: "AI strategy could not be generated.",
@@ -188,6 +264,26 @@ const parseAzureContent = (payload) => {
   }
 
   return "";
+};
+
+const safeJsonParse = (text) => {
+  const trimmedText = typeof text === "string" ? text.trim() : "";
+
+  if (!trimmedText) return null;
+
+  try {
+    return JSON.parse(trimmedText);
+  } catch {
+    const jsonMatch = trimmedText.match(/\{[\s\S]*\}/);
+
+    if (!jsonMatch) return null;
+
+    try {
+      return JSON.parse(jsonMatch[0]);
+    } catch {
+      return null;
+    }
+  }
 };
 
 const generateWithGemini = async (strategyContext) => {
@@ -225,11 +321,16 @@ const generateWithGemini = async (strategyContext) => {
     });
 
     rawText =
-      typeof response?.text === "function"
-        ? await response.text()
-        : typeof response?.text === "string"
-          ? response.text
-          : "";
+      typeof response?.text === "string"
+        ? response.text
+        : typeof response?.text === "function"
+          ? await response.text()
+          : Array.isArray(response?.candidates?.[0]?.content?.parts)
+            ? response.candidates[0].content.parts
+                .map((part) => (typeof part?.text === "string" ? part.text : ""))
+                .join("")
+                .trim()
+            : "";
   } catch (error) {
     throw createAiServiceError({
       errorCode: "AI_GENERATION_FAILED",
@@ -239,12 +340,27 @@ const generateWithGemini = async (strategyContext) => {
     });
   }
 
-  const parsed = parseJsonResponse(rawText, "Gemini");
+  const parsed = (() => {
+    try {
+      return parseJsonResponse(rawText, "Gemini");
+    } catch {
+      return null;
+    }
+  })();
+
+  if (!parsed) {
+    throw createAiServiceError({
+      errorCode: "AI_GENERATION_FAILED",
+      message: "AI strategy could not be generated.",
+      suggestion: "Please try again or contact IT Support if the issue continues.",
+      technicalMessage: "Gemini returned invalid JSON.",
+    });
+  }
 
   return {
     provider: "gemini",
     model: env.geminiModel,
-    strategy: normalizeStrategy(parsed),
+    strategy: ensureOutreachSlotInWhatsappMessage(normalizeStrategy(parsed), strategyContext),
     rawText,
   };
 };
@@ -309,12 +425,21 @@ const generateWithAzure = async (strategyContext) => {
   }
 
   const rawText = parseAzureContent(payload);
-  const parsed = parseJsonResponse(rawText, "Azure OpenAI");
+  const parsed = safeJsonParse(rawText);
+
+  if (!parsed) {
+    throw createAiServiceError({
+      errorCode: "AI_GENERATION_FAILED",
+      message: "AI strategy could not be generated.",
+      suggestion: "Please try again or contact IT Support if the issue continues.",
+      technicalMessage: "Azure OpenAI returned invalid JSON.",
+    });
+  }
 
   return {
     provider: "azure",
     model: env.azureOpenAiDeployment,
-    strategy: normalizeStrategy(parsed),
+    strategy: ensureOutreachSlotInWhatsappMessage(normalizeStrategy(parsed), strategyContext),
     rawText,
   };
 };

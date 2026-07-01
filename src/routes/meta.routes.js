@@ -128,11 +128,54 @@ metaRouter.get(
         select: { startedAt: true, status: true, message: true },
       });
 
-      const media = await prisma.instagramMedia.findMany({
-        include: { insights: true },
-        orderBy: { postedAt: "desc" },
-        take: 100,
-      });
+      const [media, accountReachInsights, accountInteractionInsights, accountProfileViewInsights] = await Promise.all([
+        prisma.instagramMedia.findMany({
+          include: { insights: true },
+          orderBy: { postedAt: "desc" },
+          take: 100,
+        }),
+        prisma.instagramAccountInsight.findMany({
+          where: {
+            metricName: "reach",
+            insightDate: {
+              gte: startDate,
+              lte: endDate,
+            },
+          },
+          orderBy: { insightDate: "asc" },
+        }),
+        prisma.instagramAccountInsight.findMany({
+          where: {
+            metricName: {
+              in: ["total_interactions", "accounts_engaged"],
+            },
+            insightDate: {
+              gte: startDate,
+              lte: endDate,
+            },
+          },
+          orderBy: { insightDate: "asc" },
+        }),
+        prisma.instagramAccountInsight.findMany({
+          where: {
+            metricName: "profile_views",
+            insightDate: {
+              gte: startDate,
+              lte: endDate,
+            },
+          },
+          orderBy: { insightDate: "asc" },
+        }),
+      ]);
+
+      const preferredAccountInteractionMetric = accountInteractionInsights.some(
+        (insight) => insight.metricName === "total_interactions"
+      )
+        ? "total_interactions"
+        : "accounts_engaged";
+      const selectedAccountInteractionInsights = accountInteractionInsights.filter(
+        (insight) => insight.metricName === preferredAccountInteractionMetric
+      );
 
       const allInsights = media.flatMap((item) =>
         item.insights
@@ -152,36 +195,107 @@ metaRouter.get(
           .reduce((sum, insight) => sum + Number(insight.metricValue || 0), 0);
 
       const totalViews = sumMetric("views") || sumMetric("impressions") || sumMetric("plays");
-      const totalReach = sumMetric("reach");
+      const mediaReach = sumMetric("reach");
+      const accountReach = accountReachInsights.reduce(
+        (sum, insight) => sum + Number(insight.metricValue || 0),
+        0
+      );
+      const totalReach = accountReach || mediaReach;
       const totalLikes = sumMetric("likes");
       const totalComments = sumMetric("comments");
       const totalShares = sumMetric("shares");
       const totalSaved = sumMetric("saved");
-      const totalInteractions =
+      const totalProfileViews = accountProfileViewInsights.reduce(
+        (sum, insight) => sum + Number(insight.metricValue || 0),
+        0
+      );
+      const mediaInteractions =
         sumMetric("total_interactions") || totalLikes + totalComments + totalShares + totalSaved;
+      const accountInteractions = selectedAccountInteractionInsights.reduce(
+        (sum, insight) => sum + Number(insight.metricValue || 0),
+        0
+      );
+      const allMediaInsightRows = media.flatMap((item) => item.insights || []);
+      const fallbackMediaTotalInteractions = allMediaInsightRows
+        .filter((insight) => insight.metricName === "total_interactions")
+        .reduce((sum, insight) => sum + Number(insight.metricValue || 0), 0);
+      const fallbackMediaComponentInteractions = allMediaInsightRows
+        .filter((insight) => ["likes", "comments", "shares", "saved"].includes(insight.metricName))
+        .reduce((sum, insight) => sum + Number(insight.metricValue || 0), 0);
+      const fallbackMediaInteractions = fallbackMediaTotalInteractions || fallbackMediaComponentInteractions;
+      const totalInteractions = accountInteractions || mediaInteractions || fallbackMediaInteractions;
       const engagementRate = totalReach > 0 ? Number(((totalInteractions / totalReach) * 100).toFixed(2)) : 0;
       const shareRate = totalReach > 0 ? Number(((totalShares / totalReach) * 100).toFixed(2)) : 0;
+      const saveRate = totalReach > 0 ? Number(((totalSaved / totalReach) * 100).toFixed(2)) : 0;
+      const profileVisitRate = totalReach > 0 ? Number(((totalProfileViews / totalReach) * 100).toFixed(2)) : 0;
 
       const trendMap = {};
+
+      accountReachInsights.forEach((insight) => {
+        const date = new Date(insight.insightDate).toISOString().slice(0, 10);
+        const value = Number(insight.metricValue || 0);
+
+        if (!trendMap[date]) {
+          trendMap[date] = { date, reach: 0, views: 0, interactions: 0, profileViews: 0 };
+        }
+
+        trendMap[date].reach += value;
+      });
+
+      selectedAccountInteractionInsights.forEach((insight) => {
+        const date = new Date(insight.insightDate).toISOString().slice(0, 10);
+        const value = Number(insight.metricValue || 0);
+
+        if (!trendMap[date]) {
+          trendMap[date] = { date, reach: 0, views: 0, interactions: 0, profileViews: 0 };
+        }
+
+        trendMap[date].interactions += value;
+      });
+
+      accountProfileViewInsights.forEach((insight) => {
+        const date = new Date(insight.insightDate).toISOString().slice(0, 10);
+        const value = Number(insight.metricValue || 0);
+
+        if (!trendMap[date]) {
+          trendMap[date] = { date, reach: 0, views: 0, interactions: 0, profileViews: 0 };
+        }
+
+        trendMap[date].profileViews += value;
+      });
 
       allInsights.forEach((insight) => {
         const date = new Date(insight.insightDate).toISOString().slice(0, 10);
         const value = Number(insight.metricValue || 0);
 
         if (!trendMap[date]) {
-          trendMap[date] = { date, reach: 0, views: 0, interactions: 0 };
+          trendMap[date] = { date, reach: 0, views: 0, interactions: 0, profileViews: 0 };
         }
 
-        if (insight.metricName === "reach") trendMap[date].reach += value;
+        if (!accountReachInsights.length && insight.metricName === "reach") trendMap[date].reach += value;
         if (["views", "impressions", "plays"].includes(insight.metricName)) trendMap[date].views += value;
-        if (["total_interactions", "likes", "comments", "shares", "saved"].includes(insight.metricName)) {
+        if (!selectedAccountInteractionInsights.length && ["total_interactions", "likes", "comments", "shares", "saved"].includes(insight.metricName)) {
           trendMap[date].interactions += value;
         }
       });
 
-      const trend = Object.values(trendMap).sort((a, b) => a.date.localeCompare(b.date));
+      const trend = Object.values(trendMap)
+        .map((item) => {
+          const fallbackInteractions =
+            !selectedAccountInteractionInsights.length && !item.interactions && fallbackMediaInteractions > 0 && totalReach > 0
+              ? (item.reach / totalReach) * fallbackMediaInteractions
+              : 0;
+          const interactions = item.interactions || fallbackInteractions;
 
-      const topContent = media
+          return {
+            ...item,
+            interactions,
+            engagementRate: item.reach > 0 ? Number(((interactions / item.reach) * 100).toFixed(2)) : 0,
+          };
+        })
+        .sort((a, b) => a.date.localeCompare(b.date));
+
+      const contentPerformance = media
         .map((item) => {
           const itemInsights = item.insights.filter((insight) => {
             const insightDate = new Date(insight.insightDate);
@@ -201,6 +315,8 @@ metaRouter.get(
           const saved = getMetric("saved");
           const interactions = getMetric("total_interactions") || likes + comments + shares + saved;
           const localEngagementRate = reach > 0 ? Number(((interactions / reach) * 100).toFixed(2)) : 0;
+          const localShareRate = reach > 0 ? Number(((shares / reach) * 100).toFixed(2)) : 0;
+          const localSaveRate = reach > 0 ? Number(((saved / reach) * 100).toFixed(2)) : 0;
 
           return {
             id: item.id,
@@ -214,29 +330,67 @@ metaRouter.get(
             postedAt: item.postedAt,
             views,
             reach,
+            likes,
+            comments,
             interactions,
             shares,
+            saved,
             engagementRate: localEngagementRate,
+            shareRate: localShareRate,
+            saveRate: localSaveRate,
           };
         })
-        .sort((a, b) => b.views - a.views)
-        .slice(0, 10);
+        .sort((a, b) => b.views - a.views);
+
+      const topContent = contentPerformance.slice(0, 10);
+      const contentMixMap = new Map();
+      contentPerformance.forEach((item) => {
+        const type = item.mediaProductType || item.mediaType || "Unknown";
+        const existing = contentMixMap.get(type) || { type, count: 0, views: 0, reach: 0, interactions: 0 };
+        existing.count += 1;
+        existing.views += item.views;
+        existing.reach += item.reach;
+        existing.interactions += item.interactions;
+        contentMixMap.set(type, existing);
+      });
+
+      const contentMix = Array.from(contentMixMap.values())
+        .map((item) => ({
+          ...item,
+          engagementRate: item.reach > 0 ? Number(((item.interactions / item.reach) * 100).toFixed(2)) : 0,
+        }))
+        .sort((a, b) => b.views - a.views);
+      const topContentType = contentMix[0]?.type || "-";
+      const contentInteractionTotal = contentPerformance.reduce((sum, item) => sum + item.interactions, 0);
+      const averageInteractionsPerContent = contentPerformance.length
+        ? Number((contentInteractionTotal / contentPerformance.length).toFixed(1))
+        : 0;
 
       return res.json({
         success: true,
         data: {
           configured: hasMetaCredentials(),
-          hasData: Boolean(media.length || allInsights.length),
+          hasData: Boolean(media.length || allInsights.length || accountReachInsights.length),
           lastSyncedAt: latestSync?.startedAt || null,
           summary: {
             totalViews,
             totalReach,
+            totalProfileViews,
             totalInteractions,
+            totalLikes,
+            totalComments,
             totalShares,
+            totalSaved,
             engagementRate,
             shareRate,
+            saveRate,
+            profileVisitRate,
+            averageInteractionsPerContent,
+            contentCount: contentPerformance.length,
+            topContentType,
           },
           trend,
+          contentMix,
           topContent,
         },
       });
@@ -287,7 +441,7 @@ metaRouter.get(
       const rows = await prisma.instagramAudienceInsight.findMany({
         where: {
           breakdownType: {
-            in: ["gender", "age", "city", "age_gender", "gender_age"],
+            in: ["gender", "age", "city", "country", "age_gender", "gender_age"],
           },
         },
         orderBy: { createdAt: "desc" },
@@ -302,8 +456,8 @@ metaRouter.get(
       const getAgeFromValue = (value) => ageOrder.find((age) => String(value || "").toLowerCase().includes(age)) || "-";
       const getGenderFromValue = (value) => {
         const raw = String(value || "").toLowerCase().trim();
-        if (["f", "female", "perempuan"].includes(raw) || raw.startsWith("f")) return "Perempuan";
-        if (["m", "male", "laki-laki"].includes(raw) || raw.startsWith("m")) return "Laki-laki";
+        if (["f", "female", "perempuan", "cewe", "cewek"].includes(raw) || raw.startsWith("f")) return "Female";
+        if (["m", "male", "laki-laki", "laki laki"].includes(raw) || raw.startsWith("m")) return "Male";
         return "-";
       };
 
@@ -317,6 +471,7 @@ metaRouter.get(
       const genderRows = latestRows.filter((row) => row.breakdownType === "gender");
       const ageRows = latestRows.filter((row) => row.breakdownType === "age");
       const cityRows = latestRows.filter((row) => row.breakdownType === "city");
+      const countryRows = latestRows.filter((row) => row.breakdownType === "country");
       const ageGenderRows = latestRows.filter((row) => {
         const age = getAgeFromValue(row.breakdownValue);
         const gender = getGenderFromValue(row.breakdownValue);
@@ -324,7 +479,9 @@ metaRouter.get(
       });
 
       const genderTotal = genderRows.reduce((sum, row) => sum + toNumber(row.metricValue), 0);
+      const ageTotal = ageRows.reduce((sum, row) => sum + toNumber(row.metricValue), 0);
       const cityTotal = cityRows.reduce((sum, row) => sum + toNumber(row.metricValue), 0);
+      const countryTotal = countryRows.reduce((sum, row) => sum + toNumber(row.metricValue), 0);
 
       const genderDistribution = genderRows
         .map((row) => ({
@@ -335,13 +492,17 @@ metaRouter.get(
         .sort((a, b) => b.value - a.value);
 
       const ageDistribution = ageRows
-        .map((row) => ({ age: row.breakdownValue, value: toNumber(row.metricValue) }))
+        .map((row) => ({
+          age: row.breakdownValue,
+          value: ageTotal > 0 ? formatPercent((toNumber(row.metricValue) / ageTotal) * 100) : 0,
+          total: toNumber(row.metricValue),
+        }))
         .filter((item) => item.age && item.value > 0)
         .sort((a, b) => ageOrder.indexOf(a.age) - ageOrder.indexOf(b.age));
 
       const ageGenderMap = new Map();
       ageOrder.forEach((age) => {
-        ageGenderMap.set(age, { age, "Laki-laki": 0, Perempuan: 0 });
+        ageGenderMap.set(age, { age, Male: 0, Female: 0 });
       });
 
       ageGenderRows.forEach((row) => {
@@ -354,12 +515,36 @@ metaRouter.get(
         ageGenderMap.set(age, existing);
       });
 
+      const ageGenderDistribution = Array.from(ageGenderMap.values()).filter((item) => item.Male > 0 || item.Female > 0);
+      const derivedAgeGenderDistribution = ageGenderDistribution.length
+        ? ageGenderDistribution
+        : ageDistribution.map((item) => {
+            const malePct = genderDistribution.find((gender) => gender.name === "Male")?.value || 0;
+            const femalePct = genderDistribution.find((gender) => gender.name === "Female")?.value || 0;
+            const genderPctTotal = malePct + femalePct;
+            return {
+              age: item.age,
+              Male: genderPctTotal > 0 ? formatPercent(item.value * (malePct / genderPctTotal)) : 0,
+              Female: genderPctTotal > 0 ? formatPercent(item.value * (femalePct / genderPctTotal)) : 0,
+              isEstimated: true,
+            };
+          });
+
       const topCities = cityRows
         .map((row) => ({
           city: row.breakdownValue,
           value: cityTotal > 0 ? formatPercent((toNumber(row.metricValue) / cityTotal) * 100) : 0,
         }))
         .filter((item) => item.city && item.value > 0)
+        .sort((a, b) => b.value - a.value)
+        .slice(0, 5);
+
+      const topCountries = countryRows
+        .map((row) => ({
+          country: row.breakdownValue,
+          value: countryTotal > 0 ? formatPercent((toNumber(row.metricValue) / countryTotal) * 100) : 0,
+        }))
+        .filter((item) => item.country && item.value > 0)
         .sort((a, b) => b.value - a.value)
         .slice(0, 5);
 
@@ -382,8 +567,9 @@ metaRouter.get(
           },
           genderDistribution,
           ageDistribution,
-          ageGenderDistribution: Array.from(ageGenderMap.values()).filter((item) => item["Laki-laki"] > 0 || item.Perempuan > 0),
+          ageGenderDistribution: derivedAgeGenderDistribution,
           topCities,
+          topCountries,
           personaInsight:
             dominantGender !== "-"
               ? `Instagram audience is currently led by ${dominantGender} followers, with ${dominantAgeGroup} as the strongest age band and ${topCity} as the top city.`

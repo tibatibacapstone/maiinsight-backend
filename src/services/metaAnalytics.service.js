@@ -1,7 +1,18 @@
-import { prisma } from "../config/prisma.js";
+﻿import { prisma } from "../config/prisma.js";
 import { metaGet } from "./metaRaw.service.js";
 
 const IG_USER_ID = process.env.META_IG_USER_ID;
+const MEDIA_INSIGHT_METRICS = [
+  "views",
+  "reach",
+  "likes",
+  "comments",
+  "shares",
+  "saved",
+  "total_interactions",
+];
+const MAX_MEDIA_INSIGHTS_PER_SYNC = Number(process.env.META_MAX_MEDIA_INSIGHT_SYNC || 12);
+const STALE_SYNC_MINUTES = Number(process.env.META_STALE_SYNC_MINUTES || 15);
 
 function startOfDay(dateInput = new Date()) {
   const date = new Date(dateInput);
@@ -146,20 +157,22 @@ async function fetchOneMediaMetric(igMediaId, metricName) {
 }
 
 async function saveMediaInsights(media) {
-  const metrics = [
-    "views",
-    "reach",
-    "likes",
-    "comments",
-    "shares",
-    "saved",
-    "total_interactions",
-  ];
-
   const today = startOfDay();
+  const existingMetrics = await prisma.instagramMediaInsight.findMany({
+    where: {
+      mediaId: media.id,
+      insightDate: today,
+      metricName: { in: MEDIA_INSIGHT_METRICS },
+    },
+    select: { metricName: true },
+  });
+  const existingMetricNames = new Set(existingMetrics.map((metric) => metric.metricName));
+  const pendingMetrics = MEDIA_INSIGHT_METRICS.filter(
+    (metricName) => !existingMetricNames.has(metricName)
+  );
   let savedCount = 0;
 
-  for (const metricName of metrics) {
+  for (const metricName of pendingMetrics) {
     const insightResponse = await fetchOneMediaMetric(media.igMediaId, metricName);
 
     if (!insightResponse?.data?.length) {
@@ -292,89 +305,121 @@ async function syncAccountInsights(accountId, since, until) {
 
   savedCount += await saveAccountInsightValues(accountId, profileViews);
 
-  return savedCount;
-}
-
-async function syncAudienceInsights(accountId) {
-  const today = startOfDay();
-
-  const metrics = [
-    "follower_demographics",
-    "reached_audience_demographics",
-    "engaged_audience_demographics",
+  const optionalMetrics = [
+    { metric: "total_interactions", period: "day", metric_type: "total_value", since, until },
+    { metric: "accounts_engaged", period: "day", metric_type: "total_value", since, until },
   ];
 
-  let savedCount = 0;
-
-  for (const metricName of metrics) {
+  for (const params of optionalMetrics) {
     try {
-      const data = await metaGet(`/${IG_USER_ID}/insights`, {
-        metric: metricName,
-        period: "lifetime",
-        metric_type: "total_value",
-        breakdowns: "age,gender,city,country",
-      });
-
-      for (const metric of data.data || []) {
-        const breakdowns = metric.total_value?.breakdowns || [];
-
-        for (const breakdown of breakdowns) {
-          const keys = breakdown.dimension_keys || [];
-          const results = breakdown.results || [];
-
-          for (const result of results) {
-            const values = result.dimension_values || [];
-            const metricValue = result.value?.value ?? result.value ?? null;
-
-            for (let index = 0; index < keys.length; index++) {
-              const breakdownType = keys[index];
-              const breakdownValue = values[index];
-
-              if (!breakdownType || !breakdownValue) continue;
-
-              await prisma.instagramAudienceInsight.upsert({
-                where: {
-                  accountId_metricName_breakdownType_breakdownValue_insightDate_period: {
-                    accountId,
-                    metricName: metric.name,
-                    breakdownType,
-                    breakdownValue,
-                    insightDate: today,
-                    period: metric.period || "lifetime",
-                  },
-                },
-                update: {
-                  metricValue: numberOrNull(metricValue),
-                  rawJson: result,
-                },
-                create: {
-                  accountId,
-                  metricName: metric.name,
-                  breakdownType,
-                  breakdownValue,
-                  metricValue: numberOrNull(metricValue),
-                  period: metric.period || "lifetime",
-                  insightDate: today,
-                  rawJson: result,
-                },
-              });
-
-              savedCount++;
-            }
-          }
-        }
-      }
+      const data = await metaGet("/" + IG_USER_ID + "/insights", params);
+      savedCount += await saveAccountInsightValues(accountId, data);
     } catch (error) {
-      console.warn(`Audience metric ${metricName} failed: ${error.message}`);
+      console.warn("Account metric " + params.metric + " failed: " + error.message);
     }
   }
 
   return savedCount;
 }
 
+async function syncAudienceInsights(accountId) {
+  const today = startOfDay();
+  const requests = [
+    { metric: "follower_demographics", breakdowns: ["age", "gender", "city", "country"] },
+  ];
+
+  let savedCount = 0;
+
+  for (const request of requests) {
+    for (const breakdownName of request.breakdowns) {
+      try {
+        const params = {
+          metric: request.metric,
+          period: "lifetime",
+          metric_type: "total_value",
+          breakdowns: breakdownName,
+        };
+
+        if (request.timeframe) {
+          params.timeframe = request.timeframe;
+        }
+
+        const data = await metaGet("/" + IG_USER_ID + "/insights", params);
+
+        for (const metric of data.data || []) {
+          const breakdowns = metric.total_value?.breakdowns || [];
+
+          for (const breakdown of breakdowns) {
+            const keys = breakdown.dimension_keys || [breakdownName];
+            const results = breakdown.results || [];
+
+            for (const result of results) {
+              const values = result.dimension_values || [];
+              const metricValue = result.value?.value ?? result.value ?? null;
+
+              for (let index = 0; index < keys.length; index++) {
+                const breakdownType = keys[index] || breakdownName;
+                const breakdownValue = values[index];
+
+                if (!breakdownType || !breakdownValue) continue;
+
+                await prisma.instagramAudienceInsight.upsert({
+                  where: {
+                    accountId_metricName_breakdownType_breakdownValue_insightDate_period: {
+                      accountId,
+                      metricName: metric.name,
+                      breakdownType,
+                      breakdownValue,
+                      insightDate: today,
+                      period: metric.period || "lifetime",
+                    },
+                  },
+                  update: {
+                    metricValue: numberOrNull(metricValue),
+                    rawJson: result,
+                  },
+                  create: {
+                    accountId,
+                    metricName: metric.name,
+                    breakdownType,
+                    breakdownValue,
+                    metricValue: numberOrNull(metricValue),
+                    period: metric.period || "lifetime",
+                    insightDate: today,
+                    rawJson: result,
+                  },
+                });
+
+                savedCount++;
+              }
+            }
+          }
+        }
+      } catch (error) {
+        console.warn("Audience metric " + request.metric + " (" + breakdownName + ") failed: " + error.message);
+      }
+    }
+  }
+
+  return savedCount;
+}
 export async function syncMetaRawToAnalytics({ since, until } = {}) {
   const startDate = since || dateString(new Date(Date.now() - 30 * 24 * 60 * 60 * 1000));
   const endDate = until || dateString(new Date());
+  const staleStartedBefore = new Date(Date.now() - STALE_SYNC_MINUTES * 60 * 1000);
+
+  await prisma.metaSyncLog.updateMany({
+    where: {
+      status: "RUNNING",
+      finishedAt: null,
+      startedAt: { lt: staleStartedBefore },
+    },
+    data: {
+      status: "FAILED",
+      message: "Sync was marked failed after becoming stale.",
+      finishedAt: new Date(),
+    },
+  });
 
   const log = await prisma.metaSyncLog.create({
     data: {
@@ -390,8 +435,9 @@ export async function syncMetaRawToAnalytics({ since, until } = {}) {
     const savedMedia = await saveMediaItems(account.id, mediaItems);
 
     let mediaInsightCount = 0;
+    const mediaForInsightSync = savedMedia.slice(0, MAX_MEDIA_INSIGHTS_PER_SYNC);
 
-    for (const media of savedMedia) {
+    for (const media of mediaForInsightSync) {
       mediaInsightCount += await saveMediaInsights(media);
     }
 
@@ -407,7 +453,7 @@ export async function syncMetaRawToAnalytics({ since, until } = {}) {
       where: { id: log.id },
       data: {
         status: "SUCCESS",
-        message: `Synced ${savedMedia.length} media, ${mediaInsightCount} media insights, ${accountInsightCount} account insights, ${audienceInsightCount} audience insights.`,
+        message: `Synced ${savedMedia.length} media, refreshed insights for ${mediaForInsightSync.length} media item(s), ${mediaInsightCount} media insights, ${accountInsightCount} account insights, ${audienceInsightCount} audience insights.`,
         finishedAt: new Date(),
       },
     });
@@ -418,6 +464,7 @@ export async function syncMetaRawToAnalytics({ since, until } = {}) {
       until: endDate,
       mediaCount: savedMedia.length,
       mediaInsightCount,
+      mediaInsightLimit: mediaForInsightSync.length,
       accountInsightCount,
       audienceInsightCount,
     };

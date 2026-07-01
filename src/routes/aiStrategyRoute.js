@@ -12,7 +12,7 @@ aiStrategyRouter.get(
   "/status",
   authenticate,
   authorize("operational", "it_support"),
-  async (req, res, next) => {
+  async (req, res) => {
     try {
       const providerStatus = getAiProviderStatus();
       const latestGeneration = await prisma.activityLog.findFirst({
@@ -40,7 +40,13 @@ aiStrategyRouter.get(
         },
       });
     } catch (error) {
-      next(error);
+      return res.status(500).json({
+        success: false,
+        errorCode: "AI_PROVIDER_STATUS_FAILED",
+        message: "AI provider status could not be loaded.",
+        suggestion: "Please try again or contact IT Support if the issue continues.",
+        technicalMessage: error instanceof Error ? error.message : "AI provider status failed.",
+      });
     }
   }
 );
@@ -49,7 +55,7 @@ aiStrategyRouter.post(
   ["/generate", "/strategy"],
   authenticate,
   authorize("operational", "it_support"),
-  async (req, res, next) => {
+  async (req, res) => {
     const strategyContext = req.body || {};
 
     try {
