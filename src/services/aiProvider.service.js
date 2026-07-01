@@ -454,28 +454,26 @@ const generateWithAzure = async (strategyContext) => {
   };
 };
 
-export const getAiProviderStatus = () => {
-  return (async () => {
-    const provider = await resolveSelectedProvider();
-    const config = await buildConfigSnapshot();
-    const configured =
-      provider === "azure"
-        ? isAzureAiConfigured()
-        : Boolean(config.geminiApiKey || env.geminiApiKey);
+export const getAiProviderStatus = async () => {
+  const provider = await resolveSelectedProvider();
+  const config = await buildConfigSnapshot();
+  const configured =
+    provider === "azure"
+      ? isAzureAiConfigured()
+      : Boolean(config.geminiApiKey || env.geminiApiKey);
 
-    return {
-      provider,
-      providerLabel: provider === "azure" ? "Azure OpenAI" : "Gemini",
-      configured,
-      model: provider === "azure" ? env.azureOpenAiDeployment || null : config.geminiModel || env.geminiModel || null,
-      setupMessage: configured ? null : "AI strategy generation is not configured yet.",
-      suggestion: configured
-        ? null
-        : provider === "azure"
-          ? "Please ask IT Support to configure Azure AI credentials in the environment settings."
-          : "Please ask IT Support to configure Gemini API credentials in the environment settings.",
-    };
-  })();
+  return {
+    provider,
+    providerLabel: provider === "azure" ? "Azure OpenAI" : "Gemini",
+    configured,
+    model: provider === "azure" ? env.azureOpenAiDeployment || null : config.geminiModel || env.geminiModel || null,
+    setupMessage: configured ? null : "AI strategy generation is not configured yet.",
+    suggestion: configured
+      ? null
+      : provider === "azure"
+        ? "Please ask IT Support to configure Azure AI credentials in the environment settings."
+        : "Please ask IT Support to configure Gemini API credentials in the environment settings.",
+  };
 };
 
 export const generateStrategy = async (strategyContext) => {

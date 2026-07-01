@@ -14,7 +14,7 @@ aiStrategyRouter.get(
   authorize("operational", "it_support"),
   async (req, res) => {
     try {
-      const providerStatus = getAiProviderStatus();
+      const providerStatus = await getAiProviderStatus();
       const latestGeneration = await prisma.activityLog.findFirst({
         where: {
           action: "AI_STRATEGY_GENERATED",
@@ -106,7 +106,7 @@ aiStrategyRouter.post(
         },
       });
     } catch (error) {
-      const providerStatus = getAiProviderStatus();
+      const providerStatus = await getAiProviderStatus();
 
       await logActivity(req, "AI_STRATEGY_FAILED", {
         selectedFilters: strategyContext.selected_filters || null,
