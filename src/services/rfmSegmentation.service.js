@@ -185,6 +185,17 @@ const buildSegmentationTransactionWhere = (scope) => {
     bookingType: scope.filterBookingType,
   })
 
+  const rfmEligibleStatuses = [
+    {
+      equals: "payment completed",
+      mode: "insensitive",
+    },
+    {
+      equals: "manual/walk-in",
+      mode: "insensitive",
+    },
+  ]
+
   if (baseWhere.playDate) {
     baseWhere.playDate = {
       ...baseWhere.playDate,
@@ -195,6 +206,23 @@ const buildSegmentationTransactionWhere = (scope) => {
       not: null,
     }
   }
+
+  baseWhere.AND = [
+    ...(Array.isArray(baseWhere.AND) ? baseWhere.AND : []),
+    {
+      validBooking: true,
+    },
+    {
+      netRevenue: {
+        gt: 0,
+      },
+    },
+    {
+      OR: rfmEligibleStatuses.map((status) => ({
+        status,
+      })),
+    },
+  ]
 
   if (baseWhere.bookingEventKey) {
     baseWhere.bookingEventKey = {
@@ -245,6 +273,10 @@ const aggregateCustomerMetrics = (transactions, analysisDate) => {
 
   for (const transaction of transactions) {
     if (!transaction.customerKey || !transaction.playDate || !transaction.bookingEventKey) {
+      continue
+    }
+
+    if (toNumber(transaction.netRevenue) <= 0) {
       continue
     }
 

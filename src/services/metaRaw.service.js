@@ -1,8 +1,6 @@
 import { env } from "../config/env.js";
 import { prisma } from "../config/prisma.js";
-
-const GRAPH_VERSION = env.metaApiVersion;
-const ACCESS_TOKEN = env.metaAccessToken;
+import { buildConfigSnapshot } from "./appConfig.service.js";
 
 function sanitizeParams(params) {
   const cleanParams = { ...params };
@@ -11,13 +9,17 @@ function sanitizeParams(params) {
 }
 
 export async function metaGet(endpoint, params = {}) {
-  if (!ACCESS_TOKEN) {
+  const config = await buildConfigSnapshot();
+  const graphVersion = config.metaGraphVersion || env.metaApiVersion;
+  const accessToken = config.metaAccessToken || env.metaAccessToken;
+
+  if (!accessToken) {
     throw new Error("META_ACCESS_TOKEN is not configured.");
   }
 
   const cleanEndpoint = endpoint.replace(/^\//, "");
   const baseUrl = env.metaApiBaseUrl || "https://graph.facebook.com";
-  const url = new URL(`${baseUrl.replace(/\/$/, "")}/${GRAPH_VERSION}/${cleanEndpoint}`);
+  const url = new URL(`${baseUrl.replace(/\/$/, "")}/${graphVersion}/${cleanEndpoint}`);
 
   Object.entries(params).forEach(([key, value]) => {
     if (value !== undefined && value !== null && value !== "") {
@@ -25,7 +27,7 @@ export async function metaGet(endpoint, params = {}) {
     }
   });
 
-  url.searchParams.set("access_token", ACCESS_TOKEN);
+  url.searchParams.set("access_token", accessToken);
 
   try {
     const response = await fetch(url);

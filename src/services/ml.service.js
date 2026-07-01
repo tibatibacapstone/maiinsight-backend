@@ -296,10 +296,6 @@ const buildCustomerFeatureRows = (transactions) => {
 export const runPlaytimeClustering = async () => {
   const transactions = await prisma.facilityTransaction.findMany({
     where: {
-      status: {
-        equals: "payment completed",
-        mode: "insensitive",
-      },
       startHour: {
         not: null,
       },
@@ -336,7 +332,8 @@ export const runPlaytimeClustering = async () => {
         transaction.tanggalMain &&
         transaction.startHour &&
         transaction.nama &&
-        transaction.sessionKey
+        transaction.sessionKey &&
+        String(transaction.status || "").trim().toLowerCase() === "payment completed"
     )
 
   if (!validTransactions.length) {
@@ -459,11 +456,9 @@ export const runPlaytimeClustering = async () => {
             totalCustomers: summary.totalCustomers,
             avgRatioPagi: summary.avgRatioPagi,
             avgRatioSiang: summary.avgRatioSiang,
-            avgRatioEvening: summary.avgRatioEvening,
             avgRatioMalam: summary.avgRatioMalam,
             avgSesiPagi: summary.avgSesiPagi,
             avgSesiSiang: summary.avgSesiSiang,
-            avgSesiEvening: summary.avgSesiEvening,
             avgSesiMalam: summary.avgSesiMalam,
             avgTotalSesi: summary.avgTotalSesi,
           })),
@@ -475,12 +470,10 @@ export const runPlaytimeClustering = async () => {
             customerName: row.customerName,
             sesiPagi: row.sesiPagi,
             sesiSiang: row.sesiSiang,
-            sesiEvening: row.sesiEvening,
             sesiMalam: row.sesiMalam,
             totalSesi: row.totalSesi,
             ratioPagi: roundNumber(row.ratioPagi),
             ratioSiang: roundNumber(row.ratioSiang),
-            ratioEvening: roundNumber(row.ratioEvening),
             ratioMalam: roundNumber(row.ratioMalam),
             playtimeCluster: row.playtimeCluster,
             playtimeSegment: row.playtimeSegment,

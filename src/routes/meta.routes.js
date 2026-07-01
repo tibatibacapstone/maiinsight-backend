@@ -3,13 +3,17 @@ import express from "express";
 import { prisma } from "../config/prisma.js";
 import { authenticate, authorize } from "../middleware/auth.js";
 import { logActivity } from "../services/activityLog.service.js";
+import { buildConfigSnapshot } from "../services/appConfig.service.js";
 import { syncMetaRawToAnalytics } from "../services/metaAnalytics.service.js";
 import { createNotificationsForRoles } from "../services/notification.service.js";
 
 export const metaRouter = express.Router();
 
-const hasMetaCredentials = () =>
-  Boolean(process.env.META_ACCESS_TOKEN && process.env.META_IG_USER_ID);
+const hasMetaCredentials = async () => {
+  const config = await buildConfigSnapshot();
+  return Boolean(config.metaAccessToken || process.env.META_ACCESS_TOKEN) &&
+    Boolean(config.metaIgUserId || process.env.META_IG_USER_ID);
+};
 
 const buildMetaSetupResponse = () => ({
   success: false,
@@ -26,7 +30,7 @@ metaRouter.get(
   authorize("operational", "management", "it_support"),
   async (req, res, next) => {
     try {
-      const configured = hasMetaCredentials();
+      const configured = await hasMetaCredentials();
       const latestSync = await prisma.metaSyncLog.findFirst({
         orderBy: { startedAt: "desc" },
         select: {
@@ -67,7 +71,7 @@ metaRouter.post(
   authorize("operational", "it_support"),
   async (req, res) => {
     try {
-      if (!hasMetaCredentials()) {
+      if (!(await hasMetaCredentials())) {
         return res.status(400).json(buildMetaSetupResponse());
       }
 
@@ -369,7 +373,7 @@ metaRouter.get(
       return res.json({
         success: true,
         data: {
-          configured: hasMetaCredentials(),
+          configured: await hasMetaCredentials(),
           hasData: Boolean(media.length || allInsights.length || accountReachInsights.length),
           lastSyncedAt: latestSync?.startedAt || null,
           summary: {

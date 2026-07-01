@@ -22,6 +22,33 @@ model User {
   createdAt DateTime      @default(now())
   updatedAt DateTime      @updatedAt
   logs      ActivityLog[]
+  invitesCreated UserInvite[] @relation("InvitesCreatedBy")
+}
+
+model AppSetting {
+  key       String   @id @db.VarChar(100)
+  value     String   @db.Text
+  updatedAt DateTime @updatedAt
+
+  @@map("app_settings")
+}
+
+model UserInvite {
+  id          Int       @id @default(autoincrement())
+  token       String    @unique @db.VarChar(512)
+  email       String    @db.VarChar(191)
+  name        String    @db.VarChar(191)
+  role        Role      @default(operational)
+  createdById Int
+  expiresAt   DateTime
+  usedAt      DateTime?
+  createdAt   DateTime  @default(now())
+
+  createdBy User @relation("InvitesCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+
+  @@index([email])
+  @@index([expiresAt])
+  @@map("user_invites")
 }
 
 model ActivityLog {
