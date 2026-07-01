@@ -22,6 +22,33 @@ model User {
   createdAt DateTime      @default(now())
   updatedAt DateTime      @updatedAt
   logs      ActivityLog[]
+  invitesCreated UserInvite[] @relation("InvitesCreatedBy")
+}
+
+model AppSetting {
+  key       String   @id @db.VarChar(100)
+  value     String   @db.Text
+  updatedAt DateTime @updatedAt
+
+  @@map("app_settings")
+}
+
+model UserInvite {
+  id          Int       @id @default(autoincrement())
+  token       String    @unique @db.VarChar(512)
+  email       String    @db.VarChar(191)
+  name        String    @db.VarChar(191)
+  role        Role      @default(operational)
+  createdById Int
+  expiresAt   DateTime
+  usedAt      DateTime?
+  createdAt   DateTime  @default(now())
+
+  createdBy User @relation("InvitesCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+
+  @@index([email])
+  @@index([expiresAt])
+  @@map("user_invites")
 }
 
 model ActivityLog {
@@ -80,50 +107,86 @@ model RawTransactionTable {
   @@map("raw_transaction_table")
 }
 
+model Customer {
+  id                    Int      @id @default(autoincrement())
+  customerKey           String   @unique @db.VarChar(191)
+  name                  String?  @db.VarChar(191)
+  email                 String?  @db.VarChar(191)
+  phone                 String?  @db.VarChar(50)
+  customerProfile       Json?
+  customerKeyType       String   @db.VarChar(50)
+  customerKeyConfidence Float?   @db.Double
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  facilityTransactions FacilityTransaction[]
+
+  @@map("customers")
+}
+
 model FacilityTransaction {
-  id Int @id @default(autoincrement())
+  id                    Int       @id @default(autoincrement())
+  batchId               Int
+  rawRowId              Int
+  rowNumber             Int
+  orderId               String?   @db.VarChar(100)
+  customerId            Int?
+  customerKey           String    @db.VarChar(191)
+  customerName          String?   @db.VarChar(191)
+  normalizedName        String?   @db.VarChar(191)
+  normalizedEmail       String?   @db.VarChar(191)
+  normalizedPhone       String?   @db.VarChar(50)
+  customerKeyType       String?   @db.VarChar(50)
+  customerKeyConfidence String?   @db.VarChar(50)
+  nama                  String?   @db.VarChar(191)
+  email                 String?   @db.VarChar(191)
+  noTelepon             String?   @db.VarChar(50)
+  customerProfile       String?   @db.VarChar(100)
+  tanggalTransaksi      DateTime?
+  tanggalMain           DateTime?
+  jamMain               String?   @db.VarChar(50)
+  transactionDate       DateTime?
+  playDate              DateTime?
+  playTime              String?   @db.VarChar(50)
+  startHour             String?   @db.VarChar(10)
+  endHour               String?   @db.VarChar(10)
+  durationHours         Float
+  venue                 String?   @db.VarChar(100)
+  lapangan              String?   @db.VarChar(100)
+  court                 String    @db.VarChar(100)
+  courtType             String?   @db.VarChar(50)
+  hargaBersih           Decimal?  @db.Decimal(14, 2)
+  addOns                String?   @db.Text
+  hargaAddOns           Decimal?  @db.Decimal(14, 2)
+  netRevenue            Decimal   @db.Decimal(14, 2)
+  addOnRevenue          Decimal   @db.Decimal(14, 2)
+  tipeVoucher           String?   @db.VarChar(100)
+  hargaVoucher          Decimal?  @db.Decimal(14, 2)
+  voucherDiscount       Decimal   @db.Decimal(14, 2)
+  status                String?   @db.VarChar(100)
+  promoName             String?   @db.VarChar(191)
+  sportPurpose          String?   @db.VarChar(191)
+  description           String?   @db.Text
+  reschedule            String?   @db.VarChar(50)
+  promosi               String?   @db.Text
+  keperluan             String?   @db.VarChar(100)
+  deskripsi             String?   @db.Text
+  period                String?   @db.VarChar(20)
+  playTimeGroup         String?   @db.VarChar(30)
+  bookingType           String    @db.VarChar(50)
+  validBooking          Boolean   @default(false)
+  bookingEventKey       String    @db.VarChar(255)
+  bookingRangeKey       String    @db.VarChar(255)
+  rawData               Json?
+  createdAt             DateTime  @default(now())
 
-  batchId   Int?
-  rowNumber Int?
-
-  orderId         String? @db.VarChar(100)
-  nama            String? @db.VarChar(191)
-  email           String? @db.VarChar(191)
-  noTelepon       String? @db.VarChar(50)
-  customerProfile String? @db.VarChar(100)
-
-  tanggalTransaksi DateTime?
-  tanggalMain      DateTime?
-  jamMain          String?   @db.VarChar(50)
-
-  venue    String? @db.VarChar(100)
-  lapangan String? @db.VarChar(100)
-
-  hargaBersih Decimal? @db.Decimal(14, 2)
-  addOns      String?  @db.Text
-  hargaAddOns Decimal? @db.Decimal(14, 2)
-
-  tipeVoucher  String?  @db.VarChar(100)
-  hargaVoucher Decimal? @db.Decimal(14, 2)
-
-  status     String? @db.VarChar(100)
-  reschedule String? @db.VarChar(50)
-  promosi    String? @db.Text
-  keperluan  String? @db.VarChar(100)
-  deskripsi  String? @db.Text
-
-  period        String? @db.VarChar(20)
-  startHour     Int?
-  playTimeGroup String? @db.VarChar(30)
-
-  rawData Json?
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  batch ImportBatch? @relation(fields: [batchId], references: [id], onDelete: SetNull)
+  batch           ImportBatch      @relation(fields: [batchId], references: [id])
+  customer        Customer?        @relation(fields: [customerId], references: [id])
+  courtHourUsages CourtHourUsage[]
 
   @@index([batchId])
+  @@index([rawRowId])
+  @@index([customerId])
   @@index([orderId])
   @@index([nama])
   @@index([email])
@@ -131,7 +194,112 @@ model FacilityTransaction {
   @@index([tanggalMain])
   @@index([status])
   @@index([playTimeGroup])
+  @@index([playDate])
+  @@index([courtType])
+  @@index([bookingType])
+  @@index([validBooking])
+  @@index([bookingEventKey])
+  @@index([bookingRangeKey])
   @@map("facility_transactions")
+}
+
+model CourtHourUsage {
+  id            Int      @id @default(autoincrement())
+  transactionId Int
+  batchId       Int
+  playDate      DateTime
+  hourStart     String   @db.VarChar(10)
+  court         String   @db.VarChar(100)
+  courtType     String?  @db.VarChar(50)
+  courtHourKey  String   @unique @db.VarChar(191)
+  hourlyRevenue Decimal  @db.Decimal(14, 2)
+  createdAt     DateTime @default(now())
+
+  transaction FacilityTransaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+
+  @@index([transactionId])
+  @@index([batchId])
+  @@index([playDate])
+  @@index([hourStart])
+  @@index([courtType])
+  @@map("court_hour_usages")
+}
+
+model SegmentationRun {
+  id                Int      @id @default(autoincrement())
+  runDate           DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  method            String   @default("RFM_KMEANS") @db.VarChar(50)
+  kValue            Int      @default(0)
+  totalCustomers    Int      @default(0)
+  filterMonth       String?  @db.VarChar(20)
+  filterYear        Int?
+  filterPeriodType  String?  @db.VarChar(10)
+  filterCourtType   String?  @db.VarChar(50)
+  filterBookingType String?  @db.VarChar(50)
+  status            String   @default("running") @db.VarChar(50)
+  errorMessage      String?  @db.Text
+  silhouetteScore   Float?
+  kEvaluation       Json?
+
+  customerScores  CustomerRfmScore[]
+  clusterProfiles ClusterProfile[]
+
+  @@index([runDate])
+  @@index([status])
+  @@index([filterYear, filterMonth, filterPeriodType])
+  @@index([filterCourtType, filterBookingType])
+  @@map("segmentation_runs")
+}
+
+model CustomerRfmScore {
+  id                  Int      @id @default(autoincrement())
+  runId               Int
+  customerKey         String   @db.VarChar(191)
+  customerName        String?  @db.VarChar(191)
+  bookingTypeDominant String?  @db.VarChar(50)
+  recency             Int
+  frequency           Int
+  monetary            Float
+  rScore              Int
+  fScore              Int
+  mScore              Int
+  clusterId           Int
+  segmentName         String   @db.VarChar(100)
+  createdAt           DateTime @default(now())
+
+  run SegmentationRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@unique([runId, customerKey])
+  @@index([runId])
+  @@index([customerKey])
+  @@index([segmentName])
+  @@index([clusterId])
+  @@map("customer_rfm_scores")
+}
+
+model ClusterProfile {
+  id                 Int      @id @default(autoincrement())
+  runId              Int
+  clusterId          Int
+  segmentName        String   @db.VarChar(100)
+  segmentDescription String?  @db.Text
+  labelReason        String?  @db.Text
+  customerCount      Int
+  avgRecency         Float
+  avgFrequency       Float
+  avgMonetary        Float
+  avgRScore          Float?
+  avgFScore          Float?
+  avgMScore          Float?
+  createdAt          DateTime @default(now())
+
+  run SegmentationRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@unique([runId, clusterId])
+  @@index([runId])
+  @@index([segmentName])
+  @@map("cluster_profiles")
 }
 
 model PlaytimeMlRun {
@@ -360,3 +528,5 @@ model MetaSyncLog {
 
   @@map("meta_sync_logs")
 }
+
+

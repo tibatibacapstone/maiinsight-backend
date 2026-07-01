@@ -9,9 +9,12 @@
     "start": "node src/server.js",
     "lint": "eslint src",
     "test": "node --test",
+    "test:watch": "node --test --watch",
     "seed": "node prisma/seed.js",
     "prisma:generate": "prisma generate",
-    "prisma:push": "prisma db push"
+    "prisma:push": "prisma db push",
+    "prisma:migrate:dev": "prisma migrate dev",
+    "prisma:migrate:deploy": "prisma migrate deploy"
   },
   "keywords": [
     "express",
@@ -38,7 +41,10 @@
     "jsonwebtoken": "^9.0.2",
     "morgan": "^1.10.0",
     "multer": "^2.1.1",
-    "node-cron": "^4.2.1"
+    "mysql2": "^3.22.5",
+    "node-cron": "^4.2.1",
+    "nodemailer": "^9.0.3",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "@eslint/js": "^9.19.0",
