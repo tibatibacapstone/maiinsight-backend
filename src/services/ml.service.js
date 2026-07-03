@@ -2,9 +2,9 @@ import { prisma } from "../config/prisma.js"
 
 const DAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
 const SESSION_DEFINITIONS = [
-  { key: "Pagi", label: "Morning", startHour: 6, endHour: 11, segment: "Morning Player" },
-  { key: "Siang", label: "Afternoon", startHour: 12, endHour: 15, segment: "Afternoon Player" },
-  { key: "Evening", label: "Evening", startHour: 16, endHour: 18, segment: "Evening Player" },
+  { key: "Pagi", label: "Morning", startHour: 6, endHour: 10, segment: "Morning Player" },
+  { key: "Siang", label: "Afternoon", startHour: 11, endHour: 14, segment: "Afternoon Player" },
+  { key: "Evening", label: "Evening", startHour: 15, endHour: 18, segment: "Evening Player" },
   { key: "Malam", label: "Night", startHour: 19, endHour: 23, segment: "Night Player" },
 ]
 const SESSION_KEYS = SESSION_DEFINITIONS.map((session) => session.key)
@@ -457,9 +457,11 @@ export const runPlaytimeClustering = async () => {
             avgRatioPagi: summary.avgRatioPagi,
             avgRatioSiang: summary.avgRatioSiang,
             avgRatioMalam: summary.avgRatioMalam,
+            avgRatioEvening: summary.avgRatioEvening,
             avgSesiPagi: summary.avgSesiPagi,
             avgSesiSiang: summary.avgSesiSiang,
             avgSesiMalam: summary.avgSesiMalam,
+            avgSesiEvening: summary.avgSesiEvening,
             avgTotalSesi: summary.avgTotalSesi,
           })),
         },
@@ -471,10 +473,12 @@ export const runPlaytimeClustering = async () => {
             sesiPagi: row.sesiPagi,
             sesiSiang: row.sesiSiang,
             sesiMalam: row.sesiMalam,
+            sesiEvening: row.sesiEvening,
             totalSesi: row.totalSesi,
             ratioPagi: roundNumber(row.ratioPagi),
             ratioSiang: roundNumber(row.ratioSiang),
             ratioMalam: roundNumber(row.ratioMalam),
+            ratioEvening: roundNumber(row.ratioEvening),
             playtimeCluster: row.playtimeCluster,
             playtimeSegment: row.playtimeSegment,
             activityLevel: row.activityLevel,

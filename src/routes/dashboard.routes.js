@@ -7,6 +7,7 @@ import {
   buildOccupancyTrendPeriods,
   EXCLUDED_IMPORT_BATCH_FILE_NAMES,
   getAvailableCourtHours,
+    buildCustomRangeOccupancyPeriods,
   getCourtCount,
   getPreviousComparisonRange,
   normalizeCourtTypeFilter,
@@ -45,9 +46,9 @@ const buildSelectedFilters = (query) => ({
 });
 
 const SESSION_DEFINITIONS = [
-  { name: "Morning", startHour: 6, endHour: 11 },
-  { name: "Afternoon", startHour: 12, endHour: 15 },
-  { name: "Evening", startHour: 16, endHour: 18 },
+  { name: "Morning", startHour: 6, endHour: 10 },
+  { name: "Afternoon", startHour: 11, endHour: 14 },
+  { name: "Evening", startHour: 15, endHour: 18 },
   { name: "Night", startHour: 19, endHour: 23 },
 ];
 const EARLY_MONTH_REFERENCE_THRESHOLD_DAYS = 7;
@@ -289,6 +290,74 @@ dashboardRouter.get("/notifications", authorize("operational", "it_support"), as
     next(error);
   }
 });
+dashboardRouter.get(
+  "/playtime-mix",
+  authorize("operational", "management", "it_support"),
+  async (req, res, next) => {
+    try {
+      const filters = buildSelectedFilters(req.query);
+      const courtType = normalizeCourtTypeFilter(filters.venue);
+      const selectedRange = resolveSelectedDateRange({
+        selectedYear: filters.year,
+        selectedMonth: filters.month,
+        periodType: filters.periodType,
+      });
+
+      if (!selectedRange) {
+        return res.json({
+          success: true,
+          message: "Playtime mix fetched successfully.",
+          data: { sessionByTime: [], totalSessions: 0, totalCustomers: 0 },
+        });
+      }
+
+      const transactionWhere = buildFacilityTransactionWhere({
+        startDate: selectedRange.startDate,
+        endDate: selectedRange.endDate,
+        courtType,
+        customerType: filters.customerType,
+        bookingType: filters.bookingType,
+      });
+
+      const transactions = await prisma.facilityTransaction.findMany({
+        where: transactionWhere,
+        select: {
+          startHour: true,
+          nama: true,
+        },
+      });
+
+      const sessionCounts = { Morning: 0, Afternoon: 0, Evening: 0, Night: 0 };
+      const customerSet = new Set();
+
+      transactions.forEach((tx) => {
+        const sessionName = resolveSessionNameByHour(tx.startHour);
+        if (!sessionName) return;
+        sessionCounts[sessionName] += 1;
+        if (tx.nama) customerSet.add(tx.nama);
+      });
+
+      const sessionByTime = SESSION_DEFINITIONS
+        .filter((session) => sessionCounts[session.name] > 0)
+        .map((session) => ({
+          play_time_group: session.name,
+          session_count: sessionCounts[session.name],
+        }));
+
+      return res.json({
+        success: true,
+        message: "Playtime mix fetched successfully.",
+        data: {
+          sessionByTime,
+          totalSessions: transactions.length,
+          totalCustomers: customerSet.size,
+        },
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
 
 dashboardRouter.get(
   "/data-center",
@@ -619,11 +688,17 @@ dashboardRouter.get(
     try {
       const filters = buildSelectedFilters(req.query);
       const courtType = normalizeCourtTypeFilter(filters.venue);
-      const trendPeriods = buildOccupancyTrendPeriods({
-        selectedYear: filters.year,
-        selectedMonth: filters.month,
-        periodType: filters.periodType,
-      });
+
+      const trendPeriods = (req.query.startDate && req.query.endDate)
+        ? buildCustomRangeOccupancyPeriods({
+            startDate: req.query.startDate,
+            endDate: req.query.endDate,
+          })
+        : buildOccupancyTrendPeriods({
+            selectedYear: filters.year,
+            selectedMonth: filters.month,
+            periodType: filters.periodType,
+          });
 
       const courtCount = getCourtCount(courtType);
 

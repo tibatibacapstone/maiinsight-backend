@@ -330,14 +330,16 @@ model PlaytimeCustomerSegment {
 
   customerName String @db.VarChar(191)
 
-  sesiPagi  Int
-  sesiSiang Int
-  sesiMalam Int
-  totalSesi Int
+  sesiPagi    Int
+  sesiSiang   Int
+  sesiEvening Int @default(0)
+  sesiMalam   Int
+  totalSesi   Int
 
-  ratioPagi  Float
-  ratioSiang Float
-  ratioMalam Float
+  ratioPagi    Float
+  ratioSiang   Float
+  ratioEvening Float @default(0)
+  ratioMalam   Float
 
   playtimeCluster Int
   playtimeSegment String  @db.VarChar(100)
@@ -360,14 +362,16 @@ model PlaytimeSegmentSummary {
 
   totalCustomers Int
 
-  avgRatioPagi  Float
-  avgRatioSiang Float
-  avgRatioMalam Float
+  avgRatioPagi    Float
+  avgRatioSiang   Float
+  avgRatioEvening Float @default(0)
+  avgRatioMalam   Float
 
-  avgSesiPagi  Float
-  avgSesiSiang Float
-  avgSesiMalam Float
-  avgTotalSesi Float
+  avgSesiPagi    Float
+  avgSesiSiang   Float
+  avgSesiEvening Float @default(0)
+  avgSesiMalam   Float
+  avgTotalSesi   Float
 
   run PlaytimeMlRun @relation(fields: [runId], references: [id], onDelete: Cascade)
 

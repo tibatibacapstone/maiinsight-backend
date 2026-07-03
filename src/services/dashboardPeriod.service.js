@@ -319,6 +319,59 @@ export const buildCourtHourUsageWhere = ({
 
   return where
 }
+export const buildCustomRangeOccupancyPeriods = ({ startDate, endDate }) => {
+  const safeStartDate = startOfDay(new Date(startDate))
+  const safeEndDate = endOfDay(new Date(endDate))
+
+  if (Number.isNaN(safeStartDate.getTime()) || Number.isNaN(safeEndDate.getTime()) || safeStartDate > safeEndDate) {
+    return []
+  }
+
+  const totalDays = Math.round((safeEndDate.getTime() - safeStartDate.getTime()) / 86400000) + 1
+
+  // Daily buckets for short ranges (<= 62 days), otherwise monthly buckets
+  if (totalDays <= 62) {
+    const days = []
+    const cursor = new Date(safeStartDate)
+
+    while (cursor <= safeEndDate) {
+      const dayStart = startOfDay(cursor)
+      const dayEnd = endOfDay(cursor)
+
+      days.push({
+        label: `${cursor.getDate()} ${MONTH_LABELS[cursor.getMonth()]}`,
+        date: formatIsoDate(dayStart),
+        startDate: dayStart,
+        endDate: dayEnd,
+      })
+
+      cursor.setDate(cursor.getDate() + 1)
+    }
+
+    return days
+  }
+
+  const months = []
+  const cursor = new Date(safeStartDate.getFullYear(), safeStartDate.getMonth(), 1)
+
+  while (cursor <= safeEndDate) {
+    const monthStart = startOfDay(new Date(cursor.getFullYear(), cursor.getMonth(), 1))
+    const rawMonthEnd = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 0, 23, 59, 59, 999)
+    const monthEnd = rawMonthEnd > safeEndDate ? safeEndDate : rawMonthEnd
+    const effectiveStart = monthStart < safeStartDate ? safeStartDate : monthStart
+
+    months.push({
+      label: `${MONTH_LABELS[cursor.getMonth()]} ${String(cursor.getFullYear()).slice(2)}`,
+      month: MONTH_LABELS[cursor.getMonth()],
+      startDate: effectiveStart,
+      endDate: monthEnd,
+    })
+
+    cursor.setMonth(cursor.getMonth() + 1)
+  }
+
+  return months
+}
 
 export const buildOccupancyTrendPeriods = ({
   selectedYear,

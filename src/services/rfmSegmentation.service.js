@@ -187,12 +187,11 @@ const buildSegmentationTransactionWhere = (scope) => {
 
   const rfmEligibleStatuses = [
     {
-      equals: "payment completed",
-      mode: "insensitive",
+      equals: "Payment Completed",
+
     },
     {
-      equals: "manual/walk-in",
-      mode: "insensitive",
+      equals: "Manual/Walk-in",
     },
   ]
 

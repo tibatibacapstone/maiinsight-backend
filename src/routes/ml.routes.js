@@ -6,9 +6,9 @@ import { runPlaytimeClustering } from "../services/ml.service.js"
 
 const DAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
 const SESSION_WINDOWS = [
-  { key: "Pagi", label: "Morning", startHour: 6, endHour: 11 },
-  { key: "Siang", label: "Afternoon", startHour: 12, endHour: 15 },
-  { key: "Evening", label: "Evening", startHour: 16, endHour: 18 },
+  { key: "Pagi", label: "Morning", startHour: 6, endHour: 10 },
+  { key: "Siang", label: "Afternoon", startHour: 11, endHour: 14 },
+  { key: "Evening", label: "Evening", startHour: 15, endHour: 18 },
   { key: "Malam", label: "Night", startHour: 19, endHour: 23 },
 ]
 

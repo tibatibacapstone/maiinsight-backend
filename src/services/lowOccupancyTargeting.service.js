@@ -2,9 +2,9 @@ import { prisma } from "../config/prisma.js"
 import { buildCourtHourUsageWhere } from "./dashboardPeriod.service.js"
 
 const SESSION_DEFINITIONS = [
-  { name: "Morning", startHour: 6, endHour: 11 },
-  { name: "Afternoon", startHour: 12, endHour: 15 },
-  { name: "Evening", startHour: 16, endHour: 18 },
+  { name: "Morning", startHour: 6, endHour: 10 },
+  { name: "Afternoon", startHour: 11, endHour: 14 },
+  { name: "Evening", startHour: 15, endHour: 18 },
   { name: "Night", startHour: 19, endHour: 23 },
 ]
 
