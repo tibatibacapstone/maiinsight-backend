@@ -11,6 +11,14 @@ const SESSION_KEYS = SESSION_DEFINITIONS.map((session) => session.key)
 const MAX_KMEANS_ITERATIONS = 100
 const DEFAULT_CLUSTER_COUNT = 3
 
+const isValidBookingStatus = (status) => {
+  const normalizedStatus = String(status || "").trim().toLowerCase()
+  return (
+    normalizedStatus === "payment completed" ||
+    normalizedStatus === "manual/walk-in"
+  )
+}
+
 const roundNumber = (value, digits = 6) => Number(Number(value || 0).toFixed(digits))
 
 const normalizeFeatureVectors = (rows, featureKeys) => {
@@ -294,30 +302,46 @@ const buildCustomerFeatureRows = (transactions) => {
 }
 
 export const runPlaytimeClustering = async () => {
-  const transactions = await prisma.facilityTransaction.findMany({
-    where: {
-      startHour: {
-        not: null,
-      },
-      nama: {
-        not: null,
-      },
-      batch: {
-        fileName: {
-          not: "tmp-upload-sample.csv",
-        },
-      },
-    },
-    select: {
-      id: true,
-      nama: true,
-      tanggalMain: true,
-      startHour: true,
-      status: true,
+  const mlRun = await prisma.playtimeMlRun.create({
+    data: {
+      period: "all",
+      algorithm: "Deterministic KMeans (4-session)",
+      clusterCount: 0,
+      totalCustomers: 0,
+      totalSessions: 0,
+      status: "running",
+      errorMessage: null,
+      sessionByTime: [],
+      heatmapData: [],
+      topHourData: [],
     },
   })
 
-  const validTransactions = transactions
+  try {
+    const transactions = await prisma.facilityTransaction.findMany({
+      where: {
+        startHour: {
+          not: null,
+        },
+        nama: {
+          not: null,
+        },
+        batch: {
+          fileName: {
+            not: "tmp-upload-sample.csv",
+          },
+        },
+      },
+      select: {
+        id: true,
+        nama: true,
+        tanggalMain: true,
+        startHour: true,
+        status: true,
+      },
+    })
+
+    const validTransactions = transactions
     .map((transaction) => {
       const hour = parseHourValue(transaction.startHour)
       const sessionDefinition = hour === null ? null : resolveSessionDefinitionByHour(hour)
@@ -333,7 +357,7 @@ export const runPlaytimeClustering = async () => {
         transaction.startHour &&
         transaction.nama &&
         transaction.sessionKey &&
-        String(transaction.status || "").trim().toLowerCase() === "payment completed"
+        isValidBookingStatus(transaction.status)
     )
 
   if (!validTransactions.length) {
@@ -437,10 +461,9 @@ export const runPlaytimeClustering = async () => {
     activityLevel: getActivityLevel(row.totalSesi, q75, q95),
   }))
 
-  const run = await prisma.playtimeMlRun.create({
+  const run = await prisma.playtimeMlRun.update({
+    where: { id: mlRun.id },
     data: {
-      period: "all",
-      algorithm: "Deterministic KMeans (4-session)",
       clusterCount: clusteringResult.kValue,
       totalCustomers: finalCustomerRows.length,
       totalSessions: validTransactions.length,
@@ -494,6 +517,22 @@ export const runPlaytimeClustering = async () => {
     totalCustomers: finalCustomerRows.length,
     totalSessions: validTransactions.length,
     clusterCount: clusteringResult.kValue,
+  }
+  } catch (error) {
+    const errorMessage =
+      error instanceof Error
+        ? error.message
+        : "Machine learning run failed due to an unexpected error."
+
+    await prisma.playtimeMlRun.update({
+      where: { id: mlRun.id },
+      data: {
+        status: "failed",
+        errorMessage,
+      },
+    })
+
+    throw error
   }
 }
 

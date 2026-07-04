@@ -371,6 +371,8 @@ dashboardRouter.get(
         totalCourtHourUsages,
         completedBatches,
         failedBatches,
+        aiStrategySuggestionCount,
+        metaMediaCount,
         latestBatch,
       ] = await Promise.all([
         prisma.importBatch.count({
@@ -425,6 +427,12 @@ dashboardRouter.get(
             },
           },
         }),
+        prisma.activityLog.count({
+          where: {
+            action: "AI_STRATEGY_GENERATED",
+          },
+        }),
+        prisma.instagramMedia.count(),
         prisma.importBatch.findFirst({
           where: {
             fileName: {
@@ -455,6 +463,8 @@ dashboardRouter.get(
           totalCourtHourUsages,
           completedBatches,
           failedBatches,
+          aiStrategySuggestionCount,
+          metaMediaCount,
           latestBatch,
         },
       });
