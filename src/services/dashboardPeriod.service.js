@@ -319,7 +319,7 @@ export const buildCourtHourUsageWhere = ({
 
   return where
 }
-export const buildCustomRangeOccupancyPeriods = ({ startDate, endDate }) => {
+export const buildCustomRangeOccupancyPeriods = ({ startDate, endDate, forceDaily = false }) => {
   const safeStartDate = startOfDay(new Date(startDate))
   const safeEndDate = endOfDay(new Date(endDate))
 
@@ -329,8 +329,10 @@ export const buildCustomRangeOccupancyPeriods = ({ startDate, endDate }) => {
 
   const totalDays = Math.round((safeEndDate.getTime() - safeStartDate.getTime()) / 86400000) + 1
 
-  // Daily buckets for short ranges (<= 62 days), otherwise monthly buckets
-  if (totalDays <= 62) {
+  // Daily buckets for short ranges (<= 62 days), otherwise monthly buckets.
+  // When `forceDaily` is true (e.g. management report wants per-date granularity),
+  // always emit one bucket per day in the range.
+  if (forceDaily || totalDays <= 62) {
     const days = []
     const cursor = new Date(safeStartDate)
 

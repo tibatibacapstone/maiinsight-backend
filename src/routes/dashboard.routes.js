@@ -359,6 +359,166 @@ dashboardRouter.get(
   }
 );
 
+// ⬅️ NEW: Empty Slot Heatmap derived from actual court-hour-usage data
+// (replaces the previous ML playtime source).
+const HEATMAP_DAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+const HEATMAP_SESSION_DEFINITIONS = [
+  { name: "Morning", startHour: 6, endHour: 11 },
+  { name: "Afternoon", startHour: 12, endHour: 15 },
+  { name: "Evening", startHour: 16, endHour: 18 },
+  { name: "Night", startHour: 19, endHour: 23 },
+]
+
+const getHeatmapSessionNameByHour = (hourValue) => {
+  const hour = Number(String(hourValue ?? "").split(":")[0])
+  if (!Number.isFinite(hour)) return null
+  return (
+    HEATMAP_SESSION_DEFINITIONS.find(
+      (session) => hour >= session.startHour && hour <= session.endHour
+    )?.name || null
+  )
+}
+
+const getHeatmapDayLabel = (date) => {
+  const dayIndex = date.getDay()
+  return HEATMAP_DAY_LABELS[dayIndex] || null
+}
+
+dashboardRouter.get(
+  "/empty-slot-heatmap",
+  authorize("operational", "management", "it_support"),
+  async (req, res, next) => {
+    try {
+      const filters = buildSelectedFilters(req.query)
+      const courtType = normalizeCourtTypeFilter(filters.venue)
+      const selectedRange = resolveSelectedDateRange({
+        selectedYear: filters.year,
+        selectedMonth: filters.month,
+        periodType: filters.periodType,
+      })
+
+      if (!selectedRange) {
+        return res.json({
+          success: true,
+          message: "Empty slot heatmap fetched successfully.",
+          data: { slots: [], mostEmptySlot: null },
+        })
+      }
+
+      const { startDate, endDate } = selectedRange
+      const courtCount = courtType ? 1 : 2
+
+      const baseWhere = {
+        transaction: {
+          batch: {
+            fileName: { notIn: EXCLUDED_IMPORT_BATCH_FILE_NAMES },
+          },
+        },
+      }
+      if (startDate || endDate) {
+        baseWhere.playDate = {}
+        if (startDate) baseWhere.playDate.gte = startDate
+        if (endDate) baseWhere.playDate.lte = endDate
+      }
+      if (courtType) baseWhere.courtType = courtType
+
+      const usageWhere = { ...baseWhere, transaction: { ...baseWhere.transaction } }
+      const normalizedBookingType = (() => {
+        const raw = String(filters.bookingType ?? "all").trim().toLowerCase()
+        if (!raw || raw === "all") return null
+        if (raw === "regular_booking") return "regular_booking"
+        if (raw === "member_internal_booking") return "member_internal_booking"
+        if (raw === "other") return "other"
+        return null
+      })()
+      if (normalizedBookingType) {
+        usageWhere.transaction.bookingType = normalizedBookingType
+      }
+      usageWhere.transaction.validBooking = true
+
+      // Aggregate booked hours per (dayOfWeek, startHour)
+      const usageRows = await prisma.courtHourUsage.findMany({
+        where: usageWhere,
+        select: { playDate: true, hourStart: true },
+      })
+
+      // Compute total available sessions per (dayOfWeek, startHour) by stepping through
+      // the date range and bucketing each day into its weekday, multiplied by courtCount.
+      const availableByKey = new Map()
+      const cursor = startOfDay(startDate)
+      const last = startOfDay(endDate)
+      while (cursor.getTime() <= last.getTime()) {
+        const dayLabel = getHeatmapDayLabel(cursor)
+        if (dayLabel) {
+          for (let hour = 6; hour <= 23; hour += 1) {
+            const key = `${dayLabel}|${String(hour).padStart(2, "0")}:00`
+            availableByKey.set(key, (availableByKey.get(key) || 0) + courtCount)
+          }
+        }
+        cursor.setDate(cursor.getDate() + 1)
+      }
+
+      const bookedByKey = new Map()
+      usageRows.forEach((row) => {
+        if (!row.playDate || !row.hourStart) return
+        const dayLabel = getHeatmapDayLabel(new Date(row.playDate))
+        if (!dayLabel) return
+        const hour = Number(String(row.hourStart).split(":")[0])
+        if (!Number.isFinite(hour)) return
+        const key = `${dayLabel}|${String(hour).padStart(2, "0")}:00`
+        bookedByKey.set(key, (bookedByKey.get(key) || 0) + 1)
+      })
+
+      // Build the slot list: empty count = max(0, available - booked) for each
+      // (day, hour) that had at least one available session in the range.
+      const slots = []
+      for (const [key, available] of availableByKey.entries()) {
+        const [day_short, startHour] = key.split("|")
+        const booked = bookedByKey.get(key) || 0
+        const empty = Math.max(0, available - booked)
+        if (empty <= 0) continue
+        const sessionName = getHeatmapSessionNameByHour(Number(startHour.split(":")[0]))
+        slots.push({
+          day_short,
+          startHour,
+          session_count: empty,
+          session_label: sessionName,
+        })
+      }
+
+      // Find the most-empty slot (largest empty count; break ties by earliest hour then day order)
+      const dayOrder = HEATMAP_DAY_LABELS
+      const mostEmpty = [...slots].sort((left, right) => {
+        if (right.session_count !== left.session_count) {
+          return right.session_count - left.session_count
+        }
+        if (left.startHour !== right.startHour) {
+          return left.startHour.localeCompare(right.startHour)
+        }
+        return dayOrder.indexOf(left.day_short) - dayOrder.indexOf(right.day_short)
+      })[0] || null
+
+      res.json({
+        success: true,
+        message: "Empty slot heatmap fetched successfully.",
+        data: {
+          slots,
+          mostEmptySlot: mostEmpty
+            ? {
+                dayLabel: mostEmpty.day_short,
+                hourLabel: mostEmpty.startHour,
+                sessionLabel: mostEmpty.session_label,
+                sessionCount: mostEmpty.session_count,
+              }
+            : null,
+        },
+      })
+    } catch (error) {
+      next(error)
+    }
+  }
+)
+
 dashboardRouter.get(
   "/data-center",
   authorize("operational", "it_support"),
@@ -703,6 +863,7 @@ dashboardRouter.get(
         ? buildCustomRangeOccupancyPeriods({
             startDate: req.query.startDate,
             endDate: req.query.endDate,
+            forceDaily: String(req.query.bucket || "").toLowerCase() === "daily",
           })
         : buildOccupancyTrendPeriods({
             selectedYear: filters.year,

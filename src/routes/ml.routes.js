@@ -2,7 +2,6 @@ import { Router } from "express"
 
 import { prisma } from "../config/prisma.js"
 import { authenticate, authorize } from "../middleware/auth.js"
-import { runPlaytimeClustering } from "../services/ml.service.js"
 
 const DAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
 const SESSION_WINDOWS = [
@@ -64,12 +63,11 @@ mlRouter.post(
   authorize("operational", "it_support"),
   async (req, res, next) => {
     try {
-      const result = await runPlaytimeClustering()
-
-      res.json({
-        success: true,
-        message: "Playtime clustering completed successfully.",
-        data: result,
+      return res.status(410).json({
+        success: false,
+        errorCode: "PLAYTIME_ML_DISABLED",
+        message: "Play-time machine learning has been disabled.",
+        suggestion: "Please use the historical time-of-day distribution on the dashboard instead.",
       })
     } catch (error) {
       next(error)
