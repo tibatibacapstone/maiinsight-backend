@@ -406,10 +406,11 @@ model InstagramAccount {
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
-  media            InstagramMedia[]
-  accountInsights  InstagramAccountInsight[]
-  snapshots        InstagramAccountSnapshot[]
-  audienceInsights InstagramAudienceInsight[]
+  media                    InstagramMedia[]
+  accountInsights          InstagramAccountInsight[]
+  snapshots                InstagramAccountSnapshot[]
+  audienceInsights         InstagramAudienceInsight[]
+  monthlyMediaPerformances InstagramMonthlyMediaPerformance[]
 
   @@map("instagram_accounts")
 }
@@ -445,6 +446,7 @@ model InstagramMedia {
   rawJson          Json?
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
+  contentLabel String? @default("content_advertisement")
 
   account  InstagramAccount        @relation(fields: [accountId], references: [id], onDelete: Cascade)
   insights InstagramMediaInsight[]
@@ -520,6 +522,45 @@ model InstagramContentSummary {
 
   @@index([mediaId])
   @@map("instagram_content_summaries")
+}
+model InstagramMonthlyMediaPerformance {
+  id            String   @id @default(cuid()) @db.VarChar(30)
+  accountId     String   @db.VarChar(30)
+
+  // Simpan sebagai tanggal awal bulan, contoh: 2026-07-01
+  month         DateTime
+
+  // all, feed, reels
+  contentType   String   @default("all") @db.VarChar(50)
+
+  views         Float    @default(0)
+  reach         Float    @default(0)
+  interactions  Float    @default(0)
+  likes         Float    @default(0)
+  comments      Float    @default(0)
+  shares        Float    @default(0)
+  saved         Float    @default(0)
+  contentCount  Int      @default(0)
+
+  viewsFromFollowers     Float @default(0)
+viewsFromNonFollowers  Float @default(0)
+
+reachFromFollowers    Float @default(0)
+reachFromNonFollowers Float @default(0)
+
+interactionsFromFollowers    Float @default(0)
+interactionsFromNonFollowers Float @default(0)
+
+  rawJson       Json?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  account InstagramAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@unique([accountId, month, contentType])
+  @@index([month])
+  @@index([contentType])
+  @@map("instagram_monthly_media_performances")
 }
 
 model MetaSyncLog {

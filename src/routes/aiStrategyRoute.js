@@ -73,12 +73,15 @@ aiStrategyRouter.post(
       const generatedAt = new Date().toISOString();
 
       await logActivity(req, "AI_STRATEGY_GENERATED", {
-        selectedFilters: strategyContext.selected_filters || null,
-        workspaceMode: strategyContext.selected_filters?.mode || "general",
-        status: "success",
-        provider: result.provider,
-        model: result.model,
-      });
+  jobName: "AI Strategy Engine Sync",
+  selectedFilters: strategyContext.selected_filters || null,
+  workspaceMode: strategyContext.selected_filters?.mode || "general",
+  status: "success",
+  records: 1,
+  provider: result.provider,
+  model: result.model,
+  completedAt: generatedAt,
+})
       await logItSupportActivity(req, "IT_SUPPORT_AI_STRATEGY_GENERATE", {
         selectedFilters: strategyContext.selected_filters || null,
         provider: result.provider,
@@ -109,12 +112,14 @@ aiStrategyRouter.post(
       const providerStatus = await getAiProviderStatus();
 
       await logActivity(req, "AI_STRATEGY_FAILED", {
-        selectedFilters: strategyContext.selected_filters || null,
-        workspaceMode: strategyContext.selected_filters?.mode || "general",
-        status: "failed",
-        provider: providerStatus.provider,
-        technicalMessage: error instanceof Error ? error.message : "AI strategy failed.",
-      }).catch(() => null);
+  jobName: "AI Strategy Engine Sync",
+  selectedFilters: strategyContext.selected_filters || null,
+  workspaceMode: strategyContext.selected_filters?.mode || "general",
+  status: "failed",
+  provider: providerStatus.provider,
+  technicalMessage: error instanceof Error ? error.message : "AI strategy failed.",
+  completedAt: new Date().toISOString(),
+}).catch(() => null);
       await logItSupportActivity(req, "IT_SUPPORT_AI_STRATEGY_FAILED", {
         selectedFilters: strategyContext.selected_filters || null,
         provider: providerStatus.provider,

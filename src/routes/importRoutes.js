@@ -16,6 +16,7 @@ import {
   isSupportedImportFile,
   parseUploadedTransactionFile,
   validateTransactionTemplate,
+  validateTransactionRows,
 } from "../services/importFile.service.js";
 import { EXCLUDED_IMPORT_BATCH_FILE_NAMES } from "../services/dashboardPeriod.service.js";
 
@@ -42,6 +43,24 @@ const upload = multer({
     );
   },
 });
+const createFailedImportHistory = async ({
+  fileName,
+  rowCount = 0,
+  headers = [],
+  message,
+}) => {
+  if (!fileName) return null;
+
+  return prisma.importBatch.create({
+    data: {
+      fileName,
+      rowCount,
+      headers,
+      status: "failed",
+      errorMessage: message || "Import failed.",
+    },
+  });
+};
 
 const handleImportUpload = (req, res, next) => {
   upload.single("file")(req, res, (error) => {
@@ -73,12 +92,13 @@ const parseBatchId = (value) => {
   return Number.isFinite(batchId) && batchId > 0 ? batchId : null;
 };
 
-const findExistingImportByFileName = async (fileName) => {
+const findCompletedImportByFileName = async (fileName) => {
   if (!fileName) return null;
 
   return prisma.importBatch.findFirst({
     where: {
       fileName,
+      status: "completed",
     },
     orderBy: {
       createdAt: "desc",
@@ -222,8 +242,10 @@ router.post(
   handleImportUpload,
   async (req, res) => {
     let batch = null;
+let parsedRecords = [];
+let parsedHeaders = [];
 
-    try {
+try {
       if (!req.file) {
         return res.status(400).json({
           success: false,
@@ -233,23 +255,28 @@ router.post(
         });
       }
 
-      const existingBatch = await findExistingImportByFileName(req.file.originalname);
+     parsedRecords = parseUploadedTransactionFile(req.file);
+parsedHeaders = validateTransactionTemplate(parsedRecords);
 
-      if (existingBatch) {
-        return res.status(409).json({
-          success: false,
-          errorCode: "DUPLICATE_IMPORT_FILE",
-          message: "A transaction file with the same name has already been imported.",
-          suggestion:
-            "Rename the file before uploading, or delete the earlier import batch if this is a corrected replacement.",
-          technicalMessage: `Existing batch ${existingBatch.id} already uses file name ${existingBatch.fileName}.`,
-        });
-      }
+validateTransactionRows(parsedRecords);
 
-      const records = parseUploadedTransactionFile(req.file);
-      const headers = validateTransactionTemplate(records);
+const records = parsedRecords;
+const headers = parsedHeaders;
 
-      batch = await prisma.importBatch.create({
+const existingBatch = await findCompletedImportByFileName(req.file.originalname);
+
+if (existingBatch) {
+  throw createImportError({
+    statusCode: 409,
+    errorCode: "DUPLICATE_IMPORT_FILE",
+    message: "A transaction file with the same name has already been successfully imported.",
+    suggestion:
+      "Rename the file before uploading, or delete the earlier completed import batch if this is a corrected replacement.",
+    technicalMessage: `Existing completed batch ${existingBatch.id} already uses file name ${existingBatch.fileName}.`,
+  });
+}
+
+batch = await prisma.importBatch.create({
         data: {
           fileName: req.file.originalname,
           rowCount: records.length,
@@ -283,24 +310,29 @@ router.post(
 
       const facilityTransactions = [];
       const rowErrors = [];
-
+      let skippedRows = 0;
       rawRows.forEach((rawRow) => {
-        try {
-          facilityTransactions.push(
-            mapRawRowToFacilityTransaction(
-              rawRow.data,
-              batch.id,
-              rawRow.rowNumber,
-              rawRow.id
-            )
-          );
-        } catch (error) {
-          rowErrors.push({
-            rowNumber: rawRow.rowNumber,
-            message: error instanceof Error ? error.message : "Failed to map row.",
-          });
-        }
-      });
+  try {
+    const payload = mapRawRowToFacilityTransaction(
+      rawRow.data,
+      batch.id,
+      rawRow.rowNumber,
+      rawRow.id
+    );
+
+    if (!payload) {
+      skippedRows += 1;
+      return;
+    }
+
+    facilityTransactions.push(payload);
+  } catch (error) {
+    rowErrors.push({
+      rowNumber: rawRow.rowNumber,
+      message: error instanceof Error ? error.message : "Failed to map row.",
+    });
+  }
+});
 
       if (facilityTransactions.length) {
         await prisma.facilityTransaction.createMany({
@@ -353,6 +385,7 @@ router.post(
         batchId: updatedBatch.id,
         fileName: updatedBatch.fileName,
         rowCount: records.length,
+        skippedRows,
         facilityTransactionCount: facilityTransactions.length,
         customerCount: syncSummary.customerCount,
         linkedTransactionCount: syncSummary.linkedTransactionCount,
@@ -372,6 +405,7 @@ router.post(
           headers,
           status: updatedBatch.status,
           facilityTransactionCount: facilityTransactions.length,
+          skippedRows,
           customerCount: syncSummary.customerCount,
           linkedTransactionCount: syncSummary.linkedTransactionCount,
           courtHoursCreated: syncSummary.courtHoursCreated,
@@ -382,16 +416,23 @@ router.post(
       const friendlyFailure = buildFriendlyImportFailure(error);
 
       if (batch?.id) {
-        await prisma.importBatch.update({
-          where: {
-            id: batch.id,
-          },
-          data: {
-            status: "failed",
-            errorMessage: friendlyFailure.message,
-          },
-        }).catch(() => null);
-      }
+  await prisma.importBatch.update({
+    where: {
+      id: batch.id,
+    },
+    data: {
+      status: "failed",
+      errorMessage: friendlyFailure.message,
+    },
+  }).catch(() => null);
+} else if (req.file?.originalname) {
+  await createFailedImportHistory({
+    fileName: req.file.originalname,
+    rowCount: parsedRecords.length || 0,
+    headers: parsedHeaders || [],
+    message: friendlyFailure.message,
+  }).catch(() => null);
+}
 
       if (
         friendlyFailure.technicalMessage?.includes("customerKeyConfidence") ||
@@ -523,10 +564,18 @@ router.get("/batches/:id/rows", authorize("operational", "it_support"), async (r
     }
 
     const batch = await prisma.importBatch.findUnique({
-      where: {
-        id: batchId,
-      },
-    });
+  where: {
+    id: batchId,
+  },
+  select: {
+    id: true,
+    fileName: true,
+    rowCount: true,
+    headers: true,
+    status: true,
+    createdAt: true,
+  },
+});
 
     if (!batch) {
       return res.status(404).json({

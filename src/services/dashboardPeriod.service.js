@@ -193,29 +193,46 @@ export const normalizeBookingTypeFilter = ({
   const explicitBookingType = String(bookingType ?? "").trim().toLowerCase()
 
   if (
-    explicitBookingType === "regular_booking" ||
-    explicitBookingType === "member_internal_booking"
+    explicitBookingType === "membership" ||
+    explicitBookingType === "non_membership" ||
+    explicitBookingType === "internal"
   ) {
     return explicitBookingType
   }
 
-  const legacyCustomerType = String(customerType ?? "").trim().toLowerCase()
+  if (
+    explicitBookingType === "non membership" ||
+    explicitBookingType === "non-member" ||
+    explicitBookingType === "non member"
+  ) {
+    return "non_membership"
+  }
+
+  const selectedCustomerType = String(customerType ?? "").trim().toLowerCase()
 
   if (
-    legacyCustomerType === "membership" ||
-    legacyCustomerType === "regular booking" ||
-    legacyCustomerType === "regular_booking"
+    !selectedCustomerType ||
+    selectedCustomerType === "all" ||
+    selectedCustomerType === "all type"
   ) {
-    return "regular_booking"
+    return null
+  }
+
+  if (selectedCustomerType === "membership") {
+    return "membership"
   }
 
   if (
-    legacyCustomerType === "non membership" ||
-    legacyCustomerType === "manual/walk-in" ||
-    legacyCustomerType === "manual walk-in" ||
-    legacyCustomerType === "member_internal_booking"
+    selectedCustomerType === "non membership" ||
+    selectedCustomerType === "non_membership" ||
+    selectedCustomerType === "non-member" ||
+    selectedCustomerType === "non member"
   ) {
-    return "member_internal_booking"
+    return "non_membership"
+  }
+
+  if (selectedCustomerType === "internal") {
+    return "internal"
   }
 
   return null
@@ -264,9 +281,9 @@ export const buildFacilityTransactionWhere = ({
     where.validBooking = true
   }
 
-  if (courtType) {
-    where.courtType = courtType
-  }
+ if (courtType && courtType !== "all") {
+  where.courtType = courtType
+}
 
   if (normalizedBookingType) {
     where.bookingType = normalizedBookingType
@@ -305,9 +322,9 @@ export const buildCourtHourUsageWhere = ({
     if (endDate) where.playDate.lte = endDate
   }
 
-  if (courtType) {
-    where.courtType = courtType
-  }
+  if (courtType && courtType !== "all") {
+  where.courtType = courtType
+}
 
   if (requireValidBooking) {
     where.transaction.validBooking = true
