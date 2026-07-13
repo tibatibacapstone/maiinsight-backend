@@ -1,4 +1,5 @@
 ﻿import { prisma } from "../config/prisma.js";
+import { buildConfigSnapshot } from "./appConfig.service.js";
 import { metaGet } from "./metaRaw.service.js";
 
 const classifyInstagramContent = (caption = "") => {
@@ -38,7 +39,11 @@ const classifyInstagramContent = (caption = "") => {
   return "content_advertisement";
 };
 
-const IG_USER_ID = process.env.META_IG_USER_ID;
+async function getIgUserId() {
+  const config = await buildConfigSnapshot();
+  return config.metaIgUserId || process.env.META_IG_USER_ID || "";
+}
+
 const MEDIA_INSIGHT_GROUPS = [
   {
     normalizedName: "views",
@@ -92,7 +97,8 @@ function numberOrNull(value) {
 }
 
 async function saveAccountProfile() {
-  const accountData = await metaGet(`/${IG_USER_ID}`, {
+  const igUserId = await getIgUserId();
+  const accountData = await metaGet(`/${igUserId}`, {
     fields: "id,username,name,followers_count,follows_count,media_count",
   });
 
@@ -160,22 +166,38 @@ await prisma.instagramAccountSnapshot.upsert({
 }
 
 async function fetchAllMedia() {
+  const igUserId = await getIgUserId();
   const mediaItems = [];
   let after = null;
   let hasNext = true;
+  let consecutiveErrors = 0;
+  const MAX_CONSECUTIVE_ERRORS = 3;
 
   while (hasNext) {
-    const data = await metaGet(`/${IG_USER_ID}/media`, {
-      fields:
-  "id,caption,media_type,media_product_type,media_url,thumbnail_url,permalink,timestamp,like_count,comments_count",
-      limit: 100,
-      after,
-    });
+    try {
+      const data = await metaGet(`/${igUserId}/media`, {
+        fields:
+    "id,caption,media_type,media_product_type,media_url,thumbnail_url,permalink,timestamp,like_count,comments_count",
+        limit: 100,
+        after,
+      });
 
-    mediaItems.push(...(data.data || []));
+      mediaItems.push(...(data.data || []));
+      consecutiveErrors = 0;
 
-    after = data.paging?.cursors?.after || null;
-    hasNext = Boolean(data.paging?.next && after);
+      after = data.paging?.cursors?.after || null;
+      hasNext = Boolean(data.paging?.next && after);
+    } catch (error) {
+      consecutiveErrors++;
+      console.warn(`[fetchAllMedia] Error fetching page: ${error.message} (consecutive errors: ${consecutiveErrors})`);
+
+      if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+        console.error(`[fetchAllMedia] Stopping after ${MAX_CONSECUTIVE_ERRORS} consecutive errors. Returning ${mediaItems.length} items fetched so far.`);
+        break;
+      }
+
+      hasNext = true;
+    }
   }
 
   return mediaItems;
@@ -400,6 +422,7 @@ async function saveAccountInsightValues(accountId, insightResponse) {
 }
 
 async function syncAccountInsights(accountId, since, until) {
+  const igUserId = await getIgUserId();
   let savedCount = 0;
 
   const insightRequests = [
@@ -437,7 +460,7 @@ async function syncAccountInsights(accountId, since, until) {
 
   for (const request of insightRequests) {
     try {
-      const data = await metaGet(`/${IG_USER_ID}/insights`, request.params);
+      const data = await metaGet(`/${igUserId}/insights`, request.params);
       savedCount += await saveAccountInsightValues(accountId, data);
     } catch (error) {
       console.warn(
@@ -469,6 +492,7 @@ async function syncAccountInsightsInChunks(accountId, since, until) {
 }
 
 async function syncAudienceInsights(accountId) {
+  const igUserId = await getIgUserId();
   const today = startOfDay()
 
   const breakdownTypes = ["age", "gender", "city", "country"]
@@ -477,7 +501,7 @@ async function syncAudienceInsights(accountId) {
 
   for (const breakdownName of breakdownTypes) {
     try {
-      const data = await metaGet("/" + IG_USER_ID + "/insights", {
+      const data = await metaGet("/" + igUserId + "/insights", {
         metric: "follower_demographics",
         period: "lifetime",
         metric_type: "total_value",
@@ -1059,6 +1083,7 @@ async function rebuildMonthlyInteractionsBreakdown(accountId, since, until) {
 }
 
 async function syncViewsBreakdownInsights(accountId, since, until) {
+  const igUserId = await getIgUserId();
   let savedCount = 0;
   const chunks = buildDateChunks(since, until, 28);
 
@@ -1066,7 +1091,7 @@ async function syncViewsBreakdownInsights(accountId, since, until) {
     let response = null;
 
     try {
-      response = await metaGet(`/${IG_USER_ID}/insights`, {
+      response = await metaGet(`/${igUserId}/insights`, {
         metric: "views",
         period: "day",
         metric_type: "total_value",
@@ -1074,24 +1099,13 @@ async function syncViewsBreakdownInsights(accountId, since, until) {
         since: chunk.since,
         until: chunk.until,
       });
-    } catch {
-      try {
-        response = await metaGet(`/${IG_USER_ID}/insights`, {
-          metric: "views",
-          period: "day",
-          metric_type: "total_value",
-          breakdowns: "follow_type",
-          since: chunk.since,
-          until: chunk.until,
-        });
-      } catch (secondError) {
+      } catch (err1) {
         console.warn(
           `Views follow_type breakdown failed for ${chunk.since} - ${chunk.until}:`,
-          secondError instanceof Error ? secondError.message : secondError
+          err1 instanceof Error ? err1.message : err1
         );
         continue;
       }
-    }
 
     const insightDate = startOfDay(chunk.until);
 
@@ -1186,6 +1200,7 @@ function getMonthRange(year, monthIndex) {
 
 
 async function fetchViewsBreakdownForMonth(since, until) {
+  const igUserId = await getIgUserId();
   const chunks = buildDateChunks(since, until, 28);
 
   let viewsFromFollowers = 0;
@@ -1196,7 +1211,7 @@ async function fetchViewsBreakdownForMonth(since, until) {
     let response = null;
 
     try {
-  response = await metaGet(`/${IG_USER_ID}/insights`, {
+  response = await metaGet(`/${igUserId}/insights`, {
     metric: "views",
     period: "day",
     metric_type: "total_value",
@@ -1204,34 +1219,19 @@ async function fetchViewsBreakdownForMonth(since, until) {
     since: chunk.since,
     until: chunk.until,
   });
-} catch {
-  try {
-    response = await metaGet(`/${IG_USER_ID}/insights`, {
-      metric: "views",
-      period: "day",
-      metric_type: "total_value",
-      breakdowns: "follow_type",
-      since: chunk.since,
-      until: chunk.until,
-    });
-      } catch (secondError) {
-        const message =
-          secondError instanceof Error ? secondError.message : String(secondError);
-
-        console.warn(
-          `Views breakdown failed for ${chunk.since} - ${chunk.until}:`,
-          message
-        );
-
-        rawResponses.push({
-          since: chunk.since,
-          until: chunk.until,
-          error: message,
-        });
-
-        continue;
-      }
-    }
+} catch (firstError) {
+  const message = firstError instanceof Error ? firstError.message : String(firstError);
+  console.warn(
+    `Views breakdown failed for ${chunk.since} - ${chunk.until}:`,
+    message
+  );
+  rawResponses.push({
+    since: chunk.since,
+    until: chunk.until,
+    error: message,
+  });
+  continue;
+}
 
     rawResponses.push({
       since: chunk.since,
@@ -1277,6 +1277,7 @@ async function fetchViewsBreakdownForMonth(since, until) {
   };
 }
 async function fetchReachBreakdownForMonth(since, until) {
+  const igUserId = await getIgUserId();
   const chunks = buildDateChunks(since, until, 28);
 
   let reachFromFollowers = 0;
@@ -1287,7 +1288,7 @@ async function fetchReachBreakdownForMonth(since, until) {
     let response = null;
 
     try {
-      response = await metaGet(`/${IG_USER_ID}/insights`, {
+      response = await metaGet(`/${igUserId}/insights`, {
         metric: "reach",
         period: "day",
         metric_type: "total_value",
@@ -1295,33 +1296,18 @@ async function fetchReachBreakdownForMonth(since, until) {
         since: chunk.since,
         until: chunk.until,
       });
-    } catch {
-      try {
-        response = await metaGet(`/${IG_USER_ID}/insights`, {
-          metric: "reach",
-          period: "day",
-          metric_type: "total_value",
-          breakdowns: "follow_type",
-          since: chunk.since,
-          until: chunk.until,
-        });
-      } catch (secondError) {
-        const message =
-          secondError instanceof Error ? secondError.message : String(secondError);
-
-        console.warn(
-          `Reach breakdown failed for ${chunk.since} - ${chunk.until}:`,
-          message
-        );
-
-        rawResponses.push({
-          since: chunk.since,
-          until: chunk.until,
-          error: message,
-        });
-
-        continue;
-      }
+    } catch (firstError) {
+      const message = firstError instanceof Error ? firstError.message : String(firstError);
+      console.warn(
+        `Reach breakdown failed for ${chunk.since} - ${chunk.until}:`,
+        message
+      );
+      rawResponses.push({
+        since: chunk.since,
+        until: chunk.until,
+        error: message,
+      });
+      continue;
     }
 
     rawResponses.push({
@@ -1437,6 +1423,7 @@ function extractFollowTypeBreakdown(response) {
 }
 
 async function fetchInteractionsBreakdownForMonth(since, until) {
+  const igUserId = await getIgUserId();
   const chunks = buildDateChunks(since, until, 28);
 
   let interactionsFromFollowers = 0;
@@ -1449,59 +1436,47 @@ async function fetchInteractionsBreakdownForMonth(since, until) {
     let chunkHasBreakdown = false;
 
     for (const metricName of metricCandidates) {
-      const requestVariants = [
-        {
-          metric: metricName,
-          period: "day",
-          metric_type: "total_value",
-          breakdown: "follow_type",
+      const params = {
+        metric: metricName,
+        period: "day",
+        metric_type: "total_value",
+        breakdown: "follow_type",
+        since: chunk.since,
+        until: chunk.until,
+      };
+
+      try {
+        const response = await metaGet(`/${igUserId}/insights`, params);
+
+        const parsed = extractFollowTypeBreakdown(response);
+
+        rawResponses.push({
           since: chunk.since,
           until: chunk.until,
-        },
-        {
-          metric: metricName,
-          period: "day",
-          metric_type: "total_value",
-          breakdowns: "follow_type",
-          since: chunk.since,
-          until: chunk.until,
-        },
-      ];
+          usedMetric: metricName,
+          usedBreakdownParam: "breakdown",
+          hasBreakdown: parsed.hasBreakdown,
+          response,
+        });
 
-      for (const params of requestVariants) {
-        try {
-          const response = await metaGet(`/${IG_USER_ID}/insights`, params);
-
-          const parsed = extractFollowTypeBreakdown(response);
-
-          rawResponses.push({
-            since: chunk.since,
-            until: chunk.until,
-            usedMetric: metricName,
-            usedBreakdownParam: params.breakdown ? "breakdown" : "breakdowns",
-            hasBreakdown: parsed.hasBreakdown,
-            response,
-          });
-
-          if (parsed.hasBreakdown) {
-            interactionsFromFollowers += parsed.fromFollowers;
-            interactionsFromNonFollowers += parsed.fromNonFollowers;
-            chunkHasBreakdown = true;
-            break;
-          }
-        } catch (error) {
-          rawResponses.push({
-            since: chunk.since,
-            until: chunk.until,
-            usedMetric: metricName,
-            usedBreakdownParam: params.breakdown ? "breakdown" : "breakdowns",
-            error: error instanceof Error ? error.message : String(error),
-          });
+        if (parsed.hasBreakdown) {
+          interactionsFromFollowers += parsed.fromFollowers;
+          interactionsFromNonFollowers += parsed.fromNonFollowers;
+          chunkHasBreakdown = true;
+          break;
         }
+      } catch (error) {
+        rawResponses.push({
+          since: chunk.since,
+          until: chunk.until,
+          usedMetric: metricName,
+          usedBreakdownParam: "breakdown",
+          error: error instanceof Error ? error.message : String(error),
+        });
       }
-
-      if (chunkHasBreakdown) break;
     }
+
+    if (chunkHasBreakdown) break;
   }
 
   return {
@@ -1628,6 +1603,7 @@ function extractFollowUnfollowBreakdown(response) {
 }
 
 async function syncFollowUnfollowInsights(accountId, since, until) {
+  const igUserId = await getIgUserId();
   const chunks = buildDateChunks(since, until, 28);
   let savedCount = 0;
 
@@ -1643,7 +1619,7 @@ async function syncFollowUnfollowInsights(accountId, since, until) {
     const rawResponses = [];
 
     try {
-      const response = await metaGet(`/${IG_USER_ID}/insights`, {
+      const response = await metaGet(`/${igUserId}/insights`, {
         metric: "follows_and_unfollows",
         period: "day",
         metric_type: "total_value",
@@ -1672,7 +1648,7 @@ async function syncFollowUnfollowInsights(accountId, since, until) {
 
     if (!parsed.hasBreakdown) {
       try {
-        const followsResponse = await metaGet(`/${IG_USER_ID}/insights`, {
+        const followsResponse = await metaGet(`/${igUserId}/insights`, {
           metric: "follows",
           period: "day",
           metric_type: "total_value",
@@ -1703,7 +1679,7 @@ async function syncFollowUnfollowInsights(accountId, since, until) {
       }
 
       try {
-        const unfollowsResponse = await metaGet(`/${IG_USER_ID}/insights`, {
+        const unfollowsResponse = await metaGet(`/${igUserId}/insights`, {
           metric: "unfollows",
           period: "day",
           metric_type: "total_value",
@@ -1769,11 +1745,12 @@ async function syncFollowUnfollowInsights(accountId, since, until) {
 }
 
 async function fetchProfileViewsForRange(since, until) {
+  const igUserId = await getIgUserId();
   let profileViews = 0;
   const rawResponses = [];
 
   try {
-    const response = await metaGet(`/${IG_USER_ID}/insights`, {
+    const response = await metaGet(`/${igUserId}/insights`, {
       metric: "profile_views",
       period: "day",
       metric_type: "total_value",

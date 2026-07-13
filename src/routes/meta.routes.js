@@ -15,6 +15,40 @@ const hasMetaCredentials = async () => {
     Boolean(config.metaIgUserId || process.env.META_IG_USER_ID);
 };
 
+const testMetaConnection = async () => {
+  const config = await buildConfigSnapshot();
+  const accessToken = config.metaAccessToken || process.env.META_ACCESS_TOKEN;
+  const igUserId = config.metaIgUserId || process.env.META_IG_USER_ID;
+  const graphVersion = config.metaGraphVersion || process.env.META_API_VERSION || "v25.0";
+
+  if (!accessToken || !igUserId) {
+    return { ok: false, error: "Meta credentials are not configured." };
+  }
+
+  try {
+    const baseUrl = process.env.META_API_BASE_URL || "https://graph.facebook.com";
+    const url = `${baseUrl.replace(/\/$/, "")}/${graphVersion}/${igUserId}?fields=username,followers_count`;
+    const response = await fetch(url, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    const data = await response.json();
+
+    if (!response.ok || data.error) {
+      return {
+        ok: false,
+        error: data.error?.message || `Meta API returned status ${response.status}`,
+      };
+    }
+
+    return { ok: true, username: data.username };
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : "Failed to reach Meta API.",
+    };
+  }
+};
+
 const buildMetaSetupResponse = () => ({
   success: false,
   errorCode: "META_NOT_CONFIGURED",
@@ -147,23 +181,64 @@ metaRouter.get(
         },
       });
 
+      let connectionState = !configured
+        ? "not_configured"
+        : !latestSync
+          ? "ready"
+          : latestSync.status?.toLowerCase() === "success"
+            ? "connected"
+            : latestSync.status?.toLowerCase() === "running"
+              ? "syncing"
+              : "error";
+
+      let connectionError = null;
+
+      if (configured && connectionState !== "syncing") {
+        const testResult = await testMetaConnection();
+        if (!testResult.ok) {
+          connectionState = "error";
+          connectionError = testResult.error;
+        }
+      }
+
       return res.json({
         success: true,
         data: {
           configured,
-          connectionState: !configured
-            ? "not_configured"
-            : !latestSync
-              ? "ready"
-              : latestSync.status?.toLowerCase() === "success"
-                ? "connected"
-                : latestSync.status?.toLowerCase() === "running"
-                  ? "syncing"
-                  : "error",
+          connectionState,
           latestSync,
           setupMessage: configured ? null : buildMetaSetupResponse().message,
-          suggestion: configured ? null : buildMetaSetupResponse().suggestion,
+          suggestion: configured
+            ? connectionError
+              ? "Meta credentials are configured but the API returned an error. Please verify the access token is valid and not expired."
+              : null
+            : buildMetaSetupResponse().suggestion,
+          connectionError,
         },
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+metaRouter.get(
+  "/test-connection",
+  authorize("operational", "management", "it_support"),
+  async (req, res, next) => {
+    try {
+      const configured = await hasMetaCredentials();
+      if (!configured) {
+        return res.json({
+          success: false,
+          data: { ok: false, error: "Meta credentials are not configured." },
+        });
+      }
+
+      const result = await testMetaConnection();
+      return res.json({
+        success: true,
+        data: result,
       });
     } catch (error) {
       next(error);
