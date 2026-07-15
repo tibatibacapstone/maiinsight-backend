@@ -16,7 +16,7 @@ app.use(
   cors({
     origin: env.clientUrl,
     credentials: true,
-  })
+  }),
 );
 
 app.use(express.json({ limit: "5mb" }));
@@ -26,14 +26,35 @@ if (env.nodeEnv !== "test") {
   app.use(morgan("dev"));
 }
 
-app.get("/", (req, res) => {
-  res.json({
+/**
+ * Root endpoint
+ */
+app.get("/", (_req, res) => {
+  res.status(200).json({
+    success: true,
     message: "MaiinSight API is running",
   });
 });
 
+/**
+ * Health-check endpoint
+ * Digunakan untuk memastikan backend aktif.
+ */
+app.get("/api/health", (_req, res) => {
+  res.status(200).json({
+    success: true,
+    service: "MaiinSight API",
+    status: "healthy",
+    environment: env.nodeEnv,
+    timestamp: new Date().toISOString(),
+  });
+});
+
+/**
+ * Application API routes
+ */
 app.use("/api", apiRouter);
 
-// 404 dan error handler harus paling bawah
+// 404 dan error handler harus paling bawah.
 app.use(notFound);
 app.use(errorHandler);

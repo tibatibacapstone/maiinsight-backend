@@ -4,9 +4,11 @@
   "description": "Express.js API for MaiinSight customer segmentation and marketing insights.",
   "type": "module",
   "main": "src/server.js",
+  "packageManager": "pnpm@11.1.1",
   "scripts": {
     "dev": "nodemon src/server.js",
     "start": "node src/server.js",
+    "postinstall": "prisma generate",
     "lint": "eslint src",
     "test": "node --test",
     "test:watch": "node --test --watch",
@@ -26,7 +28,7 @@
   "author": "",
   "license": "MIT",
   "engines": {
-    "node": ">=20"
+    "node": "20.x"
   },
   "dependencies": {
     "@google/genai": "^2.6.0",
