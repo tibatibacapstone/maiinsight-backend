@@ -4,7 +4,7 @@
   "description": "Express.js API for MaiinSight customer segmentation and marketing insights.",
   "type": "module",
   "main": "src/server.js",
-  "packageManager": "pnpm@11.1.1",
+  "packageManager": "pnpm@10.28.2",
   "scripts": {
     "dev": "nodemon src/server.js",
     "start": "node src/server.js",
