@@ -4,6 +4,7 @@ import { prisma } from "../config/prisma.js";
 import { authenticate, authorize } from "../middleware/auth.js";
 import { logActivity } from "../services/activityLog.service.js";
 import { buildConfigSnapshot } from "../services/appConfig.service.js";
+import { metaGet } from "../services/metaRaw.service.js";
 import { syncMetaRawToAnalytics } from "../services/metaAnalytics.service.js";
 import { createNotificationsForRoles } from "../services/notification.service.js";
 
@@ -162,6 +163,69 @@ const getPreviousDateRange = (startDate, endDate) => {
 const sumInsightValues = (rows = []) =>
   rows.reduce((sum, row) => sum + Number(row.metricValue || 0), 0);
 
+const collectInsightRows = (insightResponse) => {
+  const rows = [];
+
+  for (const metric of insightResponse?.data || []) {
+    for (const valueItem of metric.values || []) {
+      rows.push({
+        metricName: metric.name,
+        metricValue: Number(valueItem.value || 0),
+        insightDate: valueItem.end_time ? new Date(valueItem.end_time) : new Date(),
+        period: metric.period || "day",
+      });
+    }
+
+    if (metric.total_value?.value !== undefined) {
+      rows.push({
+        metricName: metric.name,
+        metricValue: Number(metric.total_value.value || 0),
+        insightDate: new Date(),
+        period: metric.period || "day",
+      });
+    }
+  }
+
+  return rows;
+};
+
+const countInsightRows = (insightResponse, metricName) =>
+  collectInsightRows(insightResponse).filter((row) => row.metricName === metricName).length;
+
+const countMetricRows = (insightRows, metricName) => {
+  if (!Array.isArray(insightRows)) return 0;
+  return insightRows.filter((row) => row.metricName === metricName).length;
+};
+
+const addDays = (date, days) => {
+  const next = new Date(date);
+  next.setUTCDate(next.getUTCDate() + days);
+  return next;
+};
+
+const fetchInsightRowsByRange = async (igUserId, metric, startDate, endDate, extraParams = {}) => {
+  const rows = [];
+  const chunkEndLimitDays = 29;
+  let cursor = new Date(startDate);
+
+  while (cursor <= endDate) {
+    const chunkEnd = addDays(cursor, chunkEndLimitDays);
+    const windowEnd = chunkEnd > endDate ? new Date(endDate) : chunkEnd;
+    const response = await metaGet(`/${igUserId}/insights`, {
+      metric,
+      period: "day",
+      since: cursor.toISOString().slice(0, 10),
+      until: windowEnd.toISOString().slice(0, 10),
+      ...extraParams,
+    });
+
+    rows.push(...collectInsightRows(response).filter((row) => row.metricName === metric));
+    cursor = addDays(windowEnd, 1);
+  }
+
+  return rows;
+};
+
 metaRouter.use(authenticate);
 
 metaRouter.get(
@@ -303,6 +367,13 @@ metaRouter.get(
   authorize("operational", "management", "it_support"),
   async (req, res) => {
     try {
+      const config = await buildConfigSnapshot();
+      const igUserId = config.metaIgUserId || process.env.META_IG_USER_ID;
+      const { since, until } = req.query;
+      const defaultStartDate = new Date("2023-01-01T00:00:00.000Z");
+      const defaultEndDate = new Date();
+      const startDate = since ? new Date(since) : defaultStartDate;
+      const endDate = until ? new Date(until) : defaultEndDate;
       const { since, until, type, contentLabel } = req.query
 
 const startDate = since ? new Date(since) : new Date("2026-05-01")
@@ -349,6 +420,23 @@ const mediaTypeWhere =
         select: { startedAt: true, status: true, message: true },
       });
 
+      const [media, liveReach, liveProfileViews, liveInteractionPrimary, liveInteractionFallback] = await Promise.all([
+        prisma.instagramMedia.findMany({
+          include: { insights: true },
+          orderBy: { postedAt: "desc" },
+          take: 100,
+        }),
+        fetchInsightRowsByRange(igUserId, "reach", startDate, endDate).catch(() => []),
+        fetchInsightRowsByRange(igUserId, "profile_views", startDate, endDate, {
+          metric_type: "total_value",
+        }).catch(() => []),
+        fetchInsightRowsByRange(igUserId, "total_interactions", startDate, endDate, {
+          metric_type: "total_value",
+        }).catch(() => []),
+        fetchInsightRowsByRange(igUserId, "accounts_engaged", startDate, endDate, {
+          metric_type: "total_value",
+        }).catch(() => []),
+      ]);
   const [
   latestAccount,
   media,
@@ -671,25 +759,25 @@ const previousTotalInteractions =
     : Number(previousMonthlyMediaPerformance.interactions || 0);
 
 
-      const preferredAccountInteractionMetric = accountInteractionInsights.some(
-        (insight) => insight.metricName === "total_interactions"
-      )
-        ? "total_interactions"
-        : "accounts_engaged";
-      const selectedAccountInteractionInsights = accountInteractionInsights.filter(
-        (insight) => insight.metricName === preferredAccountInteractionMetric
-      );
+      const accountReachInsights = liveReach;
+      const profileViewInsights = liveProfileViews;
+      const primaryInteractionInsights = liveInteractionPrimary;
+      const fallbackInteractionInsights = liveInteractionFallback;
+      const selectedAccountInteractionInsights = primaryInteractionInsights.length > 0
+        ? primaryInteractionInsights
+        : fallbackInteractionInsights;
 
-      const allInsights = media.flatMap((item) =>
-        item.insights
-          .filter((insight) => {
-            const insightDate = new Date(insight.insightDate);
-            return insightDate >= startDate && insightDate <= endDate;
-          })
-          .map((insight) => ({
-            ...insight,
-            mediaId: item.id,
-          }))
+      const mediaInRange = media.filter((item) => {
+        if (!item.postedAt) return false;
+        const postedAt = new Date(item.postedAt);
+        return postedAt >= startDate && postedAt <= endDate;
+      });
+
+      const allInsights = mediaInRange.flatMap((item) =>
+        item.insights.map((insight) => ({
+          ...insight,
+          mediaId: item.id,
+        }))
       );
 
       const sumMetric = (metricName) =>
@@ -697,6 +785,21 @@ const previousTotalInteractions =
           .filter((insight) => insight.metricName === metricName)
           .reduce((sum, insight) => sum + Number(insight.metricValue || 0), 0);
 
+      const totalViews = sumMetric("views") || sumMetric("impressions") || sumMetric("plays");
+      const mediaReach = sumMetric("reach");
+      const accountReach = accountReachInsights.reduce(
+        (sum, insight) => sum + Number(insight.metricValue || 0),
+        0
+      );
+      const totalReach = accountReach || mediaReach;
+      const totalLikes = sumMetric("likes");
+      const totalComments = sumMetric("comments");
+      const totalShares = sumMetric("shares");
+      const totalSaved = sumMetric("saved");
+      const totalProfileViews = profileViewInsights.reduce(
+        (sum, insight) => sum + Number(insight.metricValue || 0),
+        0
+      );
       const breakdownTotalViews =
   Number(monthlyMediaPerformance.viewsFromFollowers || 0) +
   Number(monthlyMediaPerformance.viewsFromNonFollowers || 0);
@@ -1017,35 +1120,26 @@ const monthlyViewsTrend = monthlyMediaTrendRows.map((row) => {
 
       accountReachInsights.forEach((insight) => {
         const date = new Date(insight.insightDate).toISOString().slice(0, 10);
-        const value = Number(insight.metricValue || 0);
-
         if (!trendMap[date]) {
           trendMap[date] = { date, reach: 0, views: 0, interactions: 0, profileViews: 0 };
         }
-
-        trendMap[date].reach += value;
+        trendMap[date].reach += Number(insight.metricValue || 0);
       });
 
       selectedAccountInteractionInsights.forEach((insight) => {
         const date = new Date(insight.insightDate).toISOString().slice(0, 10);
-        const value = Number(insight.metricValue || 0);
-
         if (!trendMap[date]) {
           trendMap[date] = { date, reach: 0, views: 0, interactions: 0, profileViews: 0 };
         }
-
-        trendMap[date].interactions += value;
+        trendMap[date].interactions += Number(insight.metricValue || 0);
       });
 
-      accountProfileViewInsights.forEach((insight) => {
+      profileViewInsights.forEach((insight) => {
         const date = new Date(insight.insightDate).toISOString().slice(0, 10);
-        const value = Number(insight.metricValue || 0);
-
         if (!trendMap[date]) {
           trendMap[date] = { date, reach: 0, views: 0, interactions: 0, profileViews: 0 };
         }
-
-        trendMap[date].profileViews += value;
+        trendMap[date].profileViews += Number(insight.metricValue || 0);
       });
 
       allInsights.forEach((insight) => {
@@ -1079,6 +1173,9 @@ const monthlyViewsTrend = monthlyMediaTrendRows.map((row) => {
         })
         .sort((a, b) => a.date.localeCompare(b.date));
 
+      const contentPerformance = mediaInRange
+        .map((item) => {
+          const itemInsights = item.insights;
       const contentPerformance = media
   .map((item) => {
     const itemInsights = item.insights || [];
@@ -1355,6 +1452,60 @@ contentListTotal: contentList.length,
         message: "InstaSight data could not be loaded.",
         suggestion: "Please check the Meta connection and try again.",
         technicalMessage: error instanceof Error ? error.message : "Meta dashboard failed.",
+      });
+    }
+  }
+);
+
+metaRouter.get(
+  "/debug-dashboard",
+  authorize("operational", "management", "it_support"),
+  async (req, res) => {
+    try {
+      const config = await buildConfigSnapshot();
+      const igUserId = config.metaIgUserId || process.env.META_IG_USER_ID;
+      const { since, until } = req.query;
+      const defaultStartDate = new Date("2023-01-01T00:00:00.000Z");
+      const defaultEndDate = new Date();
+      const startDate = since ? new Date(since) : defaultStartDate;
+      const endDate = until ? new Date(until) : defaultEndDate;
+      const [reach, profileViews, totalInteractions, accountsEngaged] = await Promise.all([
+        fetchInsightRowsByRange(igUserId, "reach", startDate, endDate).catch((error) => ({ error: error instanceof Error ? error.message : String(error) })),
+        fetchInsightRowsByRange(igUserId, "profile_views", startDate, endDate, { metric_type: "total_value" }).catch((error) => ({ error: error instanceof Error ? error.message : String(error) })),
+        fetchInsightRowsByRange(igUserId, "total_interactions", startDate, endDate, { metric_type: "total_value" }).catch((error) => ({ error: error instanceof Error ? error.message : String(error) })),
+        fetchInsightRowsByRange(igUserId, "accounts_engaged", startDate, endDate, { metric_type: "total_value" }).catch((error) => ({ error: error instanceof Error ? error.message : String(error) })),
+      ]);
+
+      return res.json({
+        success: true,
+        data: {
+          igUserId,
+          since: startDate.toISOString().slice(0, 10),
+          until: endDate.toISOString().slice(0, 10),
+          reach: {
+            rowCount: countMetricRows(reach, "reach"),
+            raw: reach,
+          },
+          profileViews: {
+            rowCount: countMetricRows(profileViews, "profile_views"),
+            raw: profileViews,
+          },
+          totalInteractions: {
+            rowCount: countMetricRows(totalInteractions, "total_interactions"),
+            raw: totalInteractions,
+          },
+          accountsEngaged: {
+            rowCount: countMetricRows(accountsEngaged, "accounts_engaged"),
+            raw: accountsEngaged,
+          },
+        },
+      });
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        errorCode: "META_DEBUG_DASHBOARD_FAILED",
+        message: "Meta debug dashboard could not be loaded.",
+        technicalMessage: error instanceof Error ? error.message : "Meta debug dashboard failed.",
       });
     }
   }
