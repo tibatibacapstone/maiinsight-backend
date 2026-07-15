@@ -53,6 +53,7 @@ const summarizeHeatmap = (heatmapData = []) => {
       : null,
   }
 }
+import { authenticate } from "../middleware/auth.js"
 
 export const mlRouter = Router()
 

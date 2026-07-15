@@ -87,6 +87,77 @@ const resolveSessionNameByHour = (hourStart) => {
     )?.name || null
   );
 };
+const DAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+const getShortDayLabel = (dateValue) => {
+  const date = dateValue instanceof Date ? dateValue : new Date(dateValue);
+
+  if (Number.isNaN(date.getTime())) return null;
+
+  return DAY_LABELS[date.getDay()];
+};
+
+const normalizeStartHourLabel = (value) => {
+  const text = String(value || "").trim();
+  const match = text.match(/^(\d{1,2}):(\d{2})$/);
+
+  if (!match) return null;
+
+  return `${String(Number(match[1])).padStart(2, "0")}:00`;
+};
+
+const buildHeatmapSummaryFromTransactions = (transactions = []) => {
+  const slotCounts = new Map();
+
+  transactions.forEach((transaction) => {
+    const dayShort = getShortDayLabel(transaction.playDate);
+    const startHour = normalizeStartHourLabel(transaction.startHour);
+
+    if (!dayShort || !startHour) return;
+
+    const key = `${dayShort}|${startHour}`;
+    slotCounts.set(key, (slotCounts.get(key) || 0) + 1);
+  });
+
+  const slots = [];
+
+  DAY_LABELS.forEach((day) => {
+    SESSION_DEFINITIONS.forEach((session) => {
+      for (let hour = session.startHour; hour <= session.endHour; hour += 1) {
+        const startHour = `${String(hour).padStart(2, "0")}:00`;
+        const key = `${day}|${startHour}`;
+
+        slots.push({
+          day_short: day,
+          startHour,
+          session_count: slotCounts.get(key) || 0,
+          session_label: session.name,
+        });
+      }
+    });
+  });
+
+  const mostEmptySlot =
+    [...slots].sort((left, right) => {
+      if (left.session_count !== right.session_count) {
+        return left.session_count - right.session_count;
+      }
+
+      return DAY_LABELS.indexOf(left.day_short) - DAY_LABELS.indexOf(right.day_short);
+    })[0] || null;
+
+  return {
+    slots,
+    mostEmptySlot: mostEmptySlot
+      ? {
+          dayLabel: mostEmptySlot.day_short,
+          hourLabel: mostEmptySlot.startHour,
+          sessionLabel: mostEmptySlot.session_label,
+          sessionCount: mostEmptySlot.session_count,
+        }
+      : null,
+  };
+};
 
 const getPreviousMonthRange = (referenceDate) => {
   const year = referenceDate.getFullYear();
@@ -297,17 +368,28 @@ dashboardRouter.get(
     try {
       const filters = buildSelectedFilters(req.query);
       const courtType = normalizeCourtTypeFilter(filters.venue);
-      const selectedRange = resolveSelectedDateRange({
+
+      const selectedRange =
+  req.query.startDate && req.query.endDate
+    ? {
+        startDate: startOfDay(new Date(req.query.startDate)),
+        endDate: endOfDay(new Date(req.query.endDate)),
+      }
+    : resolveSelectedDateRange({
         selectedYear: filters.year,
         selectedMonth: filters.month,
         periodType: filters.periodType,
       });
-
       if (!selectedRange) {
         return res.json({
           success: true,
           message: "Playtime mix fetched successfully.",
-          data: { sessionByTime: [], totalSessions: 0, totalCustomers: 0 },
+          data: {
+            sessionByTime: [],
+            totalSessions: 0,
+            totalCustomers: 0,
+            heatmapSummary: buildHeatmapSummaryFromTransactions([]),
+          },
         });
       }
 
@@ -322,19 +404,31 @@ dashboardRouter.get(
       const transactions = await prisma.facilityTransaction.findMany({
         where: transactionWhere,
         select: {
+          playDate: true,
           startHour: true,
           nama: true,
         },
       });
 
-      const sessionCounts = { Morning: 0, Afternoon: 0, Evening: 0, Night: 0 };
+      const sessionCounts = {
+        Morning: 0,
+        Afternoon: 0,
+        Evening: 0,
+        Night: 0,
+      };
+
       const customerSet = new Set();
 
       transactions.forEach((tx) => {
         const sessionName = resolveSessionNameByHour(tx.startHour);
+
         if (!sessionName) return;
+
         sessionCounts[sessionName] += 1;
-        if (tx.nama) customerSet.add(tx.nama);
+
+        if (tx.nama) {
+          customerSet.add(tx.nama);
+        }
       });
 
       const sessionByTime = SESSION_DEFINITIONS
@@ -344,6 +438,8 @@ dashboardRouter.get(
           session_count: sessionCounts[session.name],
         }));
 
+      const heatmapSummary = buildHeatmapSummaryFromTransactions(transactions);
+
       return res.json({
         success: true,
         message: "Playtime mix fetched successfully.",
@@ -351,6 +447,7 @@ dashboardRouter.get(
           sessionByTime,
           totalSessions: transactions.length,
           totalCustomers: customerSet.size,
+          heatmapSummary,
         },
       });
     } catch (error) {
@@ -534,6 +631,12 @@ dashboardRouter.get(
         aiStrategySuggestionCount,
         metaMediaCount,
         latestBatch,
+
+        totalInstagramMedia,
+        totalInstagramMediaInsights,
+        totalInstagramAccountInsights,
+        totalInstagramAudienceInsights,
+        latestMetaSync,
       ] = await Promise.all([
         prisma.importBatch.count({
           where: {
@@ -542,6 +645,7 @@ dashboardRouter.get(
             },
           },
         }),
+
         prisma.rawTransactionTable.count({
           where: {
             batch: {
@@ -551,6 +655,7 @@ dashboardRouter.get(
             },
           },
         }),
+
         prisma.facilityTransaction.count({
           where: {
             batch: {
@@ -560,6 +665,7 @@ dashboardRouter.get(
             },
           },
         }),
+
         prisma.courtHourUsage.count({
           where: {
             transaction: {
@@ -571,6 +677,7 @@ dashboardRouter.get(
             },
           },
         }),
+
         prisma.importBatch.count({
           where: {
             status: "completed",
@@ -579,6 +686,7 @@ dashboardRouter.get(
             },
           },
         }),
+
         prisma.importBatch.count({
           where: {
             status: "failed",
@@ -593,6 +701,7 @@ dashboardRouter.get(
           },
         }),
         prisma.instagramMedia.count(),
+
         prisma.importBatch.findFirst({
           where: {
             fileName: {
@@ -611,7 +720,32 @@ dashboardRouter.get(
             updatedAt: true,
           },
         }),
+
+        // Meta Graph API records
+        prisma.instagramMedia.count(),
+        prisma.instagramMediaInsight.count(),
+        prisma.instagramAccountInsight.count(),
+        prisma.instagramAudienceInsight.count(),
+
+        prisma.metaSyncLog.findFirst({
+          orderBy: {
+            startedAt: "desc",
+          },
+          select: {
+            id: true,
+            status: true,
+            message: true,
+            startedAt: true,
+            finishedAt: true,
+          },
+        }),
       ]);
+
+      const totalMetaRecords =
+        totalInstagramMedia +
+        totalInstagramMediaInsights +
+        totalInstagramAccountInsights +
+        totalInstagramAudienceInsights;
 
       res.json({
         success: true,
@@ -626,6 +760,13 @@ dashboardRouter.get(
           aiStrategySuggestionCount,
           metaMediaCount,
           latestBatch,
+
+          totalInstagramMedia,
+          totalInstagramMediaInsights,
+          totalInstagramAccountInsights,
+          totalInstagramAudienceInsights,
+          totalMetaRecords,
+          latestMetaSync,
         },
       });
     } catch (error) {
@@ -658,7 +799,13 @@ dashboardRouter.get(
     try {
       const filters = buildSelectedFilters(req.query);
       const courtType = normalizeCourtTypeFilter(filters.venue);
-      const selectedRange = resolveSelectedDateRange({
+      const selectedRange =
+  req.query.startDate && req.query.endDate
+    ? {
+        startDate: startOfDay(new Date(req.query.startDate)),
+        endDate: endOfDay(new Date(req.query.endDate)),
+      }
+    : resolveSelectedDateRange({
         selectedYear: filters.year,
         selectedMonth: filters.month,
         periodType: filters.periodType,
@@ -915,5 +1062,186 @@ dashboardRouter.get(
     }
   }
 );
+dashboardRouter.get(
+  "/sync-jobs",
+  authorize("operational", "management", "it_support"),
+  async (req, res, next) => {
+    try {
+      const importJobs = await prisma.importBatch.findMany({
+        orderBy: {
+          createdAt: "desc",
+        },
+        take: 30,
+        select: {
+          id: true,
+          fileName: true,
+          rowCount: true,
+          status: true,
+          errorMessage: true,
+          createdAt: true,
+          updatedAt: true,
+        },
+      })
 
+      const activityLogs = await prisma.activityLog.findMany({
+  where: {
+    action: {
+      in: [
+        "INSTASIGHT_SYNC_COMPLETED",
+        "INSTASIGHT_SYNC_FAILED",
+        "AI_STRATEGY_GENERATED",
+        "AI_STRATEGY_FAILED",
+        "SEGMENTATION_UPDATED",
+        "SEGMENTATION_FAILED",
+      ],
+    },
+  },
+  orderBy: {
+    createdAt: "desc",
+  },
+  take: 50,
+  select: {
+    id: true,
+    action: true,
+    metadata: true,
+    createdAt: true,
+  },
+})
+console.log("SYNC JOBS ACTIVITY LOGS:", activityLogs.map((log) => ({
+  id: log.id,
+  action: log.action,
+  metadata: log.metadata,
+  createdAt: log.createdAt,
+})))
 
+      const normalizeImportStatus = (status) => {
+        const normalized = String(status || "").toLowerCase()
+
+        if (normalized === "completed" || normalized === "uploaded") {
+          return "completed"
+        }
+
+        if (normalized === "failed") {
+          return "failed"
+        }
+
+        if (normalized === "processing") {
+          return "processing"
+        }
+
+        return "queued"
+      }
+
+      const normalizeActivityStatus = (action, metadata) => {
+        const normalizedAction = String(action || "").toLowerCase()
+        const normalizedStatus = String(metadata?.status || "").toLowerCase()
+
+        if (
+          normalizedAction.includes("failed") ||
+          normalizedStatus === "failed" ||
+          normalizedStatus === "error"
+        ) {
+          return "failed"
+        }
+
+        if (
+          normalizedAction.includes("started") ||
+          normalizedStatus === "started" ||
+          normalizedStatus === "processing" ||
+          normalizedStatus === "running"
+        ) {
+          return "processing"
+        }
+
+        return "completed"
+      }
+
+      const formatActionName = (action) => {
+        const normalizedAction = String(action || "")
+
+        if (normalizedAction.includes("INSTASIGHT_SYNC")) {
+          return "Meta Graph API Sync"
+        }
+
+        if (normalizedAction.includes("AI_STRATEGY")) {
+          return "AI Strategy Engine Sync"
+        }
+
+        if (normalizedAction.includes("SEGMENTATION")) {
+          return "Customer Value Segmentation Run"
+        }
+
+        return normalizedAction
+          .replaceAll("_", " ")
+          .toLowerCase()
+          .replace(/\b\w/g, (char) => char.toUpperCase())
+      }
+
+      const fileJobs = importJobs.map((job) => {
+        const status = normalizeImportStatus(job.status)
+
+        return {
+          id: `file-${job.id}`,
+          name: job.fileName,
+          type: "file",
+          status,
+          progress:
+            status === "completed"
+              ? 100
+              : status === "failed"
+                ? 0
+                : 60,
+          records: job.rowCount || 0,
+          startedAt: job.createdAt,
+          completedAt: status === "completed" ? job.updatedAt : null,
+          error: job.errorMessage || null,
+        }
+      })
+
+      const activityJobs = activityLogs.map((log) => {
+        const metadata = log.metadata || {}
+        const status = normalizeActivityStatus(log.action, metadata)
+
+        return {
+          id: `activity-${log.id}`,
+          name: metadata.jobName || formatActionName(log.action),
+          type: "api",
+          status,
+          progress:
+            status === "completed"
+              ? 100
+              : status === "failed"
+                ? 0
+                : 60,
+          records: Number(
+            metadata.records ||
+              metadata.totalCustomers ||
+              metadata.totalRecords ||
+              metadata.mediaCount ||
+              0
+          ),
+          startedAt: metadata.startedAt || log.createdAt,
+          completedAt:
+            metadata.completedAt ||
+            metadata.finishedAt ||
+            (status === "processing" ? null : log.createdAt),
+          error: metadata.technicalMessage || metadata.error || null,
+        }
+      })
+
+      const jobs = [...activityJobs, ...fileJobs].sort(
+        (left, right) =>
+          new Date(right.startedAt).getTime() -
+          new Date(left.startedAt).getTime()
+      )
+
+      return res.json({
+        success: true,
+        message: "Sync jobs fetched successfully.",
+        data: jobs.slice(0, 50),
+      })
+    } catch (error) {
+      next(error)
+    }
+  }
+)

@@ -7,22 +7,16 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-enum Role {
-  operational
-  management
-  it_support
-}
-
 model User {
-  id        Int           @id @default(autoincrement())
-  email     String        @unique
-  name      String
-  password  String
-  role      Role          @default(operational)
-  createdAt DateTime      @default(now())
-  updatedAt DateTime      @updatedAt
-  logs      ActivityLog[]
-  invitesCreated UserInvite[] @relation("InvitesCreatedBy")
+  id             Int           @id @default(autoincrement())
+  email          String        @unique
+  name           String
+  password       String
+  role           Role          @default(operational)
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  logs           ActivityLog[]
+  invitesCreated UserInvite[]  @relation("InvitesCreatedBy")
 }
 
 model AppSetting {
@@ -36,28 +30,30 @@ model AppSetting {
 model UserInvite {
   id          Int       @id @default(autoincrement())
   token       String    @unique @db.VarChar(512)
-  email       String    @db.VarChar(191)
-  name        String    @db.VarChar(191)
+  email       String
+  name        String
   role        Role      @default(operational)
   createdById Int
   expiresAt   DateTime
   usedAt      DateTime?
   createdAt   DateTime  @default(now())
-
-  createdBy User @relation("InvitesCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  createdBy   User      @relation("InvitesCreatedBy", fields: [createdById], references: [id])
 
   @@index([email])
   @@index([expiresAt])
+  @@index([createdById], map: "user_invites_createdById_fkey")
   @@map("user_invites")
 }
 
 model ActivityLog {
   id        Int      @id @default(autoincrement())
-  user      User     @relation(fields: [userId], references: [id])
   userId    Int
   action    String
   metadata  Json?
   createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id])
+
+  @@index([userId], map: "ActivityLog_userId_fkey")
 }
 
 model Notification {
@@ -69,120 +65,109 @@ model Notification {
   createdAt DateTime @default(now())
 }
 
-enum ImportStatus {
-  uploaded
-  processing
-  completed
-  failed
-}
-
 model ImportBatch {
-  id           Int          @id @default(autoincrement())
-  fileName     String
-  rowCount     Int          @default(0)
-  headers      Json
-  status       ImportStatus @default(uploaded)
-  errorMessage String?      @db.Text
-  createdAt    DateTime     @default(now())
-  updatedAt    DateTime     @updatedAt
-
-  rawTransactions      RawTransactionTable[]
+  id                   Int                   @id @default(autoincrement())
+  fileName             String
+  rowCount             Int                   @default(0)
+  headers              Json
+  status               ImportStatus          @default(uploaded)
+  errorMessage         String?               @db.Text
+  createdAt            DateTime              @default(now())
+  updatedAt            DateTime              @updatedAt
   facilityTransactions FacilityTransaction[]
+  rawTransactions      RawTransactionTable[]
 
   @@map("import_batches")
 }
 
 model RawTransactionTable {
-  id           Int      @id @default(autoincrement())
+  id           Int         @id @default(autoincrement())
   batchId      Int
   rowNumber    Int
   data         Json
-  status       String   @default("raw")
-  errorMessage String?  @db.Text
-  createdAt    DateTime @default(now())
-
-  batch ImportBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  status       String      @default("raw")
+  errorMessage String?     @db.Text
+  createdAt    DateTime    @default(now())
+  batch        ImportBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
 
   @@index([batchId])
   @@map("raw_transaction_table")
 }
 
 model Customer {
-  id                    Int      @id @default(autoincrement())
-  customerKey           String   @unique @db.VarChar(191)
-  name                  String?  @db.VarChar(191)
-  email                 String?  @db.VarChar(191)
-  phone                 String?  @db.VarChar(50)
+  id                    Int                   @id @default(autoincrement())
+  customerKey           String                @unique
+  name                  String?
+  email                 String?
+  phone                 String?               @db.VarChar(50)
   customerProfile       Json?
-  customerKeyType       String   @db.VarChar(50)
-  customerKeyConfidence Float?   @db.Double
-  createdAt             DateTime @default(now())
-  updatedAt             DateTime @updatedAt
-
-  facilityTransactions FacilityTransaction[]
+  customerKeyType       String                @db.VarChar(50)
+  customerKeyConfidence Float?
+  createdAt             DateTime              @default(now())
+  updatedAt             DateTime              @updatedAt
+  facilityTransactions  FacilityTransaction[]
 
   @@map("customers")
 }
 
 model FacilityTransaction {
-  id                    Int       @id @default(autoincrement())
+  id                    Int              @id @default(autoincrement())
   batchId               Int
   rawRowId              Int
   rowNumber             Int
-  orderId               String?   @db.VarChar(100)
+  orderId               String?          @db.VarChar(100)
   customerId            Int?
-  customerKey           String    @db.VarChar(191)
-  customerName          String?   @db.VarChar(191)
-  normalizedName        String?   @db.VarChar(191)
-  normalizedEmail       String?   @db.VarChar(191)
-  normalizedPhone       String?   @db.VarChar(50)
-  customerKeyType       String?   @db.VarChar(50)
-  customerKeyConfidence String?   @db.VarChar(50)
-  nama                  String?   @db.VarChar(191)
-  email                 String?   @db.VarChar(191)
-  noTelepon             String?   @db.VarChar(50)
-  customerProfile       String?   @db.VarChar(100)
-  tanggalTransaksi      DateTime?
-  tanggalMain           DateTime?
-  jamMain               String?   @db.VarChar(50)
+  customerKey           String
+  customerName          String?
+  normalizedEmail       String?
+  normalizedPhone       String?          @db.VarChar(50)
   transactionDate       DateTime?
   playDate              DateTime?
-  playTime              String?   @db.VarChar(50)
-  startHour             String?   @db.VarChar(10)
-  endHour               String?   @db.VarChar(10)
+  playTime              String?          @db.VarChar(50)
+  startHour             String?          @db.VarChar(10)
+  endHour               String?          @db.VarChar(10)
   durationHours         Float
-  venue                 String?   @db.VarChar(100)
-  lapangan              String?   @db.VarChar(100)
-  court                 String    @db.VarChar(100)
-  courtType             String?   @db.VarChar(50)
-  hargaBersih           Decimal?  @db.Decimal(14, 2)
-  addOns                String?   @db.Text
-  hargaAddOns           Decimal?  @db.Decimal(14, 2)
-  netRevenue            Decimal   @db.Decimal(14, 2)
-  addOnRevenue          Decimal   @db.Decimal(14, 2)
-  tipeVoucher           String?   @db.VarChar(100)
-  hargaVoucher          Decimal?  @db.Decimal(14, 2)
-  voucherDiscount       Decimal   @db.Decimal(14, 2)
-  status                String?   @db.VarChar(100)
-  promoName             String?   @db.VarChar(191)
-  sportPurpose          String?   @db.VarChar(191)
-  description           String?   @db.Text
-  reschedule            String?   @db.VarChar(50)
-  promosi               String?   @db.Text
-  keperluan             String?   @db.VarChar(100)
-  deskripsi             String?   @db.Text
-  period                String?   @db.VarChar(20)
-  playTimeGroup         String?   @db.VarChar(30)
-  bookingType           String    @db.VarChar(50)
-  validBooking          Boolean   @default(false)
-  bookingEventKey       String    @db.VarChar(255)
-  bookingRangeKey       String    @db.VarChar(255)
+  court                 String           @db.VarChar(100)
+  courtType             String?          @db.VarChar(50)
+  bookingType           String           @db.VarChar(50)
+  validBooking          Boolean          @default(false)
+  bookingEventKey       String           @db.VarChar(255)
+  bookingRangeKey       String           @db.VarChar(255)
+  netRevenue            Decimal          @db.Decimal(14, 2)
+  addOnRevenue          Decimal          @db.Decimal(14, 2)
+  voucherDiscount       Decimal          @db.Decimal(14, 2)
+  status                String?          @db.VarChar(100)
+  promoName             String?
+  sportPurpose          String?
+  description           String?          @db.Text
+  createdAt             DateTime         @default(now())
+  addOns                String?          @db.Text
+  customerKeyConfidence String?          @db.VarChar(50)
+  customerKeyType       String?          @db.VarChar(50)
+  customerProfile       String?          @db.VarChar(100)
+  deskripsi             String?          @db.Text
+  email                 String?
+  hargaAddOns           Decimal?         @db.Decimal(14, 2)
+  hargaBersih           Decimal?         @db.Decimal(14, 2)
+  hargaVoucher          Decimal?         @db.Decimal(14, 2)
+  jamMain               String?          @db.VarChar(50)
+  keperluan             String?          @db.VarChar(100)
+  lapangan              String?          @db.VarChar(100)
+  nama                  String?
+  noTelepon             String?          @db.VarChar(50)
+  normalizedName        String?
+  period                String?          @db.VarChar(20)
+  playTimeGroup         String?          @db.VarChar(30)
+  promosi               String?          @db.Text
   rawData               Json?
-  createdAt             DateTime  @default(now())
-
-  batch           ImportBatch      @relation(fields: [batchId], references: [id])
-  customer        Customer?        @relation(fields: [customerId], references: [id])
-  courtHourUsages CourtHourUsage[]
+  reschedule            String?          @db.VarChar(50)
+  tanggalMain           DateTime?
+  tanggalTransaksi      DateTime?
+  tipeVoucher           String?          @db.VarChar(100)
+  venue                 String?          @db.VarChar(100)
+  courtHourUsages       CourtHourUsage[]
+  batch                 ImportBatch      @relation(fields: [batchId], references: [id])
+  customer              Customer?        @relation(fields: [customerId], references: [id])
 
   @@index([batchId])
   @@index([rawRowId])
@@ -204,18 +189,17 @@ model FacilityTransaction {
 }
 
 model CourtHourUsage {
-  id            Int      @id @default(autoincrement())
+  id            Int                 @id @default(autoincrement())
   transactionId Int
   batchId       Int
   playDate      DateTime
-  hourStart     String   @db.VarChar(10)
-  court         String   @db.VarChar(100)
-  courtType     String?  @db.VarChar(50)
-  courtHourKey  String   @unique @db.VarChar(191)
-  hourlyRevenue Decimal  @db.Decimal(14, 2)
-  createdAt     DateTime @default(now())
-
-  transaction FacilityTransaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+  hourStart     String              @db.VarChar(10)
+  court         String              @db.VarChar(100)
+  courtType     String?             @db.VarChar(50)
+  courtHourKey  String              @unique
+  hourlyRevenue Decimal             @db.Decimal(14, 2)
+  createdAt     DateTime            @default(now())
+  transaction   FacilityTransaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
 
   @@index([transactionId])
   @@index([batchId])
@@ -226,24 +210,23 @@ model CourtHourUsage {
 }
 
 model SegmentationRun {
-  id                Int      @id @default(autoincrement())
-  runDate           DateTime @default(now())
-  updatedAt         DateTime @updatedAt
-  method            String   @default("RFM_KMEANS") @db.VarChar(50)
-  kValue            Int      @default(0)
-  totalCustomers    Int      @default(0)
-  filterMonth       String?  @db.VarChar(20)
+  id                Int                @id @default(autoincrement())
+  runDate           DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+  method            String             @default("RFM_KMEANS") @db.VarChar(50)
+  kValue            Int                @default(0)
+  totalCustomers    Int                @default(0)
+  filterMonth       String?            @db.VarChar(20)
   filterYear        Int?
-  filterPeriodType  String?  @db.VarChar(10)
-  filterCourtType   String?  @db.VarChar(50)
-  filterBookingType String?  @db.VarChar(50)
-  status            String   @default("running") @db.VarChar(50)
-  errorMessage      String?  @db.Text
+  filterPeriodType  String?            @db.VarChar(10)
+  filterCourtType   String?            @db.VarChar(50)
+  filterBookingType String?            @db.VarChar(50)
+  status            String             @default("running") @db.VarChar(50)
+  errorMessage      String?            @db.Text
   silhouetteScore   Float?
   kEvaluation       Json?
-
-  customerScores  CustomerRfmScore[]
-  clusterProfiles ClusterProfile[]
+  clusterProfiles   ClusterProfile[]
+  customerScores    CustomerRfmScore[]
 
   @@index([runDate])
   @@index([status])
@@ -253,11 +236,11 @@ model SegmentationRun {
 }
 
 model CustomerRfmScore {
-  id                  Int      @id @default(autoincrement())
+  id                  Int             @id @default(autoincrement())
   runId               Int
-  customerKey         String   @db.VarChar(191)
-  customerName        String?  @db.VarChar(191)
-  bookingTypeDominant String?  @db.VarChar(50)
+  customerKey         String
+  customerName        String?
+  bookingTypeDominant String?         @db.VarChar(50)
   recency             Int
   frequency           Int
   monetary            Float
@@ -265,10 +248,9 @@ model CustomerRfmScore {
   fScore              Int
   mScore              Int
   clusterId           Int
-  segmentName         String   @db.VarChar(100)
-  createdAt           DateTime @default(now())
-
-  run SegmentationRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  segmentName         String          @db.VarChar(100)
+  createdAt           DateTime        @default(now())
+  run                 SegmentationRun @relation(fields: [runId], references: [id], onDelete: Cascade)
 
   @@unique([runId, customerKey])
   @@index([runId])
@@ -279,22 +261,21 @@ model CustomerRfmScore {
 }
 
 model ClusterProfile {
-  id                 Int      @id @default(autoincrement())
+  id                 Int             @id @default(autoincrement())
   runId              Int
   clusterId          Int
-  segmentName        String   @db.VarChar(100)
-  segmentDescription String?  @db.Text
-  labelReason        String?  @db.Text
+  segmentName        String          @db.VarChar(100)
   customerCount      Int
   avgRecency         Float
   avgFrequency       Float
   avgMonetary        Float
-  avgRScore          Float?
+  createdAt          DateTime        @default(now())
   avgFScore          Float?
   avgMScore          Float?
-  createdAt          DateTime @default(now())
-
-  run SegmentationRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  avgRScore          Float?
+  labelReason        String?         @db.Text
+  segmentDescription String?         @db.Text
+  run                SegmentationRun @relation(fields: [runId], references: [id], onDelete: Cascade)
 
   @@unique([runId, clusterId])
   @@index([runId])
@@ -303,21 +284,18 @@ model ClusterProfile {
 }
 
 model PlaytimeMlRun {
-  id             Int     @id @default(autoincrement())
-  period         String? @db.VarChar(20)
-  algorithm      String  @default("KMeans") @db.VarChar(50)
-  clusterCount   Int
-  totalCustomers Int
-  totalSessions  Int
-  status         String  @default("completed") @db.VarChar(50)
-  errorMessage   String? @db.Text
-
-  sessionByTime Json?
-  heatmapData   Json?
-  topHourData   Json?
-
-  createdAt DateTime @default(now())
-
+  id               Int                       @id @default(autoincrement())
+  period           String?                   @db.VarChar(20)
+  algorithm        String                    @default("KMeans") @db.VarChar(50)
+  clusterCount     Int
+  totalCustomers   Int
+  totalSessions    Int
+  status           String                    @default("completed") @db.VarChar(50)
+  errorMessage     String?                   @db.Text
+  sessionByTime    Json?
+  heatmapData      Json?
+  topHourData      Json?
+  createdAt        DateTime                  @default(now())
   customerSegments PlaytimeCustomerSegment[]
   segmentSummaries PlaytimeSegmentSummary[]
 
@@ -325,27 +303,20 @@ model PlaytimeMlRun {
 }
 
 model PlaytimeCustomerSegment {
-  id    Int @id @default(autoincrement())
-  runId Int
-
-  customerName String @db.VarChar(191)
-
-  sesiPagi    Int
-  sesiSiang   Int
-  sesiEvening Int @default(0)
-  sesiMalam   Int
-  totalSesi   Int
-
-  ratioPagi    Float
-  ratioSiang   Float
-  ratioEvening Float @default(0)
-  ratioMalam   Float
-
+  id              Int           @id @default(autoincrement())
+  runId           Int
+  customerName    String
+  sesiPagi        Int
+  sesiSiang       Int
+  sesiMalam       Int
+  totalSesi       Int
+  ratioPagi       Float
+  ratioSiang      Float
+  ratioMalam      Float
   playtimeCluster Int
-  playtimeSegment String  @db.VarChar(100)
-  activityLevel   String? @db.VarChar(100)
-
-  run PlaytimeMlRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  playtimeSegment String        @db.VarChar(100)
+  activityLevel   String?       @db.VarChar(100)
+  run             PlaytimeMlRun @relation(fields: [runId], references: [id], onDelete: Cascade)
 
   @@index([runId])
   @@index([customerName])
@@ -354,26 +325,19 @@ model PlaytimeCustomerSegment {
 }
 
 model PlaytimeSegmentSummary {
-  id    Int @id @default(autoincrement())
-  runId Int
-
+  id              Int           @id @default(autoincrement())
+  runId           Int
   playtimeCluster Int
-  playtimeSegment String @db.VarChar(100)
-
-  totalCustomers Int
-
+  playtimeSegment String        @db.VarChar(100)
+  totalCustomers  Int
   avgRatioPagi    Float
   avgRatioSiang   Float
-  avgRatioEvening Float @default(0)
   avgRatioMalam   Float
-
-  avgSesiPagi    Float
-  avgSesiSiang   Float
-  avgSesiEvening Float @default(0)
-  avgSesiMalam   Float
-  avgTotalSesi   Float
-
-  run PlaytimeMlRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  avgSesiPagi     Float
+  avgSesiSiang    Float
+  avgSesiMalam    Float
+  avgTotalSesi    Float
+  run             PlaytimeMlRun @relation(fields: [runId], references: [id], onDelete: Cascade)
 
   @@index([runId])
   @@index([playtimeSegment])
@@ -395,75 +359,74 @@ model MetaRawResponse {
 }
 
 model InstagramAccount {
-  id             String   @id @default(cuid()) @db.VarChar(30)
-  igUserId       String   @unique @db.VarChar(100)
-  username       String?  @db.VarChar(100)
-  name           String?  @db.VarChar(150)
-  followersCount Int?
-  followsCount   Int?
-  mediaCount     Int?
-  rawJson        Json?
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
-
-  media            InstagramMedia[]
+  id               String                           @id @default(cuid()) @db.VarChar(30)
+  igUserId         String                           @unique @db.VarChar(100)
+  username         String?                          @db.VarChar(100)
+  name             String?                          @db.VarChar(150)
+  followersCount   Int?
+  followsCount     Int?
+  mediaCount       Int?
+  rawJson          Json?
+  createdAt        DateTime                         @default(now())
+  updatedAt        DateTime                         @updatedAt
   accountInsights  InstagramAccountInsight[]
   snapshots        InstagramAccountSnapshot[]
   audienceInsights InstagramAudienceInsight[]
+  media            InstagramMedia[]
+  monthlyPerformance InstagramMonthlyMediaPerformance[]
 
   @@map("instagram_accounts")
 }
 
 model InstagramAccountSnapshot {
-  id             String   @id @default(cuid()) @db.VarChar(30)
-  accountId      String   @db.VarChar(30)
+  id             String           @id @default(cuid()) @db.VarChar(30)
+  accountId      String           @db.VarChar(30)
   followersCount Int?
   followsCount   Int?
   mediaCount     Int?
   snapshotDate   DateTime
   rawJson        Json?
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
-
-  account InstagramAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+  account        InstagramAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
 
   @@unique([accountId, snapshotDate])
   @@map("instagram_account_snapshots")
 }
 
 model InstagramMedia {
-  id               String    @id @default(cuid()) @db.VarChar(30)
-  igMediaId        String    @unique @db.VarChar(100)
-  accountId        String    @db.VarChar(30)
-  caption          String?   @db.Text
-  mediaType        String?   @db.VarChar(50)
-  mediaProductType String?   @db.VarChar(50)
-  mediaUrl         String?   @db.Text
-  thumbnailUrl     String?   @db.Text
-  permalink        String?   @db.Text
+  id               String                  @id @default(cuid()) @db.VarChar(30)
+  igMediaId        String                  @unique @db.VarChar(100)
+  accountId        String                  @db.VarChar(30)
+  caption          String?                 @db.Text
+  contentLabel     String?                 @db.VarChar(50)
+  mediaType        String?                 @db.VarChar(50)
+  mediaProductType String?                 @db.VarChar(50)
+  mediaUrl         String?                 @db.Text
+  thumbnailUrl     String?                 @db.Text
+  permalink        String?                 @db.Text
   postedAt         DateTime?
   rawJson          Json?
-  createdAt        DateTime  @default(now())
-  updatedAt        DateTime  @updatedAt
+  createdAt        DateTime                @default(now())
+  updatedAt        DateTime                @updatedAt
+  account          InstagramAccount        @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  insights         InstagramMediaInsight[]
 
-  account  InstagramAccount        @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  insights InstagramMediaInsight[]
-
+  @@index([accountId], map: "instagram_media_accountId_fkey")
   @@map("instagram_media")
 }
 
 model InstagramMediaInsight {
-  id          String   @id @default(cuid()) @db.VarChar(30)
-  mediaId     String   @db.VarChar(30)
-  metricName  String   @db.VarChar(100)
+  id          String         @id @default(cuid()) @db.VarChar(30)
+  mediaId     String         @db.VarChar(30)
+  metricName  String         @db.VarChar(100)
   metricValue Float?
-  period      String   @default("lifetime") @db.VarChar(50)
+  period      String         @default("lifetime") @db.VarChar(50)
   insightDate DateTime
   rawJson     Json?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-
-  media InstagramMedia @relation(fields: [mediaId], references: [id], onDelete: Cascade)
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+  media       InstagramMedia @relation(fields: [mediaId], references: [id], onDelete: Cascade)
 
   @@unique([mediaId, metricName, insightDate, period])
   @@index([metricName])
@@ -471,17 +434,16 @@ model InstagramMediaInsight {
 }
 
 model InstagramAccountInsight {
-  id          String   @id @default(cuid()) @db.VarChar(30)
-  accountId   String   @db.VarChar(30)
-  metricName  String   @db.VarChar(100)
+  id          String           @id @default(cuid()) @db.VarChar(30)
+  accountId   String           @db.VarChar(30)
+  metricName  String           @db.VarChar(100)
   metricValue Float?
-  period      String   @db.VarChar(50)
+  period      String           @db.VarChar(50)
   insightDate DateTime
   rawJson     Json?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-
-  account InstagramAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+  account     InstagramAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
 
   @@unique([accountId, metricName, insightDate, period])
   @@index([metricName])
@@ -489,19 +451,18 @@ model InstagramAccountInsight {
 }
 
 model InstagramAudienceInsight {
-  id             String   @id @default(cuid()) @db.VarChar(30)
-  accountId      String   @db.VarChar(30)
-  metricName     String   @db.VarChar(100)
-  breakdownType  String   @db.VarChar(50)
-  breakdownValue String   @db.VarChar(191)
+  id             String           @id @default(cuid()) @db.VarChar(30)
+  accountId      String           @db.VarChar(30)
+  metricName     String           @db.VarChar(100)
+  breakdownType  String           @db.VarChar(50)
+  breakdownValue String
   metricValue    Float?
-  period         String   @db.VarChar(50)
+  period         String           @db.VarChar(50)
   insightDate    DateTime
   rawJson        Json?
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
-
-  account InstagramAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+  account        InstagramAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
 
   @@unique([accountId, metricName, breakdownType, breakdownValue, insightDate, period])
   @@map("instagram_audience_insights")
@@ -522,6 +483,34 @@ model InstagramContentSummary {
   @@map("instagram_content_summaries")
 }
 
+model InstagramMonthlyMediaPerformance {
+  id                          String           @id @default(cuid()) @db.VarChar(30)
+  accountId                   String           @db.VarChar(30)
+  month                       DateTime
+  contentType                 String           @db.VarChar(50)
+  views                       Int              @default(0)
+  viewsFromFollowers          Int              @default(0)
+  viewsFromNonFollowers       Int              @default(0)
+  reach                       Int              @default(0)
+  reachFromFollowers          Int              @default(0)
+  reachFromNonFollowers       Int              @default(0)
+  interactions                Int              @default(0)
+  interactionsFromFollowers   Int              @default(0)
+  interactionsFromNonFollowers Int             @default(0)
+  likes                       Int              @default(0)
+  comments                    Int              @default(0)
+  shares                      Int              @default(0)
+  saved                       Int              @default(0)
+  contentCount                Int              @default(0)
+  rawJson                     Json?
+  createdAt                   DateTime         @default(now())
+  updatedAt                   DateTime         @updatedAt
+  account                     InstagramAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@unique([accountId, month, contentType])
+  @@map("instagram_monthly_media_performance")
+}
+
 model MetaSyncLog {
   id         String    @id @default(cuid()) @db.VarChar(30)
   syncType   String    @db.VarChar(100)
@@ -533,4 +522,15 @@ model MetaSyncLog {
   @@map("meta_sync_logs")
 }
 
+enum Role {
+  operational
+  management
+  it_support
+}
 
+enum ImportStatus {
+  uploaded
+  processing
+  completed
+  failed
+}

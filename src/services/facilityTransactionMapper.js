@@ -47,37 +47,82 @@ const normalizePhone = (value) => {
 };
 
 const parseAmount = (value) => {
-  if (value === null || value === undefined || value === "") return 0;
+  if (value === null || value === undefined || value === "") return 0
 
-  const normalized = String(value)
-    .replace(/[^\d,.-]/g, "")
+  const text = normalizeWhitespace(value)
+
+  if (!text) return 0
+
+  const cleaned = text
+    .replace(/rp/gi, "")
+    .replace(/\s+/g, "")
+    .trim()
+
+  if (!/\d/.test(cleaned)) {
+    throw new Error(`Invalid amount format: ${text}`)
+  }
+
+  if (/[^0-9,.-]/.test(cleaned)) {
+    throw new Error(`Invalid amount format: ${text}`)
+  }
+
+  const normalized = cleaned
     .replace(/\.(?=\d{3}(?:\D|$))/g, "")
-    .replace(",", ".");
+    .replace(/,(?=\d{3}(?:\D|$))/g, "")
+    .replace(",", ".")
 
-  const numberValue = Number(normalized);
-  return Number.isFinite(numberValue) ? numberValue : 0;
-};
+  const numberValue = Number(normalized)
+
+  if (!Number.isFinite(numberValue)) {
+    throw new Error(`Invalid amount format: ${text}`)
+  }
+
+  return numberValue
+}
+
+const isDateInReasonableRange = (date) => {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) return false
+
+  const year = date.getFullYear()
+  return year >= 2020 && year <= 2035
+}
+
+const parseExcelSerialDate = (value) => {
+  const serial = Number(value)
+
+  if (!Number.isFinite(serial)) return null
+
+  if (serial < 40000 || serial > 60000) return null
+
+  const excelEpoch = Date.UTC(1899, 11, 30)
+  const date = new Date(excelEpoch + serial * 86400000)
+
+  return isDateInReasonableRange(date) ? date : null
+}
 
 const parseDate = (value) => {
-  if (!value) return null;
+  if (!value) return null
+
+  if (value instanceof Date && isDateInReasonableRange(value)) {
+    return value
+  }
 
   if (typeof value === "number" && Number.isFinite(value)) {
-    const excelEpoch = Date.UTC(1899, 11, 30);
-    const date = new Date(excelEpoch + value * 86400000);
-    return Number.isNaN(date.getTime()) ? null : date;
+    return parseExcelSerialDate(value)
   }
 
-  if (value instanceof Date && !Number.isNaN(value.getTime())) {
-    return value;
+  const raw = normalizeWhitespace(value)
+  if (!raw) return null
+
+  if (/^\d+(\.\d+)?$/.test(raw)) {
+    return parseExcelSerialDate(raw)
   }
 
-  const raw = normalizeWhitespace(value);
-  if (!raw) return null;
-
-  const dayMonthTextMatch = raw.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2,4})$/);
+  const dayMonthTextMatch = raw.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2,4})$/)
 
   if (dayMonthTextMatch) {
-    const [, day, monthText, yearText] = dayMonthTextMatch;
+    const [, day, monthText, yearText] = dayMonthTextMatch
+
     const monthMap = {
       jan: 0,
       feb: 1,
@@ -91,29 +136,36 @@ const parseDate = (value) => {
       oct: 9,
       nov: 10,
       dec: 11,
-    };
+    }
 
-    const month = monthMap[monthText.toLowerCase()];
-    const yearNumber = Number(yearText);
-    const year = yearNumber < 100 ? 2000 + yearNumber : yearNumber;
+    const month = monthMap[monthText.toLowerCase()]
+    const yearNumber = Number(yearText)
+    const year = yearNumber < 100 ? 2000 + yearNumber : yearNumber
 
     if (month !== undefined) {
-      const date = new Date(year, month, Number(day));
-      if (!Number.isNaN(date.getTime())) return date;
+      const date = new Date(year, month, Number(day))
+      return isDateInReasonableRange(date) ? date : null
     }
   }
 
-  const dayMonthYearMatch = raw.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/);
+  const dayMonthYearMatch = raw.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/)
 
   if (dayMonthYearMatch) {
-    const [, day, month, year] = dayMonthYearMatch;
-    const date = new Date(Number(year), Number(month) - 1, Number(day));
-    if (!Number.isNaN(date.getTime())) return date;
+    const [, day, month, year] = dayMonthYearMatch
+    const date = new Date(Number(year), Number(month) - 1, Number(day))
+    return isDateInReasonableRange(date) ? date : null
   }
 
-  const date = new Date(raw);
-  return Number.isNaN(date.getTime()) ? null : date;
-};
+  const isoDateMatch = raw.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/)
+
+  if (isoDateMatch) {
+    const [, year, month, day] = isoDateMatch
+    const date = new Date(Number(year), Number(month) - 1, Number(day))
+    return isDateInReasonableRange(date) ? date : null
+  }
+
+  return null
+}
 
 const formatTimeLabel = (hour, minute = 0) =>
   `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
@@ -230,9 +282,17 @@ const getDateKey = (date) => {
 
   return `${year}-${month}-${day}`;
 };
+const isPaymentCompleted = (status) =>
+  normalizeText(status) === "payment completed";
 
-const isPaymentCompleted = (status) => normalizeText(status) === "payment completed";
-const isManualWalkIn = (status) => normalizeText(status) === "manual/walk-in";
+const isManualWalkIn = (status) =>
+  normalizeText(status) === "manual/walk-in";
+
+const isInternalBooking = (status) =>
+  normalizeText(status) === "internal";
+
+const isAllowedTransactionStatus = (status) =>
+  isPaymentCompleted(status) || isManualWalkIn(status) || isInternalBooking(status);
 
 const buildCustomerIdentity = ({
   rawRowId,
@@ -271,15 +331,19 @@ const buildCustomerIdentity = ({
   };
 };
 
-const buildBookingType = ({ status, orderId }) => {
-  const normalizedOrderId = normalizeWhitespace(orderId);
+const buildBookingType = ({ status }) => {
+  const normalizedStatus = normalizeText(status);
 
-  if (isPaymentCompleted(status) && normalizedOrderId) {
-    return "regular_booking";
+  if (normalizedStatus === "payment completed") {
+    return "membership";
   }
 
-  if (isManualWalkIn(status) || !normalizedOrderId) {
-    return "member_internal_booking";
+  if (normalizedStatus === "manual/walk-in") {
+    return "non_membership";
+  }
+
+  if (normalizedStatus === "internal") {
+    return "internal";
   }
 
   return "other";
@@ -337,13 +401,26 @@ const buildFacilityTransactionPayload = (
   const playDate = parseDate(
     getValue(row, ["Tanggal Main", "tanggal_main", "tanggalMain", "playDate"])
   );
+  if (!transactionDate) {
+  throw new Error("Invalid transaction date format.")
+}
+
+if (!playDate) {
+  throw new Error("Invalid play date format.")
+}
 
   const jamMainRaw = getValue(row, ["Jam Main", "jam_main", "jamMain", "playTime"]);
   const parsedJamMain = parseJamMain(jamMainRaw);
   const orderId = normalizeWhitespace(
     getValue(row, ["Order ID", "Order Id", "order_id", "orderId"])
   ) || null;
-  const status = normalizeWhitespace(getValue(row, ["Status", "status"])) || null;
+  
+const status =
+  normalizeWhitespace(getValue(row, ["Status", "status"])) || null;
+
+if (!isAllowedTransactionStatus(status)) {
+  return null;
+}
 
   const courtSource =
     getValue(row, ["Lapangan", "lapangan", "Court", "court", "Venue", "venue"]) || null;
@@ -406,7 +483,7 @@ const buildFacilityTransactionPayload = (
   );
 
   const bookingType = buildBookingType({ status, orderId });
-  const validBooking = isPaymentCompleted(status) || isManualWalkIn(status);
+  const validBooking = isAllowedTransactionStatus(status);
   const bookingEventKey = buildBookingEventKey({
     orderId,
     customerKey,

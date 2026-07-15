@@ -1,4 +1,5 @@
 import { Router } from "express"
+import { logActivity } from "../services/activityLog.service.js"
 
 import { authenticate, authorize } from "../middleware/auth.js"
 import {
@@ -25,6 +26,15 @@ segmentationRouter.post(
       const input = validateSegmentationRunInput(req.body || {})
       const result = await runRfmSegmentation(input)
 
+      await logActivity(req, "SEGMENTATION_UPDATED", {
+        jobName: "Customer Value Segmentation Run",
+        status: "success",
+        totalCustomers: result.run?.totalCustomers || 0,
+        selectedK: result.selectedK,
+        method: "RFM_KMEANS",
+        completedAt: new Date().toISOString(),
+      })
+
       res.json({
         success: true,
         message: "Segmentation run completed",
@@ -42,6 +52,14 @@ segmentationRouter.post(
         },
       })
     } catch (error) {
+      await logActivity(req, "SEGMENTATION_FAILED", {
+        jobName: "Customer Value Segmentation Run",
+        status: "failed",
+        technicalMessage:
+          error instanceof Error ? error.message : "Segmentation run failed.",
+        completedAt: new Date().toISOString(),
+      }).catch(() => null)
+
       next(error)
     }
   }
@@ -103,4 +121,3 @@ segmentationRouter.get(
     }
   }
 )
-
