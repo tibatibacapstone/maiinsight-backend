@@ -25,7 +25,6 @@ router.get("/summary", async (req, res, next) => {
     const [
       users,
       latestImport,
-      latestMlRun,
       latestSegmentationRun,
       latestMetaSync,
     ] = await Promise.all([
@@ -48,15 +47,6 @@ router.get("/summary", async (req, res, next) => {
           status: true,
           updatedAt: true,
           rowCount: true,
-        },
-      }),
-      prisma.playtimeMlRun.findFirst({
-        orderBy: { createdAt: "desc" },
-        select: {
-          id: true,
-          status: true,
-          createdAt: true,
-          totalSessions: true,
         },
       }),
       prisma.segmentationRun.findFirst({
@@ -109,13 +99,6 @@ router.get("/summary", async (req, res, next) => {
           metaGraphVersion: config.metaGraphVersion,
         },
         latestImport,
-        latestMlRun: latestMlRun
-          ? {
-              ...latestMlRun,
-              lastRunningAt: latestMlRun.createdAt,
-              lastRunningLabel: latestMlRun.createdAt,
-            }
-          : null,
         latestSegmentationRun,
         latestMetaSync,
         tokenManagementMode: "database",

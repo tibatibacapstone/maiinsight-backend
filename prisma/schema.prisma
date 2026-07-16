@@ -283,67 +283,6 @@ model ClusterProfile {
   @@map("cluster_profiles")
 }
 
-model PlaytimeMlRun {
-  id               Int                       @id @default(autoincrement())
-  period           String?                   @db.VarChar(20)
-  algorithm        String                    @default("KMeans") @db.VarChar(50)
-  clusterCount     Int
-  totalCustomers   Int
-  totalSessions    Int
-  status           String                    @default("completed") @db.VarChar(50)
-  errorMessage     String?                   @db.Text
-  sessionByTime    Json?
-  heatmapData      Json?
-  topHourData      Json?
-  createdAt        DateTime                  @default(now())
-  customerSegments PlaytimeCustomerSegment[]
-  segmentSummaries PlaytimeSegmentSummary[]
-
-  @@map("playtime_ml_runs")
-}
-
-model PlaytimeCustomerSegment {
-  id              Int           @id @default(autoincrement())
-  runId           Int
-  customerName    String
-  sesiPagi        Int
-  sesiSiang       Int
-  sesiMalam       Int
-  totalSesi       Int
-  ratioPagi       Float
-  ratioSiang      Float
-  ratioMalam      Float
-  playtimeCluster Int
-  playtimeSegment String        @db.VarChar(100)
-  activityLevel   String?       @db.VarChar(100)
-  run             PlaytimeMlRun @relation(fields: [runId], references: [id], onDelete: Cascade)
-
-  @@index([runId])
-  @@index([customerName])
-  @@index([playtimeSegment])
-  @@map("playtime_customer_segments")
-}
-
-model PlaytimeSegmentSummary {
-  id              Int           @id @default(autoincrement())
-  runId           Int
-  playtimeCluster Int
-  playtimeSegment String        @db.VarChar(100)
-  totalCustomers  Int
-  avgRatioPagi    Float
-  avgRatioSiang   Float
-  avgRatioMalam   Float
-  avgSesiPagi     Float
-  avgSesiSiang    Float
-  avgSesiMalam    Float
-  avgTotalSesi    Float
-  run             PlaytimeMlRun @relation(fields: [runId], references: [id], onDelete: Cascade)
-
-  @@index([runId])
-  @@index([playtimeSegment])
-  @@map("playtime_segment_summaries")
-}
-
 model MetaRawResponse {
   id           String   @id @default(cuid()) @db.VarChar(30)
   source       String   @db.VarChar(100)
