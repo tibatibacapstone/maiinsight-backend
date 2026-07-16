@@ -14,6 +14,24 @@ const RUNNING_STATUS = "running"
 const COMPLETED_STATUS = "completed"
 const FAILED_STATUS = "failed"
 const MIXED_BOOKING_TYPE_LABEL = "Mixed/Other"
+const DEFAULT_SEED = 42
+
+/**
+ * Mulberry32 — seeded 32-bit PRNG.
+ * Produces a deterministic sequence of pseudo-random numbers in [0, 1)
+ * so that repeated segmentation runs on the same dataset yield
+ * identical clusters.  The seed is configurable via DEFAULT_SEED.
+ */
+const createSeededRandom = (seed = DEFAULT_SEED) => {
+  let state = seed | 0
+
+  return () => {
+    state = (state + 0x6d2b79f5) | 0
+    let t = Math.imul(state ^ (state >>> 15), 1 | state)
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  }
+}
 
 const BOOKING_TYPE_DISPLAY_MAP = {
   member_internal_booking: "Membership",
@@ -415,33 +433,77 @@ const euclideanDistance = (leftVector, rightVector) =>
     leftVector.reduce((total, value, index) => total + (value - rightVector[index]) ** 2, 0)
   )
 
-const initializeCentroids = (points, kValue) => {
-  const sortedPoints = [...points].sort((left, right) => {
-    const leftSum = left.features.reduce((total, value) => total + value, 0)
-    const rightSum = right.features.reduce((total, value) => total + value, 0)
-
-    if (leftSum !== rightSum) return leftSum - rightSum
-    if (left.customer.recency !== right.customer.recency) {
-      return left.customer.recency - right.customer.recency
-    }
-    if (left.customer.frequency !== right.customer.frequency) {
-      return right.customer.frequency - left.customer.frequency
-    }
-    if (left.customer.monetary !== right.customer.monetary) {
-      return right.customer.monetary - left.customer.monetary
-    }
-
-    return left.customer.customerKey.localeCompare(right.customer.customerKey)
-  })
+/**
+ * K-Means++ centroid initialization.
+ *
+ * Replaces the previous quantile-based spread with the provably-better
+ * K-Means++ seeding strategy (Arthur & Vassilvitskii, 2007):
+ *
+ *   1. Select the first centroid uniformly at random from the dataset.
+ *   2. For each remaining centroid:
+ *      a. Compute D(x)² — the squared Euclidean distance from every
+ *         data point x to the nearest already-chosen centroid.
+ *      b. Choose the next centroid with probability proportional to D(x)².
+ *      c. This biases selection toward points far from existing centroids,
+ *         yielding a well-spread initial configuration that reduces the
+ *         number of iterations needed to converge and lowers the risk
+ *         of poor local minima.
+ *   3. Repeat step 2 until K centroids are initialised.
+ *
+ * The `random` argument is a caller-supplied PRNG (see createSeededRandom)
+ * to guarantee deterministic results across runs.
+ */
+const initializeCentroids = (points, kValue, random) => {
+  const pointCount = points.length
+  if (pointCount === 0 || kValue === 0) return []
 
   const centroids = []
 
-  for (let index = 0; index < kValue; index += 1) {
-    const pointIndex =
-      kValue === 1
-        ? 0
-        : Math.round((index * (sortedPoints.length - 1)) / (kValue - 1))
-    centroids.push([...sortedPoints[pointIndex].features])
+  // Step 1: pick the first centroid uniformly at random
+  const firstIndex = Math.floor(random() * pointCount)
+  centroids.push([...points[firstIndex].features])
+
+  // Steps 2-4: pick remaining centroids via K-Means++ probability weighting
+  for (let c = 1; c < kValue; c += 1) {
+    // Compute squared distance from each point to its nearest existing centroid
+    const squaredDistances = points.map((point) => {
+      let minimumDistance = Infinity
+
+      for (const centroid of centroids) {
+        const distance = euclideanDistance(point.features, centroid)
+        if (distance < minimumDistance) {
+          minimumDistance = distance
+        }
+      }
+
+      return minimumDistance * minimumDistance
+    })
+
+    // Sum of all squared distances (the normalisation denominator)
+    const totalSquaredDistance = squaredDistances.reduce((sum, d) => sum + d, 0)
+
+    // Degenerate case: all remaining points sit exactly on an existing centroid.
+    // Fall back to a uniform random pick so we still get a distinct centroid.
+    if (totalSquaredDistance === 0) {
+      const fallbackIndex = Math.floor(random() * pointCount)
+      centroids.push([...points[fallbackIndex].features])
+      continue
+    }
+
+    // Weighted random selection proportional to D(x)²
+    const threshold = random() * totalSquaredDistance
+    let cumulative = 0
+    let selectedIndex = 0
+
+    for (let i = 0; i < pointCount; i += 1) {
+      cumulative += squaredDistances[i]
+      if (cumulative >= threshold) {
+        selectedIndex = i
+        break
+      }
+    }
+
+    centroids.push([...points[selectedIndex].features])
   }
 
   return centroids
@@ -499,7 +561,8 @@ const runDeterministicKMeans = (points, requestedKValue = DEFAULT_K) => {
   }
 
   const kValue = Math.max(1, Math.min(requestedKValue, points.length))
-  let centroids = initializeCentroids(points, kValue)
+  const random = createSeededRandom(DEFAULT_SEED)
+  let centroids = initializeCentroids(points, kValue, random)
   let assignments = new Array(points.length).fill(-1)
 
   for (let iteration = 0; iteration < 100; iteration += 1) {
