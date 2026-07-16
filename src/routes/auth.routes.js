@@ -25,8 +25,8 @@ router.post("/register", async (req, res, next) => {
   try {
     const { inviteToken, password } = req.body
 
-    if (!inviteToken || !password) {
-      return res.status(400).json({ error: "Invite token and password are required" })
+    if (!inviteToken) {
+      return res.status(400).json({ error: "Invite token is required" })
     }
 
     let invitePayload
@@ -56,7 +56,7 @@ router.post("/register", async (req, res, next) => {
       return res.status(409).json({ error: "User already exists" })
     }
 
-    const hashedPassword = await bcrypt.hash(password, 10)
+    const hashedPassword = password ? await bcrypt.hash(password, 10) : null
 
     const user = await prisma.user.create({
       data: {
@@ -97,10 +97,76 @@ router.post("/login", async (req, res, next) => {
       return res.status(401).json({ error: "Invalid" })
     }
 
+    if (!user.password) {
+      return res.status(401).json({ error: "This account uses Google login. Please sign in with Google." })
+    }
+
     const passwordMatch = await bcrypt.compare(password, user.password)
 
     if (!passwordMatch) {
       return res.status(401).json({ error: "Invalid credentials" })
+    }
+
+    const token = createToken(user)
+
+    res.json({ token, user: { id: user.id, email: user.email, name: user.name, role: user.role } })
+  } catch (error) {
+    next(error)
+  }
+})
+
+router.post("/google", async (req, res, next) => {
+  try {
+    const { credential } = req.body
+
+    if (!credential) {
+      return res.status(400).json({ error: "Google credential is required" })
+    }
+
+    let email
+    let name
+
+    if (env.googleClientId) {
+      // Try as ID token first (from GoogleLogin component)
+      try {
+        const { OAuth2Client } = await import("google-auth-library")
+        const client = new OAuth2Client(env.googleClientId)
+        const ticket = await client.verifyIdToken({
+          idToken: credential,
+          audience: env.googleClientId,
+        })
+        const payload = ticket.getPayload()
+        email = payload?.email
+        name = payload?.name
+      } catch {
+        // Not an ID token — try as access token (from useGoogleLogin)
+      }
+    }
+
+    // If ID token verification didn't work, try as access token
+    if (!email) {
+      try {
+        const resp = await fetch("https://www.googleapis.com/oauth2/v3/userinfo", {
+          headers: { Authorization: `Bearer ${credential}` },
+        })
+        if (resp.ok) {
+          const userInfo = await resp.json()
+          email = userInfo.email
+          name = userInfo.name
+        }
+      } catch {
+        // Failed both methods
+      }
+    }
+
+    if (!email) {
+      return res.status(401).json({ error: "Invalid Google credential" })
+    }
+
+    const user = await prisma.user.findUnique({ where: { email } })
+
+    if (!user) {
+      return res.status(401).json({ error: "Account not found. Please contact IT Support to get registered." })
     }
 
     const token = createToken(user)

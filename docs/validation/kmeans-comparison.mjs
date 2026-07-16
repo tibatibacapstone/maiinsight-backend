@@ -7,7 +7,7 @@
  * normalization, K-Means iteration, Silhouette, Inertia)
  * are identical between both variants.
  *
- * Usage:  node scripts/kmeans-comparison.mjs
+ * Usage:  node docs/validation/kmeans-comparison.mjs
  */
 
 // ────────────────────────────────────────────────────────────
@@ -29,11 +29,11 @@ const createSeededRandom = (seed) => {
 const euclideanDistance = (a, b) =>
   Math.sqrt(a.reduce((s, v, i) => s + (v - b[i]) ** 2, 0))
 
-const assignPointToCluster = (point, centroids) => {
+const assignPointToCluster = (pointFeatures, centroids) => {
   let best = 0
   let bestDist = Infinity
   centroids.forEach((c, i) => {
-    const d = euclideanDistance(point, c)
+    const d = euclideanDistance(pointFeatures, c)
     if (d < bestDist) { bestDist = d; best = i }
   })
   return best
@@ -41,15 +41,15 @@ const assignPointToCluster = (point, centroids) => {
 
 const calculateCentroid = (members, fallback) => {
   if (!members.length) return [...fallback]
-  const dims = members[0].length
+  const dims = members[0].features.length
   const sum = Array.from({ length: dims }, () => 0)
-  members.forEach(m => m.forEach((v, i) => { sum[i] += v }))
+  members.forEach(m => m.features.forEach((v, i) => { sum[i] += v }))
   return sum.map(v => v / members.length)
 }
 
 const calculateInertia = (points, assignments, centroids) =>
   Number(points.reduce((s, p, i) =>
-    s + euclideanDistance(p, centroids[assignments[i]]) ** 2, 0).toFixed(4))
+    s + euclideanDistance(p.features, centroids[assignments[i]]) ** 2, 0).toFixed(4))
 
 const calculateSilhouetteScore = (points, assignments, kValue) => {
   if (points.length < 2 || kValue < 2) return null
@@ -63,12 +63,12 @@ const calculateSilhouetteScore = (points, assignments, kValue) => {
 
     const a = same
       .filter(j => j !== idx)
-      .reduce((s, j) => s + euclideanDistance(p, points[j]), 0) / (same.length - 1)
+      .reduce((s, j) => s + euclideanDistance(p.features, points[j].features), 0) / (same.length - 1)
 
     let b = Infinity
     members.forEach((others, ocid) => {
       if (ocid === cid || !others.length) return
-      const d = others.reduce((s, j) => s + euclideanDistance(p, points[j]), 0) / others.length
+      const d = others.reduce((s, j) => s + euclideanDistance(p.features, points[j].features), 0) / others.length
       if (d < b) b = d
     })
 
@@ -173,7 +173,7 @@ const runKMeans = (points, k, initStrategy, seed = 42) => {
 
   for (let iter = 0; iter < MAX_ITERATIONS; iter++) {
     iterCount = iter + 1
-    const next = points.map(p => assignPointToCluster(p, centroids))
+    const next = points.map(p => assignPointToCluster(p.features, centroids))
     const changed = next.some((c, i) => c !== assignments[i])
     const nextCentroids = centroids.map((c, ci) =>
       calculateCentroid(points.filter((_, i) => next[i] === ci), c))

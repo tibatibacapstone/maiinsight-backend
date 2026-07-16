@@ -31,4 +31,5 @@ export const env = {
   metaAccessToken: process.env.META_ACCESS_TOKEN || "",
   metaIgUserId: process.env.META_IG_USER_ID || "",
   metaPageId: process.env.META_PAGE_ID || "",
+  googleClientId: process.env.GOOGLE_CLIENT_ID || "670278342389-67io1ot1srnrp4q7eek3nuunvcn55rqr.apps.googleusercontent.com",
 };

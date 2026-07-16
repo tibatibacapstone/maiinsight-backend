@@ -50,7 +50,7 @@ const SEGMENT_DEFINITIONS = [
   {
     baseName: "Routine Players",
     description:
-      "Consistent players with routine booking patterns and stable revenue contribution.",
+      "Consistent players with relatively high booking frequency and stable revenue contribution, representing reliable but lower-value customers compared to Prime Players.",
     recommendedAction:
       "Maintain with routine booking packages, membership upgrades, and consistent engagement offers.",
   },
@@ -956,7 +956,7 @@ const scoreReEngagementPlayers = (profile) =>
   getRangeMatchScore(profile.avgRScore, 1, 2.5, 3) +
   getRangeMatchScore(profile.avgFScore, 1, 3.5, 2.25) +
   getRangeMatchScore(profile.avgMScore, 1, 3.5, 2.25) +
-  Math.max(0, profile.avgRecency - 14) * 0.02
+  Math.max(0, profile.avgRecency - 14) * 0.05
 
 const getSegmentMatchScore = (profile, baseName) => {
   switch (baseName) {
@@ -998,7 +998,7 @@ const buildLabelReason = (profile, definition, segmentName) => {
     case "Prime Players":
       return `${scoreSummary}, indicating high recency, high frequency, and high monetary value ${metricSummary}. This cluster represents the highest-value customers and is a retention priority. ${definition.recommendedAction}`
     case "Routine Players":
-      return `${scoreSummary}, showing strong booking frequency with stable medium-to-high value ${metricSummary}. This cluster contributes stable revenue and is a maintenance or upgrade opportunity. ${definition.recommendedAction}`
+      return `${scoreSummary}, showing relatively high booking frequency with stable medium value ${metricSummary}. This cluster contributes stable revenue but has lower overall value than Prime Players, making it a maintenance or upgrade opportunity. ${definition.recommendedAction}`
     case "Growth Players":
       return `${scoreSummary}, showing recent or relatively active behavior but still lower frequency and monetary value ${metricSummary}. This cluster has growth potential through repeat-booking and value expansion campaigns. ${definition.recommendedAction}`
     case "Re-Engagement Players":
@@ -1015,7 +1015,24 @@ const buildLabelReason = (profile, definition, segmentName) => {
   Each segment name is tied to a business action, and kEvaluation is stored only as
   validation evidence. selectedK is the production K, while bestSilhouetteK/optimalK
   remain analytical evidence rather than the business-facing segment count.
+
+  IMPORTANT: Cluster IDs are NOT directly mapped to business segment importance.
+  After buildClusterProfiles remaps IDs by combinedScore, assignSegmentLabels uses
+  permutation-based exhaustive search (K! = 24 permutations for K=4) to find the
+  mapping that maximizes total range-match score across all segments. This means
+  clusterId=0 (highest combinedScore) does NOT always receive "Prime Players" —
+  the assignment depends on which permutation best fits each cluster's specific
+  R/F/M profile against the segment scoring criteria.
 */
+/**
+ * Assigns business segment names to clusters using permutation-based exhaustive search.
+ *
+ * For K clusters, generates K! permutations of segment definitions and selects the
+ * mapping that maximizes the total range-match score. Each segment has specific
+ * R/F/M score criteria (e.g., Prime requires R≥4, F≥4, M≥4; Re-Engagement requires
+ * R≤2.5, F≤3.5, M≤3.5). The permutation approach ensures labels are assigned based
+ * on business criteria rather than cluster ID ordering.
+ */
 const assignSegmentLabels = (clusterProfiles) => {
   if (!clusterProfiles.length) return new Map()
 

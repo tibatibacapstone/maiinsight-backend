@@ -1527,14 +1527,14 @@ metaRouter.get(
           personaInsight:
             dominantGender !== "-"
               ? `Instagram audience is currently led by ${dominantGender} followers, with ${dominantAgeGroup} as the strongest age band and ${topCity} as the top city.`
-              : "Audience insight data is not available yet.",
+              : "Audience demographic data is not available yet.",
         },
       });
     } catch (error) {
       return res.status(500).json({
         success: false,
         errorCode: "META_AUDIENCE_FAILED",
-        message: "Audience insight data could not be loaded.",
+        message: "Audience demographic data could not be loaded.",
         suggestion: "Please sync InstaSight data again after the Meta API connection is available.",
         technicalMessage: error instanceof Error ? error.message : "Audience summary failed.",
       });
