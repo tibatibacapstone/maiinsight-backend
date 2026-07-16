@@ -133,7 +133,6 @@ const formatMonthInputValue = (value) => {
 const buildDerivedNotifications = async () => {
   const [
     latestBatch,
-    latestMlRun,
     latestSegmentationRun,
     latestMetaSync,
   ] = await Promise.all([
@@ -145,17 +144,6 @@ const buildDerivedNotifications = async () => {
         status: true,
         rowCount: true,
         updatedAt: true,
-        errorMessage: true,
-      },
-    }),
-    prisma.playtimeMlRun.findFirst({
-      orderBy: { createdAt: "desc" },
-      select: {
-        id: true,
-        status: true,
-        totalSessions: true,
-        totalCustomers: true,
-        createdAt: true,
         errorMessage: true,
       },
     }),
@@ -193,21 +181,6 @@ const buildDerivedNotifications = async () => {
       read: false,
       createdAt: latestBatch.updatedAt,
       category: "data",
-      derived: true,
-    })
-  }
-
-  if (latestMlRun) {
-    derived.push({
-      id: `ml-${latestMlRun.id}`,
-      title: latestMlRun.status?.toLowerCase() === "failed" ? "ML Run Failed" : "ML Run Completed",
-      message:
-        latestMlRun.status?.toLowerCase() === "failed"
-          ? latestMlRun.errorMessage || "The latest machine learning run did not complete successfully."
-          : `Play-time ML processed ${latestMlRun.totalSessions} sessions for ${latestMlRun.totalCustomers} customers.`,
-      read: false,
-      createdAt: latestMlRun.createdAt,
-      category: "ai",
       derived: true,
     })
   }
@@ -251,7 +224,7 @@ const buildDerivedNotifications = async () => {
 }
 
 const buildActivityItems = async () => {
-  const [logs, batches, mlRuns, segmentationRuns, metaSyncLogs] = await Promise.all([
+  const [logs, batches, segmentationRuns, metaSyncLogs] = await Promise.all([
     prisma.activityLog.findMany({
       orderBy: { createdAt: "desc" },
       take: 120,
@@ -280,18 +253,6 @@ const buildActivityItems = async () => {
         rowCount: true,
         status: true,
         updatedAt: true,
-        createdAt: true,
-        errorMessage: true,
-      },
-    }),
-    prisma.playtimeMlRun.findMany({
-      orderBy: { createdAt: "desc" },
-      take: 20,
-      select: {
-        id: true,
-        status: true,
-        totalSessions: true,
-        totalCustomers: true,
         createdAt: true,
         errorMessage: true,
       },
@@ -348,21 +309,6 @@ const buildActivityItems = async () => {
       relativeTime: formatRelativeTime(batch.updatedAt || batch.createdAt),
       status: batch.status === "failed" ? "error" : "success",
       source: "import_batch",
-    })),
-    ...mlRuns.map((run) => ({
-      id: `ml-${run.id}`,
-      type: "ai",
-      action: run.status?.toLowerCase() === "failed" ? "ML Run Failed" : "ML Run Completed",
-      user: "System",
-      role: "system",
-      details:
-        run.status?.toLowerCase() === "failed"
-          ? run.errorMessage || "Machine learning run failed."
-          : `Processed ${run.totalSessions} sessions for ${run.totalCustomers} customers.`,
-      timestamp: run.createdAt,
-      relativeTime: formatRelativeTime(run.createdAt),
-      status: run.status?.toLowerCase() === "failed" ? "error" : "success",
-      source: "ml_run",
     })),
     ...segmentationRuns.map((run) => ({
       id: `seg-${run.id}`,
@@ -472,7 +418,7 @@ router.get(
   authorize("operational", "management", "it_support"),
   async (req, res, next) => {
     try {
-      const [latestBatch, latestCompletedBatch, latestMetaSync, latestMlRun, latestSegmentationRun, transactionCount, transactionDateRange, transactionDates] =
+      const [latestBatch, latestCompletedBatch, latestMetaSync, latestSegmentationRun, transactionCount, transactionDateRange, transactionDates] =
         await Promise.all([
           prisma.importBatch.findFirst({
             orderBy: { updatedAt: "desc" },
@@ -502,15 +448,6 @@ router.get(
               status: true,
               message: true,
               startedAt: true,
-            },
-          }),
-          prisma.playtimeMlRun.findFirst({
-            orderBy: { createdAt: "desc" },
-            select: {
-              id: true,
-              status: true,
-              createdAt: true,
-              totalSessions: true,
             },
           }),
           prisma.segmentationRun.findFirst({
@@ -560,7 +497,6 @@ router.get(
       const lastUpdatedCandidates = [
         latestBatch?.updatedAt,
         latestMetaSync?.startedAt,
-        latestMlRun?.createdAt,
         latestSegmentationRun?.runDate,
       ].filter(Boolean)
 
@@ -587,7 +523,6 @@ router.get(
           latestImport: latestBatch,
           latestCompletedImport: latestCompletedBatch,
           latestMetaSync,
-          latestMlRun,
           latestSegmentationRun,
         },
       })
