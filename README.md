@@ -1,14 +1,17 @@
 # MaiinSight Backend
 
-Express.js API for MaiinSight, a customer segmentation and marketing insight system for Maiin Gandaria.
+Express.js REST API for MaiinSight, a customer segmentation and marketing insight system for Maiin Gandaria.
+
+**Repository:** https://github.com/tibatibacapstone/maiinsight-backend
 
 ## Tech Stack
 
-- Node.js 20+
-- Express.js
-- PostgreSQL via `pg`
-- Gemini API client via `@google/generative-ai`
-- `helmet`, `cors`, and `morgan` for common API middleware
+- Node.js 20.x
+- Express.js 4.22
+- MySQL 8.0 via Prisma 5.22
+- Gemini API (AI strategy generation)
+- Meta Graph API v25.0 (Instagram analytics)
+- `helmet`, `cors`, `morgan` for common API middleware
 - `nodemon` for local development
 
 ## Getting Started
@@ -19,13 +22,18 @@ Express.js API for MaiinSight, a customer segmentation and marketing insight sys
    npm install
    ```
 
-2. Create a local environment file:
+2. Make sure Docker MySQL is running:
 
    ```bash
-   cp .env.example .env
+   docker compose up -d
    ```
 
-3. Update `.env` with your local PostgreSQL, Gemini, and Meta credentials.
+3. Run database migration and seed:
+
+   ```bash
+   npx prisma migrate dev
+   npm run seed
+   ```
 
 4. Start the development server:
 
@@ -35,11 +43,21 @@ Express.js API for MaiinSight, a customer segmentation and marketing insight sys
 
 The API runs on `http://localhost:5000` by default.
 
-## Available Endpoints
+## Environment Variables
 
-- `GET /api` - API metadata
-- `GET /api/health` - service health check
-- `GET /api/health/database` - PostgreSQL connectivity check
+Copy `.env.example` to `.env` and configure (see [Installation Guide](../docs/INSTALLATION-GUIDE.md)).
+
+## Available Scripts
+
+```bash
+npm run dev           # Start dev server with nodemon
+npm start             # Start production server
+npm run lint          # Run ESLint
+npm test              # Run tests
+npm run seed          # Seed database with default users
+npx prisma migrate dev   # Run Prisma migration
+npx prisma studio        # Open Prisma Studio (DB viewer)
+```
 
 ## Project Structure
 
@@ -50,10 +68,33 @@ src/
   config/
     database.js
     env.js
+    prisma.js
   middleware/
+    auth.js
     error-handler.js
     not-found.js
   routes/
+    auth.routes.js
     health.routes.js
+    dashboard.routes.js
+    aiStrategyRoute.js
+    importRoutes.js
+    meta.routes.js
+    segmentation.routes.js
+    targeting.routes.js
+    operations.routes.js
+    system.routes.js
     index.js
+  services/
+    rfmSegmentation.service.js
+    importFile.service.js
+    ...
 ```
+
+## Default Test Accounts
+
+| Email                       | Password       | Role         |
+|-----------------------------|----------------|--------------|
+| `operational@maiin.com`     | `Password123!` | Operational  |
+| `management@maiin.com`      | `Password123!` | Management  |
+| `support@maiin.com`         | `Password123!` | IT Support  |

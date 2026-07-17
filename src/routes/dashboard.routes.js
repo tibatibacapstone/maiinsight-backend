@@ -107,6 +107,10 @@ const normalizeStartHourLabel = (value) => {
 };
 
 const buildHeatmapSummaryFromTransactions = (transactions = []) => {
+  if (transactions.length === 0) {
+    return { slots: [], mostEmptySlot: null };
+  }
+
   const slotCounts = new Map();
 
   transactions.forEach((transaction) => {
@@ -488,11 +492,18 @@ dashboardRouter.get(
     try {
       const filters = buildSelectedFilters(req.query)
       const courtType = normalizeCourtTypeFilter(filters.venue)
-      const selectedRange = resolveSelectedDateRange({
-        selectedYear: filters.year,
-        selectedMonth: filters.month,
-        periodType: filters.periodType,
-      })
+
+      const selectedRange =
+        req.query.startDate && req.query.endDate
+          ? {
+              startDate: startOfDay(new Date(req.query.startDate)),
+              endDate: endOfDay(new Date(req.query.endDate)),
+            }
+          : resolveSelectedDateRange({
+              selectedYear: filters.year,
+              selectedMonth: filters.month,
+              periodType: filters.periodType,
+            })
 
       if (!selectedRange) {
         return res.json({
@@ -538,6 +549,14 @@ dashboardRouter.get(
         where: usageWhere,
         select: { playDate: true, hourStart: true },
       })
+
+      if (usageRows.length === 0) {
+        return res.json({
+          success: true,
+          message: "Empty slot heatmap fetched successfully.",
+          data: { slots: [], mostEmptySlot: null },
+        })
+      }
 
       // Compute total available sessions per (dayOfWeek, startHour) by stepping through
       // the date range and bucketing each day into its weekday, multiplied by courtCount.

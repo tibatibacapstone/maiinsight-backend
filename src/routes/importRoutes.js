@@ -425,6 +425,7 @@ batch = await prisma.importBatch.create({
       errorMessage: friendlyFailure.message,
     },
   }).catch(() => null);
+  friendlyFailure.batchId = batch.id;
 } else if (req.file?.originalname) {
   await createFailedImportHistory({
     fileName: req.file.originalname,

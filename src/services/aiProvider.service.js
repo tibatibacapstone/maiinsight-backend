@@ -1,6 +1,5 @@
 import { GoogleGenAI } from "@google/genai";
 
-import { env } from "../config/env.js";
 import { buildConfigSnapshot } from "./appConfig.service.js";
 
 const REDACTED_KEYS = new Set([
@@ -51,37 +50,7 @@ const redactSensitiveFields = (value) => {
 
 export const isGeminiConfigured = async () => {
   const config = await buildConfigSnapshot();
-  return Boolean(config.geminiApiKey || env.geminiApiKey);
-};
-
-export const isAzureAiConfigured = () =>
-  Boolean(
-    env.azureOpenAiEndpoint &&
-      env.azureOpenAiApiKey &&
-      env.azureOpenAiDeployment &&
-      env.azureOpenAiApiVersion
-  );
-
-const resolveSelectedProvider = async () => {
-  const config = await buildConfigSnapshot();
-
-  if (env.aiProvider === "azure" && isAzureAiConfigured()) {
-    return "azure";
-  }
-
-  if (env.aiProvider === "gemini" && (config.geminiApiKey || env.geminiApiKey)) {
-    return "gemini";
-  }
-
-  if (config.geminiApiKey || env.geminiApiKey) {
-    return "gemini";
-  }
-
-  if (isAzureAiConfigured()) {
-    return "azure";
-  }
-
-  return "gemini";
+  return Boolean(config.geminiApiKey);
 };
 
 const getLanguagePreference = (strategyContext) =>
@@ -255,47 +224,10 @@ const parseJsonResponse = (text, providerLabel) => {
   }
 };
 
-const parseAzureContent = (payload) => {
-  const rawContent = payload?.choices?.[0]?.message?.content;
-
-  if (typeof rawContent === "string") {
-    return rawContent;
-  }
-
-  if (Array.isArray(rawContent)) {
-    return rawContent
-      .map((item) => (typeof item?.text === "string" ? item.text : ""))
-      .join("\n")
-      .trim();
-  }
-
-  return "";
-};
-
-const safeJsonParse = (text) => {
-  const trimmedText = typeof text === "string" ? text.trim() : "";
-
-  if (!trimmedText) return null;
-
-  try {
-    return JSON.parse(trimmedText);
-  } catch {
-    const jsonMatch = trimmedText.match(/\{[\s\S]*\}/);
-
-    if (!jsonMatch) return null;
-
-    try {
-      return JSON.parse(jsonMatch[0]);
-    } catch {
-      return null;
-    }
-  }
-};
-
 const generateWithGemini = async (strategyContext) => {
   const config = await buildConfigSnapshot();
-  const geminiApiKey = config.geminiApiKey || env.geminiApiKey;
-  const geminiModel = config.geminiModel || env.geminiModel;
+  const geminiApiKey = config.geminiApiKey;
+  const geminiModel = config.geminiModel || "gemini-1.5-flash";
 
   if (!geminiApiKey) {
     throw createAiServiceError({
@@ -375,113 +307,22 @@ const generateWithGemini = async (strategyContext) => {
   };
 };
 
-const generateWithAzure = async (strategyContext) => {
-  if (!isAzureAiConfigured()) {
-    throw createAiServiceError({
-      errorCode: "AZURE_AI_NOT_CONFIGURED",
-      message: "AI strategy generation is not configured yet.",
-      suggestion:
-        "Please ask IT Support to configure Azure AI credentials in the environment settings.",
-      technicalMessage:
-        "Missing one or more Azure OpenAI environment variables: AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, AZURE_OPENAI_DEPLOYMENT, AZURE_OPENAI_API_VERSION.",
-      statusCode: 503,
-    });
-  }
-
-  const prompt = buildPrompt(strategyContext);
-  const endpoint = `${env.azureOpenAiEndpoint.replace(/\/$/, "")}/openai/deployments/${env.azureOpenAiDeployment}/chat/completions?api-version=${encodeURIComponent(env.azureOpenAiApiVersion)}`;
-
-  let response;
-  let payload;
-
-  try {
-    response = await fetch(endpoint, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "api-key": env.azureOpenAiApiKey,
-      },
-      body: JSON.stringify({
-        messages: [
-          { role: "system", content: prompt.system },
-          { role: "user", content: prompt.user },
-        ],
-        temperature: 0.4,
-        max_tokens: 1200,
-        response_format: {
-          type: "json_object",
-        },
-      }),
-    });
-
-    payload = await response.json().catch(() => null);
-  } catch (error) {
-    throw createAiServiceError({
-      errorCode: "AI_GENERATION_FAILED",
-      message: "AI strategy could not be generated.",
-      suggestion: "Please try again or contact IT Support if the issue continues.",
-      technicalMessage: error instanceof Error ? error.message : "Azure OpenAI request failed.",
-    });
-  }
-
-  if (!response?.ok) {
-    throw createAiServiceError({
-      errorCode: "AI_GENERATION_FAILED",
-      message: "AI strategy could not be generated.",
-      suggestion: "Please try again or contact IT Support if the issue continues.",
-      technicalMessage:
-        payload?.error?.message || `Azure OpenAI request failed with status ${response?.status || "unknown"}.`,
-    });
-  }
-
-  const rawText = parseAzureContent(payload);
-  const parsed = safeJsonParse(rawText);
-
-  if (!parsed) {
-    throw createAiServiceError({
-      errorCode: "AI_GENERATION_FAILED",
-      message: "AI strategy could not be generated.",
-      suggestion: "Please try again or contact IT Support if the issue continues.",
-      technicalMessage: "Azure OpenAI returned invalid JSON.",
-    });
-  }
-
-  return {
-    provider: "azure",
-    model: env.azureOpenAiDeployment,
-    strategy: ensureOutreachSlotInWhatsappMessage(normalizeStrategy(parsed), strategyContext),
-    rawText,
-  };
-};
-
 export const getAiProviderStatus = async () => {
-  const provider = await resolveSelectedProvider();
   const config = await buildConfigSnapshot();
-  const configured =
-    provider === "azure"
-      ? isAzureAiConfigured()
-      : Boolean(config.geminiApiKey || env.geminiApiKey);
+  const configured = Boolean(config.geminiApiKey);
 
   return {
-    provider,
-    providerLabel: provider === "azure" ? "Azure OpenAI" : "Gemini",
+    provider: "gemini",
+    providerLabel: "Gemini",
     configured,
-    model: provider === "azure" ? env.azureOpenAiDeployment || null : config.geminiModel || env.geminiModel || null,
+    model: config.geminiModel || "gemini-1.5-flash",
     setupMessage: configured ? null : "AI strategy generation is not configured yet.",
     suggestion: configured
       ? null
-      : provider === "azure"
-        ? "Please ask IT Support to configure Azure AI credentials in the environment settings."
-        : "Please ask IT Support to configure Gemini API credentials in the environment settings.",
+      : "Please ask IT Support to configure Gemini API credentials in the environment settings.",
   };
 };
 
 export const generateStrategy = async (strategyContext) => {
-  const provider = await resolveSelectedProvider();
-
-  if (provider === "azure") {
-    return generateWithAzure(strategyContext);
-  }
-
   return generateWithGemini(strategyContext);
 };

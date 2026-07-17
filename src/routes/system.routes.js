@@ -353,7 +353,7 @@ router.post("/user-invites/resend", authorize("it_support"), async (req, res, ne
 router.patch("/users/:id", authorize("it_support"), async (req, res, next) => {
   try {
     const id = Number(req.params.id)
-    const { name, email, role, password } = req.body || {}
+    const { name, role, password } = req.body || {}
 
     if (!Number.isFinite(id)) {
       return res.status(400).json({
@@ -364,7 +364,6 @@ router.patch("/users/:id", authorize("it_support"), async (req, res, next) => {
 
     const updateData = {}
     if (name) updateData.name = name
-    if (email) updateData.email = email
     if (role) updateData.role = role
     if (password) {
       updateData.password = await bcrypt.hash(password, 10)
@@ -393,6 +392,49 @@ router.patch("/users/:id", authorize("it_support"), async (req, res, next) => {
       success: true,
       message: "User account updated successfully.",
       data: user,
+    })
+  } catch (error) {
+    next(error)
+  }
+})
+
+router.delete("/users/:id", authorize("it_support"), async (req, res, next) => {
+  try {
+    const id = Number(req.params.id)
+
+    if (!Number.isFinite(id)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid user ID.",
+      })
+    }
+
+    if (id === req.user.userId) {
+      return res.status(400).json({
+        success: false,
+        message: "You cannot delete your own account.",
+      })
+    }
+
+    const user = await prisma.user.findUnique({ where: { id } })
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: "User not found.",
+      })
+    }
+
+    await prisma.user.delete({ where: { id } })
+
+    await logActivity(req, "USER_DELETED", {
+      targetUserId: user.id,
+      targetUserEmail: user.email,
+      status: "success",
+    })
+
+    return res.json({
+      success: true,
+      message: "User account deleted successfully.",
     })
   } catch (error) {
     next(error)

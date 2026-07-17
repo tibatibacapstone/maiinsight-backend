@@ -30,6 +30,6 @@ apiRouter.get("/", (req, res) => {
     version: "1.0.0",
     status: "ready",
     database: "enabled",
-    ai: "azure ai integration ready",
+    ai: "gemini ai integration ready",
   });
 });

@@ -61,3 +61,43 @@ export const sendActivationEmail = async ({ to, name, role, activationUrl }) => 
 
   return { skipped: false }
 }
+
+export const sendPasswordResetEmail = async ({ to, name, resetUrl }) => {
+  if (!to || !name || !resetUrl) {
+    throw new Error("Password reset email requires recipient, name, and reset URL")
+  }
+
+  const transporter = createTransporter()
+  const subject = "Reset your MaiinSight password"
+  const text = [
+    `Hi ${name},`,
+    "",
+    "We received a request to reset your MaiinSight password.",
+    "",
+    `Click here to reset your password: ${resetUrl}`,
+    "",
+    "This link expires in 1 hour. If you did not request this, ignore this email.",
+  ].join("\n")
+
+  const html = `
+    <p>Hi ${name},</p>
+    <p>We received a request to reset your MaiinSight password.</p>
+    <p><a href="${resetUrl}">Reset your password</a></p>
+    <p>This link expires in 1 hour. If you did not request this, ignore this email.</p>
+  `
+
+  if (!transporter) {
+    console.warn("[mail] SMTP is not configured. Password reset email not sent:", { to, resetUrl })
+    return { skipped: true }
+  }
+
+  await transporter.sendMail({
+    from: env.smtpFrom,
+    to,
+    subject,
+    text,
+    html,
+  })
+
+  return { skipped: false }
+}

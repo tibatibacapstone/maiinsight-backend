@@ -21,7 +21,7 @@ export const readAppSettings = async (keys) => {
 
   const map = Object.fromEntries(rows.map((row) => [row.key, row.value]));
   return keys.reduce((acc, key) => {
-    acc[key] = map[key] ?? "";
+    acc[key] = map[key];
     return acc;
   }, {});
 };
@@ -41,11 +41,11 @@ export const writeAppSettings = async (entries) => {
 export const buildConfigSnapshot = async () => {
   const settings = await readAppSettings(Object.values(APP_SETTING_KEYS));
   return {
-    geminiApiKey: settings[APP_SETTING_KEYS.GEMINI_API_KEY] || env.geminiApiKey,
-    geminiModel: settings[APP_SETTING_KEYS.GEMINI_MODEL] || env.geminiModel || "gemini-1.5-flash",
-    metaIgUserId: settings[APP_SETTING_KEYS.META_IG_USER_ID] || env.metaIgUserId,
-    metaAccessToken: settings[APP_SETTING_KEYS.META_ACCESS_TOKEN] || env.metaAccessToken,
-    metaGraphVersion: settings[APP_SETTING_KEYS.META_GRAPH_VERSION] || env.metaApiVersion || "v25.0",
+    geminiApiKey: settings[APP_SETTING_KEYS.GEMINI_API_KEY] ?? env.geminiApiKey,
+    geminiModel: settings[APP_SETTING_KEYS.GEMINI_MODEL] ?? env.geminiModel ?? "gemini-1.5-flash",
+    metaIgUserId: settings[APP_SETTING_KEYS.META_IG_USER_ID] ?? env.metaIgUserId,
+    metaAccessToken: settings[APP_SETTING_KEYS.META_ACCESS_TOKEN] ?? env.metaAccessToken,
+    metaGraphVersion: settings[APP_SETTING_KEYS.META_GRAPH_VERSION] ?? env.metaApiVersion ?? "v25.0",
   };
 };
 
