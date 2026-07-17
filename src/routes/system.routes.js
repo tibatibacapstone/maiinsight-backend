@@ -84,11 +84,13 @@ router.get("/summary", async (req, res, next) => {
         database: {
           name: parseDatabaseName(env.databaseUrl) || "Unknown database",
           status: "connected",
-          subtitle: "Successfully Connected",
+          lastUpdated: latestImport?.updatedAt || null,
         },
         integrations: {
-          metaConfigured: Boolean(config.metaAccessToken && config.metaIgUserId),
+          metaConfigured: Boolean(config.metaAccessToken && config.metaIgUserId) && config.metaEnabled,
+          metaEnabled: config.metaEnabled,
           aiConfigured: aiProviderStatus.configured,
+          aiEnabled: config.geminiEnabled,
           aiProvider: aiProviderStatus.provider,
           aiProviderLabel: aiProviderStatus.providerLabel,
           aiModel: aiProviderStatus.model,
@@ -115,17 +117,21 @@ router.put("/integrations", authorize("it_support"), async (req, res, next) => {
     const {
       geminiApiKey,
       geminiModel,
+      geminiEnabled,
       metaIgUserId,
       metaAccessToken,
       metaGraphVersion,
+      metaEnabled,
     } = req.body || {}
 
     await writeAppSettings({
       [APP_SETTING_KEYS.GEMINI_API_KEY]: geminiApiKey,
       [APP_SETTING_KEYS.GEMINI_MODEL]: geminiModel,
+      [APP_SETTING_KEYS.GEMINI_ENABLED]: geminiEnabled === true || geminiEnabled === "true" ? "true" : "false",
       [APP_SETTING_KEYS.META_IG_USER_ID]: metaIgUserId,
       [APP_SETTING_KEYS.META_ACCESS_TOKEN]: metaAccessToken,
       [APP_SETTING_KEYS.META_GRAPH_VERSION]: metaGraphVersion,
+      [APP_SETTING_KEYS.META_ENABLED]: metaEnabled === true || metaEnabled === "true" ? "true" : "false",
     })
 
     await logActivity(req, "INTEGRATIONS_UPDATED", {
@@ -424,7 +430,11 @@ router.delete("/users/:id", authorize("it_support"), async (req, res, next) => {
       })
     }
 
-    await prisma.user.delete({ where: { id } })
+    await prisma.$transaction([
+      prisma.activityLog.deleteMany({ where: { userId: id } }),
+      prisma.userInvite.deleteMany({ where: { createdById: id } }),
+      prisma.user.delete({ where: { id } }),
+    ])
 
     await logActivity(req, "USER_DELETED", {
       targetUserId: user.id,

@@ -4,9 +4,11 @@ import { prisma } from "../config/prisma.js";
 export const APP_SETTING_KEYS = {
   GEMINI_API_KEY: "GEMINI_API_KEY",
   GEMINI_MODEL: "GEMINI_MODEL",
+  GEMINI_ENABLED: "GEMINI_ENABLED",
   META_IG_USER_ID: "META_IG_USER_ID",
   META_ACCESS_TOKEN: "META_ACCESS_TOKEN",
   META_GRAPH_VERSION: "META_GRAPH_VERSION",
+  META_ENABLED: "META_ENABLED",
 };
 
 const normalizeValue = (value) => {
@@ -43,9 +45,11 @@ export const buildConfigSnapshot = async () => {
   return {
     geminiApiKey: settings[APP_SETTING_KEYS.GEMINI_API_KEY] ?? env.geminiApiKey,
     geminiModel: settings[APP_SETTING_KEYS.GEMINI_MODEL] ?? env.geminiModel ?? "gemini-1.5-flash",
+    geminiEnabled: (settings[APP_SETTING_KEYS.GEMINI_ENABLED] ?? "true") === "true",
     metaIgUserId: settings[APP_SETTING_KEYS.META_IG_USER_ID] ?? env.metaIgUserId,
     metaAccessToken: settings[APP_SETTING_KEYS.META_ACCESS_TOKEN] ?? env.metaAccessToken,
     metaGraphVersion: settings[APP_SETTING_KEYS.META_GRAPH_VERSION] ?? env.metaApiVersion ?? "v25.0",
+    metaEnabled: (settings[APP_SETTING_KEYS.META_ENABLED] ?? "true") === "true",
   };
 };
 

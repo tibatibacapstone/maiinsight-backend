@@ -309,12 +309,13 @@ const generateWithGemini = async (strategyContext) => {
 
 export const getAiProviderStatus = async () => {
   const config = await buildConfigSnapshot();
-  const configured = Boolean(config.geminiApiKey);
+  const configured = Boolean(config.geminiApiKey) && config.geminiEnabled;
 
   return {
     provider: "gemini",
     providerLabel: "Gemini",
     configured,
+    enabled: config.geminiEnabled,
     model: config.geminiModel || "gemini-1.5-flash",
     setupMessage: configured ? null : "AI strategy generation is not configured yet.",
     suggestion: configured
@@ -324,5 +325,15 @@ export const getAiProviderStatus = async () => {
 };
 
 export const generateStrategy = async (strategyContext) => {
+  const config = await buildConfigSnapshot();
+  if (!config.geminiEnabled) {
+    throw createAiServiceError({
+      errorCode: "AI_DISABLED",
+      message: "AI strategy generation is currently disabled.",
+      suggestion: "Please ask IT Support to enable the AI integration in System Settings.",
+      technicalMessage: "Gemini integration is disabled via System Settings toggle.",
+      statusCode: 503,
+    });
+  }
   return generateWithGemini(strategyContext);
 };

@@ -11,15 +11,19 @@ export const metaRouter = express.Router();
 
 const hasMetaCredentials = async () => {
   const config = await buildConfigSnapshot();
-  return Boolean(config.metaAccessToken || process.env.META_ACCESS_TOKEN) &&
-    Boolean(config.metaIgUserId || process.env.META_IG_USER_ID);
+  if (!config.metaEnabled) return false;
+  return Boolean(config.metaAccessToken) && Boolean(config.metaIgUserId);
 };
 
 const testMetaConnection = async () => {
   const config = await buildConfigSnapshot();
-  const accessToken = config.metaAccessToken || process.env.META_ACCESS_TOKEN;
-  const igUserId = config.metaIgUserId || process.env.META_IG_USER_ID;
-  const graphVersion = config.metaGraphVersion || process.env.META_API_VERSION || "v25.0";
+  const accessToken = config.metaAccessToken;
+  const igUserId = config.metaIgUserId;
+  const graphVersion = config.metaGraphVersion;
+
+  if (!config.metaEnabled) {
+    return { ok: false, error: "Meta integration is disabled in System Settings." };
+  }
 
   if (!accessToken || !igUserId) {
     return { ok: false, error: "Meta credentials are not configured." };
