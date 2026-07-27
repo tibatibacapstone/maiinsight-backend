@@ -11,16 +11,20 @@ import {
   getPreviousComparisonRange,
   normalizeCourtTypeFilter,
 } from "../services/dashboardPeriod.service.js"
+import {
+  DASHBOARD_TRANSACTION_GROUPS,
+  getDashboardTransactionGroup,
+  normalizeDashboardTransactionGroup,
+} from "../services/transactionStatus.service.js"
 
 const router = Router()
 
 router.use(authenticate)
 
-const REPORT_VALID_STATUSES = ["Manual/Walk-in", "Payment Completed"]
 const SESSION_DEFINITIONS = [
-  { name: "Morning", startHour: 6, endHour: 11 },
-  { name: "Afternoon", startHour: 12, endHour: 15 },
-  { name: "Evening", startHour: 16, endHour: 18 },
+  { name: "Morning", startHour: 6, endHour: 10 },
+  { name: "Afternoon", startHour: 11, endHour: 14 },
+  { name: "Evening", startHour: 15, endHour: 18 },
   { name: "Night", startHour: 19, endHour: 23 },
 ]
 const REPORT_COURT_TYPES = ["mini_soccer", "basketball"]
@@ -44,19 +48,6 @@ const getSessionHours = (sessionName) => {
   const session = SESSION_DEFINITIONS.find((item) => item.name === sessionName)
   return session ? session.endHour - session.startHour + 1 : 0
 }
-
-const withValidStatus = (where) => ({
-  ...where,
-  status: { in: REPORT_VALID_STATUSES },
-})
-
-const withCourtHourValidStatus = (where) => ({
-  ...where,
-  transaction: {
-    ...(where.transaction || {}),
-    status: { in: REPORT_VALID_STATUSES },
-  },
-})
 
 const buildComparison = (current, previous) => ({
   current: roundTo(current, 2),
@@ -476,21 +467,21 @@ router.get(
                 },
               },
             },
-            _min: { transactionDate: true },
-            _max: { transactionDate: true },
+            _min: { playDate: true },
+            _max: { playDate: true },
           }),
           prisma.facilityTransaction.findMany({
             where: {
-              transactionDate: { not: null },
+              playDate: { not: null },
               batch: {
                 fileName: {
                   notIn: EXCLUDED_IMPORT_BATCH_FILE_NAMES,
                 },
               },
             },
-            select: { transactionDate: true },
-            distinct: ["transactionDate"],
-            orderBy: { transactionDate: "asc" },
+            select: { playDate: true },
+            distinct: ["playDate"],
+            orderBy: { playDate: "asc" },
           }),
         ])
 
@@ -514,10 +505,10 @@ router.get(
           hasTransactionData: transactionCount > 0,
           transactionCount,
           transactionMonthRange: {
-            min: formatMonthInputValue(transactionDateRange?._min?.transactionDate),
-            max: formatMonthInputValue(transactionDateRange?._max?.transactionDate),
+            min: formatMonthInputValue(transactionDateRange?._min?.playDate),
+            max: formatMonthInputValue(transactionDateRange?._max?.playDate),
           },
-          transactionAvailableMonths: [...new Set(transactionDates.map((item) => formatMonthInputValue(item.transactionDate)).filter(Boolean))],
+          transactionAvailableMonths: [...new Set(transactionDates.map((item) => formatMonthInputValue(item.playDate)).filter(Boolean))],
           lastUpdatedAt,
           lastTransactionSyncAt: latestCompletedBatch?.updatedAt || null,
           latestImport: latestBatch,
@@ -728,6 +719,7 @@ router.get(
         courtType,
         customerType,
         bookingType,
+        includeOperational: true,
       })
 
       const courtHourWhere = buildCourtHourUsageWhere({
@@ -736,6 +728,7 @@ router.get(
         courtType,
         customerType,
         bookingType,
+        includeOperational: true,
       })
 
       const [transactions, courtHourCount, latestSegmentationRun] = await Promise.all([
@@ -748,6 +741,8 @@ router.get(
             bookingType: true,
             courtType: true,
             customerKey: true,
+            bookingEventKey: true,
+            status: true,
           },
         }),
         prisma.courtHourUsage.count({ where: courtHourWhere }),
@@ -763,7 +758,9 @@ router.get(
 
       const courtCount = getCourtCount(courtType)
       const availableSessions = getAvailableCourtHours(startDate, endDate, courtCount)
-      const totalBookings = transactions.length
+      const totalBookings = new Set(
+        transactions.map((item) => item.bookingEventKey).filter(Boolean)
+      ).size
       const totalRevenue = transactions.reduce(
         (sum, item) => sum + Number(item.netRevenue || 0),
         0
@@ -790,47 +787,59 @@ router.get(
           label,
           revenue: 0,
           bookings: 0,
+          bookingEventKeys: new Set(),
         }
 
         existing.revenue += Number(item.netRevenue || 0)
-        existing.bookings += 1
+        existing.bookingEventKeys.add(item.bookingEventKey)
+        existing.bookings = existing.bookingEventKeys.size
         groupedTrend.set(key, existing)
       })
 
-      const revenueTrend = [...groupedTrend.values()].sort((left, right) =>
-        left.key.localeCompare(right.key)
-      )
+      const revenueTrend = [...groupedTrend.values()]
+        .map((item) => ({
+          key: item.key,
+          label: item.label,
+          revenue: item.revenue,
+          bookings: item.bookings,
+        }))
+        .sort((left, right) => left.key.localeCompare(right.key))
 
-      const bookingTypeBreakdown = transactions.reduce((accumulator, item) => {
-        const key = item.bookingType || "other"
-        accumulator[key] = (accumulator[key] || 0) + 1
+      const bookingTypeEvents = transactions.reduce((accumulator, item) => {
+        const key = getDashboardTransactionGroup(item.status)
+        if (key === DASHBOARD_TRANSACTION_GROUPS.EXCLUDED) return accumulator
+        const events = accumulator.get(key) || new Set()
+        if (item.bookingEventKey) events.add(item.bookingEventKey)
+        accumulator.set(key, events)
         return accumulator
-      }, {})
+      }, new Map())
+      const bookingTypeBreakdown = Object.fromEntries(
+        [...bookingTypeEvents.entries()].map(([key, events]) => [key, events.size])
+      )
       const previousRange = getPreviousComparisonRange({ startDate, endDate })
-      const previousTransactionWhere = withValidStatus(
-        buildFacilityTransactionWhere({
+      const previousTransactionWhere = buildFacilityTransactionWhere({
           startDate: previousRange.startDate,
           endDate: previousRange.endDate,
           courtType,
           customerType,
           bookingType,
+          includeOperational: true,
         })
-      )
-      const previousCourtHourWhere = withCourtHourValidStatus(
-        buildCourtHourUsageWhere({
+      const previousCourtHourWhere = buildCourtHourUsageWhere({
           startDate: previousRange.startDate,
           endDate: previousRange.endDate,
           courtType,
           customerType,
           bookingType,
+          includeOperational: true,
         })
-      )
 
       const [previousTransactions, currentCourtHourRows, previousCourtHourCount] = await Promise.all([
         prisma.facilityTransaction.findMany({
           where: previousTransactionWhere,
           select: {
             netRevenue: true,
+            bookingEventKey: true,
           },
         }),
         prisma.courtHourUsage.findMany({
@@ -864,7 +873,9 @@ router.get(
         courtCount
       )
       const previousRevenue = previousTransactions.reduce((sum, item) => sum + toNumber(item.netRevenue), 0)
-      const previousBookings = previousTransactions.length
+      const previousBookings = new Set(
+        previousTransactions.map((item) => item.bookingEventKey).filter(Boolean)
+      ).size
       const previousOccupancyRate = previousAvailableSessions > 0 ? (previousCourtHourCount / previousAvailableSessions) * 100 : 0
       const previousAvgRevenuePerBooking = previousBookings > 0 ? previousRevenue / previousBookings : 0
 
@@ -916,8 +927,15 @@ router.get(
         .sort((left, right) => right.occupancyRate - left.occupancyRate)
         .slice(0, 2)
 
-      const segmentContribution = [...segmentByCustomerKey.entries()].length
+      const selectedGroup =
+        normalizeDashboardTransactionGroup(customerType) ||
+        DASHBOARD_TRANSACTION_GROUPS.ALL
+      const segmentContribution =
+        selectedGroup === DASHBOARD_TRANSACTION_GROUPS.INTERNAL
+          ? new Map()
+          : [...segmentByCustomerKey.entries()].length
         ? transactions.reduce((accumulator, item) => {
+            if (item.customerKey?.startsWith("SYS-")) return accumulator
             const segmentName = segmentByCustomerKey.get(item.customerKey) || "Unsegmented"
             const existing = accumulator.get(segmentName) || {
               segmentName,
@@ -931,6 +949,7 @@ router.get(
             return accumulator
           }, new Map())
         : transactions.reduce((accumulator, item) => {
+            if (item.customerKey?.startsWith("SYS-")) return accumulator
             const existing = accumulator.get("Unsegmented") || {
               segmentName: "Unsegmented",
               revenue: 0,

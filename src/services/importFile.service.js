@@ -1,5 +1,11 @@
 import { parse as parseCsv } from "csv-parse/sync"
 import * as XLSX from "xlsx"
+import { buildCustomerIdentity } from "./transactionFeatureEngineering.service.js"
+import {
+  classifyTransactionRevenue,
+  classifyTransactionStatus,
+  TRANSACTION_ROW_CATEGORIES,
+} from "./transactionStatus.service.js"
 
 const SUPPORTED_UPLOAD_EXTENSIONS = [".csv", ".xlsx", ".xls"]
 const SUPPORTED_UPLOAD_MIME_TYPES = new Set([
@@ -51,8 +57,6 @@ const normalizeCell = (value) =>
     .replace(/\u00a0/g, " ")
     .replace(/\s+/g, " ")
     .trim()
-
-const normalizeCellText = (value) => normalizeCell(value).toLowerCase()
 
 const getFileExtension = (fileName = "") => {
   const lowerName = String(fileName).toLowerCase()
@@ -314,49 +318,19 @@ const isValidTimeRangeFormat = (value) => {
   return endValue > startValue
 }
 
-const isValidAmountFormat = (value) => {
-  const text = normalizeCell(value)
-
-  if (!text) return true
-
-  const cleaned = text
-    .replace(/rp/gi, "")
-    .replace(/\s+/g, "")
-    .trim()
-
-  // Harus punya minimal 1 angka
-  if (!/\d/.test(cleaned)) {
-    return false
-  }
-
-  // Tidak boleh ada huruf atau karakter aneh selain angka, titik, koma, minus
-  if (/[^0-9,.-]/.test(cleaned)) {
-    return false
-  }
-
-  const normalized = cleaned
-    .replace(/\.(?=\d{3}(?:\D|$))/g, "")
-    .replace(/,(?=\d{3}(?:\D|$))/g, "")
-    .replace(",", ".")
-
-  const numberValue = Number(normalized)
-
-  return Number.isFinite(numberValue)
-}
-
-const isValidEmailFormat = (value) => {
-  const text = normalizeCellText(value)
-
-  if (!text) return true
-
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(text)
-}
 export const validateTransactionRows = (records) => {
   const validationErrors = []
   const MAX_ERRORS = 50
 
   records.forEach((row, index) => {
     const rowNumber = index + 2
+    const statusClassification = classifyTransactionStatus(
+      getRowValue(row, ["Status", "status"])
+    )
+
+    if (statusClassification.category === TRANSACTION_ROW_CATEGORIES.EXCLUDED) {
+      return
+    }
 
     const transactionDate = getRowValue(row, [
       "Tanggal Transaksi",
@@ -396,6 +370,32 @@ export const validateTransactionRows = (records) => {
     ])
 
     const email = getRowValue(row, ["Email", "email", "normalizedEmail"])
+    const customerName = getRowValue(row, [
+      "Nama",
+      "nama",
+      "Customer Name",
+      "customer_name",
+      "customerName",
+      "Team",
+      "team",
+    ])
+    const phone = getRowValue(row, [
+      "No. Telep",
+      "No Telep",
+      "No. Telepon",
+      "No Telepon",
+      "no_telepon",
+      "Phone",
+      "phone",
+      "No HP",
+      "No. HP",
+      "normalizedPhone",
+    ])
+    const revenue = classifyTransactionRevenue({
+      baseRevenue: netRevenue,
+      addOnRevenue,
+      category: statusClassification.category,
+    })
 
     if (!isValidDateFormat(transactionDate)) {
       validationErrors.push({
@@ -424,42 +424,27 @@ export const validateTransactionRows = (records) => {
       })
     }
 
-    if (netRevenue === null || netRevenue === undefined || normalizeCell(netRevenue) === "") {
-  validationErrors.push({
-    rowNumber,
-    column: "Harga Bersih",
-    value: netRevenue,
-    message: "Net revenue is required.",
-  })
-} else if (!isValidAmountFormat(netRevenue)) {
-  validationErrors.push({
-    rowNumber,
-    column: "Harga Bersih",
-    value: netRevenue,
-    message: "Net revenue must be a valid number.",
-  })
-}
-
-    if (!isValidAmountFormat(addOnRevenue)) {
-      validationErrors.push({
-        rowNumber,
-        column: "Harga Add Ons Bersih",
-        value: addOnRevenue,
-        message: "Add-ons revenue must be a valid number.",
+    if (
+      statusClassification.category === TRANSACTION_ROW_CATEGORIES.CUSTOMER &&
+      !revenue.shouldSkip &&
+      !buildCustomerIdentity({
+        email,
+        name: customerName,
+        phone,
       })
-    }
-
-    if (!isValidEmailFormat(email)) {
+    ) {
       validationErrors.push({
         rowNumber,
-        column: "Email",
-        value: email,
-        message: "Email format is invalid.",
+        column: "Customer",
+        value: {
+          email: email || null,
+          name: customerName || null,
+          phone: phone || null,
+        },
+        message: "Customer email, name, or phone must contain a usable identity value.",
       })
     }
   })
-  console.log("ROW VALIDATION ERRORS:", validationErrors)
-
   if (validationErrors.length > 0) {
     throw createImportError({
       errorCode: "INVALID_ROW_DATA",

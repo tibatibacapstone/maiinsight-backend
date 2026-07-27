@@ -1,4 +1,4 @@
-import dotenv from "dotenv/config";
+import "dotenv/config";
 import bcrypt from "bcryptjs";
 import { PrismaClient } from "@prisma/client";
 
@@ -23,6 +23,25 @@ async function main() {
         role: user.role,
         password: passwordHash,
       },
+    });
+  }
+
+  const appSettings = {
+    GEMINI_API_KEY: process.env.GEMINI_API_KEY || "",
+    GEMINI_MODEL: process.env.GEMINI_MODEL || "gemini-2.5-flash",
+    GEMINI_ENABLED: process.env.GEMINI_API_KEY ? "true" : "false",
+    META_IG_USER_ID: process.env.META_IG_USER_ID || "",
+    META_ACCESS_TOKEN: process.env.META_ACCESS_TOKEN || "",
+    META_GRAPH_VERSION: process.env.META_GRAPH_VERSION || "v25.0",
+    META_ENABLED:
+      process.env.META_IG_USER_ID && process.env.META_ACCESS_TOKEN ? "true" : "false",
+  };
+
+  for (const [key, value] of Object.entries(appSettings)) {
+    await prisma.appSetting.upsert({
+      where: { key },
+      update: { value },
+      create: { key, value },
     });
   }
 

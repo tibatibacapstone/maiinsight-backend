@@ -5,6 +5,7 @@ import * as XLSX from "xlsx"
 import {
   isSupportedImportFile,
   parseUploadedTransactionFile,
+  validateTransactionRows,
   validateTransactionTemplate,
 } from "../importFile.service.js"
 
@@ -121,5 +122,87 @@ test("rejects invalid templates when required columns are missing", () => {
       assert.match(error.message, /required MaiinSight transaction template/i)
       return true
     }
+  )
+})
+
+test("existing templates do not require generated identity or booking columns", () => {
+  const record = buildRecord()
+  const headers = validateTransactionTemplate([record])
+
+  assert.equal(headers.includes("customerIdentity"), false)
+  assert.equal(headers.includes("customerKey"), false)
+  assert.equal(headers.includes("bookingEventKey"), false)
+})
+
+test("invalid play dates and times retain row-numbered validation reasons", () => {
+  assert.throws(
+    () =>
+      validateTransactionRows([
+        {
+          ...buildRecord(),
+          "Tanggal Main": "not-a-date",
+          "Jam Main": "evening",
+        },
+      ]),
+    (error) => {
+      assert.equal(error.errorCode, "INVALID_ROW_DATA")
+      assert.ok(error.validationErrors.some((item) => item.rowNumber === 2))
+      assert.ok(error.validationErrors.some((item) => item.column === "Tanggal Main"))
+      assert.ok(error.validationErrors.some((item) => item.column === "Jam Main"))
+      return true
+    }
+  )
+})
+
+test("zero-revenue customer rows do not require identity during validation", () => {
+  assert.equal(
+    validateTransactionRows([
+      {
+        ...buildRecord(),
+        Nama: "",
+        Email: "",
+        "No. Telepon": "",
+        "Harga Bersih": "0",
+      },
+    ]),
+    true
+  )
+})
+
+test("positive customer rows without identity retain the row-level customer error", () => {
+  assert.throws(
+    () =>
+      validateTransactionRows([
+        {
+          ...buildRecord(),
+          Nama: "",
+          Email: "",
+          "No. Telepon": "",
+          "Harga Bersih": "100000",
+        },
+      ]),
+    (error) => {
+      const customerError = error.validationErrors.find((item) => item.column === "Customer")
+      assert.equal(error.errorCode, "INVALID_ROW_DATA")
+      assert.equal(customerError.rowNumber, 2)
+      assert.match(customerError.message, /usable identity/i)
+      return true
+    }
+  )
+})
+
+test("operational rows allow zero revenue and missing customer details", () => {
+  assert.equal(
+    validateTransactionRows([
+      {
+        ...buildRecord(),
+        Nama: "",
+        Email: "",
+        "No. Telepon": "",
+        Status: "Internal",
+        "Harga Bersih": "",
+      },
+    ]),
+    true
   )
 })

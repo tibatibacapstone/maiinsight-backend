@@ -3,12 +3,40 @@ CREATE TABLE `User` (
     `id` INTEGER NOT NULL AUTO_INCREMENT,
     `email` VARCHAR(191) NOT NULL,
     `name` VARCHAR(191) NOT NULL,
-    `password` VARCHAR(191) NOT NULL,
+    `password` VARCHAR(191) NULL,
     `role` ENUM('operational', 'management', 'it_support') NOT NULL DEFAULT 'operational',
     `createdAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     `updatedAt` DATETIME(3) NOT NULL,
 
     UNIQUE INDEX `User_email_key`(`email`),
+    PRIMARY KEY (`id`)
+) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+-- CreateTable
+CREATE TABLE `app_settings` (
+    `key` VARCHAR(100) NOT NULL,
+    `value` TEXT NOT NULL,
+    `updatedAt` DATETIME(3) NOT NULL,
+
+    PRIMARY KEY (`key`)
+) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+-- CreateTable
+CREATE TABLE `user_invites` (
+    `id` INTEGER NOT NULL AUTO_INCREMENT,
+    `token` VARCHAR(512) NOT NULL,
+    `email` VARCHAR(191) NOT NULL,
+    `name` VARCHAR(191) NOT NULL,
+    `role` ENUM('operational', 'management', 'it_support') NOT NULL DEFAULT 'operational',
+    `createdById` INTEGER NOT NULL,
+    `expiresAt` DATETIME(3) NOT NULL,
+    `usedAt` DATETIME(3) NULL,
+    `createdAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+
+    UNIQUE INDEX `user_invites_token_key`(`token`),
+    INDEX `user_invites_email_idx`(`email`),
+    INDEX `user_invites_expiresAt_idx`(`expiresAt`),
+    INDEX `user_invites_createdById_fkey`(`createdById`),
     PRIMARY KEY (`id`)
 ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
@@ -20,6 +48,7 @@ CREATE TABLE `ActivityLog` (
     `metadata` JSON NULL,
     `createdAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
 
+    INDEX `ActivityLog_userId_fkey`(`userId`),
     PRIMARY KEY (`id`)
 ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
@@ -66,16 +95,18 @@ CREATE TABLE `raw_transaction_table` (
 -- CreateTable
 CREATE TABLE `customers` (
     `id` INTEGER NOT NULL AUTO_INCREMENT,
-    `customerKey` VARCHAR(191) NOT NULL,
+    `customerIdentity` VARCHAR(255) NOT NULL,
+    `customerKey` VARCHAR(50) NOT NULL,
     `name` VARCHAR(191) NULL,
     `email` VARCHAR(191) NULL,
     `phone` VARCHAR(50) NULL,
     `customerProfile` JSON NULL,
     `customerKeyType` VARCHAR(50) NOT NULL,
-    `customerKeyConfidence` VARCHAR(50) NOT NULL,
+    `customerKeyConfidence` DOUBLE NULL,
     `createdAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     `updatedAt` DATETIME(3) NOT NULL,
 
+    UNIQUE INDEX `customers_customerIdentity_key`(`customerIdentity`),
     UNIQUE INDEX `customers_customerKey_key`(`customerKey`),
     PRIMARY KEY (`id`)
 ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
@@ -88,58 +119,61 @@ CREATE TABLE `facility_transactions` (
     `rowNumber` INTEGER NOT NULL,
     `orderId` VARCHAR(100) NULL,
     `customerId` INTEGER NULL,
-    `customerKey` VARCHAR(191) NOT NULL,
+    `customerIdentity` VARCHAR(255) NOT NULL,
+    `customerKey` VARCHAR(50) NOT NULL,
     `customerName` VARCHAR(191) NULL,
-    `normalizedName` VARCHAR(191) NULL,
     `normalizedEmail` VARCHAR(191) NULL,
     `normalizedPhone` VARCHAR(50) NULL,
-    `customerKeyType` VARCHAR(50) NULL,
-    `customerKeyConfidence` VARCHAR(50) NULL,
-    `nama` VARCHAR(191) NULL,
-    `email` VARCHAR(191) NULL,
-    `noTelepon` VARCHAR(50) NULL,
-    `customerProfile` VARCHAR(100) NULL,
-    `tanggalTransaksi` DATETIME(3) NULL,
-    `tanggalMain` DATETIME(3) NULL,
-    `jamMain` VARCHAR(50) NULL,
     `transactionDate` DATETIME(3) NULL,
     `playDate` DATETIME(3) NULL,
     `playTime` VARCHAR(50) NULL,
     `startHour` VARCHAR(10) NULL,
     `endHour` VARCHAR(10) NULL,
     `durationHours` DOUBLE NOT NULL,
-    `venue` VARCHAR(100) NULL,
-    `lapangan` VARCHAR(100) NULL,
     `court` VARCHAR(100) NOT NULL,
     `courtType` VARCHAR(50) NULL,
-    `hargaBersih` DECIMAL(14, 2) NULL,
-    `addOns` TEXT NULL,
-    `hargaAddOns` DECIMAL(14, 2) NULL,
+    `bookingType` VARCHAR(50) NOT NULL,
+    `validBooking` BOOLEAN NOT NULL DEFAULT false,
+    `bookingEventKey` VARCHAR(255) NOT NULL,
+    `bookingRangeKey` VARCHAR(255) NOT NULL,
     `netRevenue` DECIMAL(14, 2) NOT NULL,
     `addOnRevenue` DECIMAL(14, 2) NOT NULL,
-    `tipeVoucher` VARCHAR(100) NULL,
-    `hargaVoucher` DECIMAL(14, 2) NULL,
     `voucherDiscount` DECIMAL(14, 2) NOT NULL,
     `status` VARCHAR(100) NULL,
     `promoName` VARCHAR(191) NULL,
     `sportPurpose` VARCHAR(191) NULL,
     `description` TEXT NULL,
-    `reschedule` VARCHAR(50) NULL,
-    `promosi` TEXT NULL,
-    `keperluan` VARCHAR(100) NULL,
+    `createdAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    `addOns` TEXT NULL,
+    `customerKeyConfidence` VARCHAR(50) NULL,
+    `customerKeyType` VARCHAR(50) NULL,
+    `customerProfile` VARCHAR(100) NULL,
     `deskripsi` TEXT NULL,
+    `email` VARCHAR(191) NULL,
+    `hargaAddOns` DECIMAL(14, 2) NULL,
+    `hargaBersih` DECIMAL(14, 2) NULL,
+    `hargaVoucher` DECIMAL(14, 2) NULL,
+    `jamMain` VARCHAR(50) NULL,
+    `keperluan` VARCHAR(100) NULL,
+    `lapangan` VARCHAR(100) NULL,
+    `nama` VARCHAR(191) NULL,
+    `noTelepon` VARCHAR(50) NULL,
+    `normalizedName` VARCHAR(191) NULL,
     `period` VARCHAR(20) NULL,
     `playTimeGroup` VARCHAR(30) NULL,
-    `bookingType` VARCHAR(50) NOT NULL,
-    `validBooking` BOOLEAN NOT NULL DEFAULT false,
-    `bookingEventKey` VARCHAR(255) NOT NULL,
-    `bookingRangeKey` VARCHAR(255) NOT NULL,
+    `promosi` TEXT NULL,
     `rawData` JSON NULL,
-    `createdAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    `reschedule` VARCHAR(50) NULL,
+    `tanggalMain` DATETIME(3) NULL,
+    `tanggalTransaksi` DATETIME(3) NULL,
+    `tipeVoucher` VARCHAR(100) NULL,
+    `venue` VARCHAR(100) NULL,
 
+    UNIQUE INDEX `facility_transactions_bookingEventKey_key`(`bookingEventKey`),
     INDEX `facility_transactions_batchId_idx`(`batchId`),
     INDEX `facility_transactions_rawRowId_idx`(`rawRowId`),
     INDEX `facility_transactions_customerId_idx`(`customerId`),
+    INDEX `facility_transactions_customerIdentity_idx`(`customerIdentity`),
     INDEX `facility_transactions_orderId_idx`(`orderId`),
     INDEX `facility_transactions_nama_idx`(`nama`),
     INDEX `facility_transactions_email_idx`(`email`),
@@ -151,7 +185,6 @@ CREATE TABLE `facility_transactions` (
     INDEX `facility_transactions_courtType_idx`(`courtType`),
     INDEX `facility_transactions_bookingType_idx`(`bookingType`),
     INDEX `facility_transactions_validBooking_idx`(`validBooking`),
-    INDEX `facility_transactions_bookingEventKey_idx`(`bookingEventKey`),
     INDEX `facility_transactions_bookingRangeKey_idx`(`bookingRangeKey`),
     PRIMARY KEY (`id`)
 ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
@@ -234,80 +267,20 @@ CREATE TABLE `cluster_profiles` (
     `runId` INTEGER NOT NULL,
     `clusterId` INTEGER NOT NULL,
     `segmentName` VARCHAR(100) NOT NULL,
-    `segmentDescription` TEXT NULL,
-    `labelReason` TEXT NULL,
     `customerCount` INTEGER NOT NULL,
     `avgRecency` DOUBLE NOT NULL,
     `avgFrequency` DOUBLE NOT NULL,
     `avgMonetary` DOUBLE NOT NULL,
-    `avgRScore` DOUBLE NULL,
+    `createdAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     `avgFScore` DOUBLE NULL,
     `avgMScore` DOUBLE NULL,
-    `createdAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    `avgRScore` DOUBLE NULL,
+    `labelReason` TEXT NULL,
+    `segmentDescription` TEXT NULL,
 
     INDEX `cluster_profiles_runId_idx`(`runId`),
     INDEX `cluster_profiles_segmentName_idx`(`segmentName`),
     UNIQUE INDEX `cluster_profiles_runId_clusterId_key`(`runId`, `clusterId`),
-    PRIMARY KEY (`id`)
-) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-
--- CreateTable
-CREATE TABLE `playtime_ml_runs` (
-    `id` INTEGER NOT NULL AUTO_INCREMENT,
-    `period` VARCHAR(20) NULL,
-    `algorithm` VARCHAR(50) NOT NULL DEFAULT 'KMeans',
-    `clusterCount` INTEGER NOT NULL,
-    `totalCustomers` INTEGER NOT NULL,
-    `totalSessions` INTEGER NOT NULL,
-    `status` VARCHAR(50) NOT NULL DEFAULT 'completed',
-    `errorMessage` TEXT NULL,
-    `sessionByTime` JSON NULL,
-    `heatmapData` JSON NULL,
-    `topHourData` JSON NULL,
-    `createdAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
-
-    PRIMARY KEY (`id`)
-) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-
--- CreateTable
-CREATE TABLE `playtime_customer_segments` (
-    `id` INTEGER NOT NULL AUTO_INCREMENT,
-    `runId` INTEGER NOT NULL,
-    `customerName` VARCHAR(191) NOT NULL,
-    `sesiPagi` INTEGER NOT NULL,
-    `sesiSiang` INTEGER NOT NULL,
-    `sesiMalam` INTEGER NOT NULL,
-    `totalSesi` INTEGER NOT NULL,
-    `ratioPagi` DOUBLE NOT NULL,
-    `ratioSiang` DOUBLE NOT NULL,
-    `ratioMalam` DOUBLE NOT NULL,
-    `playtimeCluster` INTEGER NOT NULL,
-    `playtimeSegment` VARCHAR(100) NOT NULL,
-    `activityLevel` VARCHAR(100) NULL,
-
-    INDEX `playtime_customer_segments_runId_idx`(`runId`),
-    INDEX `playtime_customer_segments_customerName_idx`(`customerName`),
-    INDEX `playtime_customer_segments_playtimeSegment_idx`(`playtimeSegment`),
-    PRIMARY KEY (`id`)
-) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-
--- CreateTable
-CREATE TABLE `playtime_segment_summaries` (
-    `id` INTEGER NOT NULL AUTO_INCREMENT,
-    `runId` INTEGER NOT NULL,
-    `playtimeCluster` INTEGER NOT NULL,
-    `playtimeSegment` VARCHAR(100) NOT NULL,
-    `totalCustomers` INTEGER NOT NULL,
-    `avgRatioPagi` DOUBLE NOT NULL,
-    `avgRatioSiang` DOUBLE NOT NULL,
-    `avgRatioMalam` DOUBLE NOT NULL,
-    `avgSesiPagi` DOUBLE NOT NULL,
-    `avgSesiSiang` DOUBLE NOT NULL,
-    `avgSesiMalam` DOUBLE NOT NULL,
-    `avgTotalSesi` DOUBLE NOT NULL,
-
-    INDEX `playtime_segment_summaries_runId_idx`(`runId`),
-    INDEX `playtime_segment_summaries_playtimeSegment_idx`(`playtimeSegment`),
     PRIMARY KEY (`id`)
 ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
@@ -365,6 +338,7 @@ CREATE TABLE `instagram_media` (
     `igMediaId` VARCHAR(100) NOT NULL,
     `accountId` VARCHAR(30) NOT NULL,
     `caption` TEXT NULL,
+    `contentLabel` VARCHAR(50) NULL,
     `mediaType` VARCHAR(50) NULL,
     `mediaProductType` VARCHAR(50) NULL,
     `mediaUrl` TEXT NULL,
@@ -376,6 +350,7 @@ CREATE TABLE `instagram_media` (
     `updatedAt` DATETIME(3) NOT NULL,
 
     UNIQUE INDEX `instagram_media_igMediaId_key`(`igMediaId`),
+    INDEX `instagram_media_accountId_fkey`(`accountId`),
     PRIMARY KEY (`id`)
 ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
@@ -448,6 +423,34 @@ CREATE TABLE `instagram_content_summaries` (
 ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
 -- CreateTable
+CREATE TABLE `instagram_monthly_media_performance` (
+    `id` VARCHAR(30) NOT NULL,
+    `accountId` VARCHAR(30) NOT NULL,
+    `month` DATETIME(3) NOT NULL,
+    `contentType` VARCHAR(50) NOT NULL,
+    `views` INTEGER NOT NULL DEFAULT 0,
+    `viewsFromFollowers` INTEGER NOT NULL DEFAULT 0,
+    `viewsFromNonFollowers` INTEGER NOT NULL DEFAULT 0,
+    `reach` INTEGER NOT NULL DEFAULT 0,
+    `reachFromFollowers` INTEGER NOT NULL DEFAULT 0,
+    `reachFromNonFollowers` INTEGER NOT NULL DEFAULT 0,
+    `interactions` INTEGER NOT NULL DEFAULT 0,
+    `interactionsFromFollowers` INTEGER NOT NULL DEFAULT 0,
+    `interactionsFromNonFollowers` INTEGER NOT NULL DEFAULT 0,
+    `likes` INTEGER NOT NULL DEFAULT 0,
+    `comments` INTEGER NOT NULL DEFAULT 0,
+    `shares` INTEGER NOT NULL DEFAULT 0,
+    `saved` INTEGER NOT NULL DEFAULT 0,
+    `contentCount` INTEGER NOT NULL DEFAULT 0,
+    `rawJson` JSON NULL,
+    `createdAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    `updatedAt` DATETIME(3) NOT NULL,
+
+    UNIQUE INDEX `instagram_monthly_media_performance_accountId_month_contentT_key`(`accountId`, `month`, `contentType`),
+    PRIMARY KEY (`id`)
+) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+-- CreateTable
 CREATE TABLE `meta_sync_logs` (
     `id` VARCHAR(30) NOT NULL,
     `syncType` VARCHAR(100) NOT NULL,
@@ -458,6 +461,9 @@ CREATE TABLE `meta_sync_logs` (
 
     PRIMARY KEY (`id`)
 ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+-- AddForeignKey
+ALTER TABLE `user_invites` ADD CONSTRAINT `user_invites_createdById_fkey` FOREIGN KEY (`createdById`) REFERENCES `User`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE `ActivityLog` ADD CONSTRAINT `ActivityLog_userId_fkey` FOREIGN KEY (`userId`) REFERENCES `User`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE;
@@ -481,12 +487,6 @@ ALTER TABLE `customer_rfm_scores` ADD CONSTRAINT `customer_rfm_scores_runId_fkey
 ALTER TABLE `cluster_profiles` ADD CONSTRAINT `cluster_profiles_runId_fkey` FOREIGN KEY (`runId`) REFERENCES `segmentation_runs`(`id`) ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE `playtime_customer_segments` ADD CONSTRAINT `playtime_customer_segments_runId_fkey` FOREIGN KEY (`runId`) REFERENCES `playtime_ml_runs`(`id`) ON DELETE CASCADE ON UPDATE CASCADE;
-
--- AddForeignKey
-ALTER TABLE `playtime_segment_summaries` ADD CONSTRAINT `playtime_segment_summaries_runId_fkey` FOREIGN KEY (`runId`) REFERENCES `playtime_ml_runs`(`id`) ON DELETE CASCADE ON UPDATE CASCADE;
-
--- AddForeignKey
 ALTER TABLE `instagram_account_snapshots` ADD CONSTRAINT `instagram_account_snapshots_accountId_fkey` FOREIGN KEY (`accountId`) REFERENCES `instagram_accounts`(`id`) ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
@@ -501,3 +501,5 @@ ALTER TABLE `instagram_account_insights` ADD CONSTRAINT `instagram_account_insig
 -- AddForeignKey
 ALTER TABLE `instagram_audience_insights` ADD CONSTRAINT `instagram_audience_insights_accountId_fkey` FOREIGN KEY (`accountId`) REFERENCES `instagram_accounts`(`id`) ON DELETE CASCADE ON UPDATE CASCADE;
 
+-- AddForeignKey
+ALTER TABLE `instagram_monthly_media_performance` ADD CONSTRAINT `instagram_monthly_media_performance_accountId_fkey` FOREIGN KEY (`accountId`) REFERENCES `instagram_accounts`(`id`) ON DELETE CASCADE ON UPDATE CASCADE;

@@ -1,5 +1,9 @@
 import { prisma } from "../config/prisma.js"
 import { buildCourtHourUsageWhere } from "./dashboardPeriod.service.js"
+import {
+  CANONICAL_TRANSACTION_STATUSES,
+  isEligibleCustomerStatus,
+} from "./transactionStatus.service.js"
 
 const SESSION_DEFINITIONS = [
   { name: "Morning", startHour: 6, endHour: 10 },
@@ -246,7 +250,16 @@ const aggregateCustomerHistory = (transactions, sessionName, courtType) => {
   const customerMap = new Map()
 
   for (const transaction of transactions) {
-    if (!transaction.customerKey || !transaction.bookingEventKey || !transaction.playDate) continue
+    if (
+      !transaction.customerKey ||
+      transaction.customerKey.startsWith("SYS-") ||
+      !isEligibleCustomerStatus(transaction.status) ||
+      toNumber(transaction.netRevenue) <= 0 ||
+      !transaction.bookingEventKey ||
+      !transaction.playDate
+    ) {
+      continue
+    }
 
     const playDate = new Date(transaction.playDate)
     const bookingEventKey = transaction.bookingEventKey
@@ -383,6 +396,18 @@ export const getLowOccupancySessions = async ({ date, courtType = "all", thresho
     where: {
       validBooking: true,
       customerKey: { not: "" },
+      status: {
+        in: [
+          CANONICAL_TRANSACTION_STATUSES.PAYMENT_COMPLETED,
+          CANONICAL_TRANSACTION_STATUSES.MANUAL_WALK_IN,
+        ],
+      },
+      netRevenue: { gt: 0 },
+      NOT: {
+        customerKey: {
+          startsWith: "SYS-",
+        },
+      },
       playDate: { not: null },
       bookingEventKey: { not: "" },
       ...(courtType === "all" ? {} : { courtType }),
@@ -394,6 +419,8 @@ export const getLowOccupancySessions = async ({ date, courtType = "all", thresho
     },
     select: {
       customerKey: true,
+      status: true,
+      netRevenue: true,
       startHour: true,
       courtType: true,
     },
@@ -454,6 +481,18 @@ export const getRecommendedCustomers = async ({
     where: {
       validBooking: true,
       customerKey: { not: "" },
+      status: {
+        in: [
+          CANONICAL_TRANSACTION_STATUSES.PAYMENT_COMPLETED,
+          CANONICAL_TRANSACTION_STATUSES.MANUAL_WALK_IN,
+        ],
+      },
+      netRevenue: { gt: 0 },
+      NOT: {
+        customerKey: {
+          startsWith: "SYS-",
+        },
+      },
       playDate: { not: null },
       bookingEventKey: { not: "" },
       ...(bookingType ? { bookingType } : {}),
@@ -475,6 +514,7 @@ export const getRecommendedCustomers = async ({
       normalizedEmail: true,
       email: true,
       bookingType: true,
+      status: true,
       playDate: true,
       startHour: true,
       bookingEventKey: true,

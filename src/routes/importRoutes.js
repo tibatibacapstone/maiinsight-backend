@@ -6,9 +6,12 @@ import { logItSupportActivity } from "../services/activityLog.service.js";
 import {
   buildCourtHourUsageEntries,
   mapFacilityTransactionToCanonicalUpdate,
-  mapRawRowToFacilityTransaction,
+  mapRawRowToFacilityTransactionResult,
 } from "../services/facilityTransactionMapper.js";
-import { syncCustomersForTransactions } from "../services/customerCanonicalization.service.js";
+import {
+  resolveCustomersForTransactions,
+  syncCustomersForTransactions,
+} from "../services/customerCanonicalization.service.js";
 import {
   buildFriendlyImportFailure,
   createImportError,
@@ -19,6 +22,7 @@ import {
   validateTransactionRows,
 } from "../services/importFile.service.js";
 import { EXCLUDED_IMPORT_BATCH_FILE_NAMES } from "../services/dashboardPeriod.service.js";
+import { partitionUniqueBookingEvents } from "../services/transactionFeatureEngineering.service.js";
 
 const router = Router();
 
@@ -123,6 +127,7 @@ const facilityTransactionSyncSelect = {
   courtType: true,
   validBooking: true,
   netRevenue: true,
+  customerIdentity: true,
   customerKey: true,
   customerName: true,
   nama: true,
@@ -133,6 +138,7 @@ const facilityTransactionSyncSelect = {
   customerProfile: true,
   customerKeyType: true,
   customerKeyConfidence: true,
+  bookingEventKey: true,
 };
 
 const syncCourtHourUsageForTransactions = async (transactions, { replaceExisting = false } = {}) => {
@@ -311,21 +317,33 @@ batch = await prisma.importBatch.create({
       const facilityTransactions = [];
       const rowErrors = [];
       let skippedRows = 0;
+      let zeroRevenueSkippedRows = 0;
+      let excludedStatusRows = 0;
+      let operationalRows = 0;
       rawRows.forEach((rawRow) => {
   try {
-    const payload = mapRawRowToFacilityTransaction(
+    const mappingResult = mapRawRowToFacilityTransactionResult(
       rawRow.data,
       batch.id,
       rawRow.rowNumber,
       rawRow.id
     );
 
-    if (!payload) {
+    if (mappingResult.outcome === "skipped") {
       skippedRows += 1;
+      if (mappingResult.reason === "non_positive_or_invalid_customer_revenue") {
+        zeroRevenueSkippedRows += 1;
+      } else if (mappingResult.reason === "excluded_status") {
+        excludedStatusRows += 1;
+      }
       return;
     }
 
-    facilityTransactions.push(payload);
+    if (mappingResult.outcome === "operational") {
+      operationalRows += 1;
+    }
+
+    facilityTransactions.push(mappingResult.payload);
   } catch (error) {
     rowErrors.push({
       rowNumber: rawRow.rowNumber,
@@ -334,10 +352,54 @@ batch = await prisma.importBatch.create({
   }
 });
 
+      let insertableTransactions = facilityTransactions;
+
       if (facilityTransactions.length) {
-        await prisma.facilityTransaction.createMany({
-          data: facilityTransactions,
+        const resolved = await resolveCustomersForTransactions(prisma, facilityTransactions);
+        const existingBookingEvents = await prisma.facilityTransaction.findMany({
+          where: {
+            bookingEventKey: {
+              in: resolved.transactions.map((transaction) => transaction.bookingEventKey),
+            },
+          },
+          select: {
+            bookingEventKey: true,
+          },
         });
+        const partitioned = partitionUniqueBookingEvents(
+          resolved.transactions,
+          existingBookingEvents.map((transaction) => transaction.bookingEventKey)
+        );
+
+        partitioned.duplicates.forEach((transaction) => {
+          rowErrors.push({
+            rowNumber: transaction.rowNumber,
+            message: `Duplicate booking event: ${transaction.bookingEventKey}.`,
+          });
+        });
+        insertableTransactions = partitioned.accepted;
+      }
+
+      if (insertableTransactions.length) {
+        const successfullyInserted = [];
+
+        for (const transaction of insertableTransactions) {
+          try {
+            await prisma.facilityTransaction.create({
+              data: transaction,
+            });
+            successfullyInserted.push(transaction);
+          } catch (error) {
+            if (error?.code !== "P2002") throw error;
+
+            rowErrors.push({
+              rowNumber: transaction.rowNumber,
+              message: `Duplicate booking event: ${transaction.bookingEventKey}.`,
+            });
+          }
+        }
+
+        insertableTransactions = successfullyInserted;
       }
 
       if (rowErrors.length) {
@@ -386,7 +448,10 @@ batch = await prisma.importBatch.create({
         fileName: updatedBatch.fileName,
         rowCount: records.length,
         skippedRows,
-        facilityTransactionCount: facilityTransactions.length,
+        zeroRevenueSkippedRows,
+        excludedStatusRows,
+        operationalRows,
+        facilityTransactionCount: insertableTransactions.length,
         customerCount: syncSummary.customerCount,
         linkedTransactionCount: syncSummary.linkedTransactionCount,
         courtHoursCreated: syncSummary.courtHoursCreated,
@@ -404,8 +469,11 @@ batch = await prisma.importBatch.create({
           rowCount: records.length,
           headers,
           status: updatedBatch.status,
-          facilityTransactionCount: facilityTransactions.length,
+          facilityTransactionCount: insertableTransactions.length,
           skippedRows,
+          zeroRevenueSkippedRows,
+          excludedStatusRows,
+          operationalRows,
           customerCount: syncSummary.customerCount,
           linkedTransactionCount: syncSummary.linkedTransactionCount,
           courtHoursCreated: syncSummary.courtHoursCreated,
@@ -499,21 +567,19 @@ router.post(
         errors: [],
       };
       const updatedTransactions = [];
+      const mappedTransactions = [];
 
       for (const transaction of transactions) {
         try {
           const updatePayload = mapFacilityTransactionToCanonicalUpdate(transaction);
-
-          const updatedTransaction = await prisma.facilityTransaction.update({
-            where: {
-              id: transaction.id,
-            },
-            data: updatePayload,
-            select: facilityTransactionSyncSelect,
+          if (!updatePayload) {
+            summary.skippedRows += 1;
+            continue;
+          }
+          mappedTransactions.push({
+            id: transaction.id,
+            ...updatePayload,
           });
-
-          updatedTransactions.push(updatedTransaction);
-          summary.updatedRows += 1;
         } catch (error) {
           summary.skippedRows += 1;
           summary.errors.push({
@@ -522,6 +588,48 @@ router.post(
             batchId: transaction.batchId,
             message: error instanceof Error ? error.message : "Backfill failed.",
           });
+        }
+      }
+
+      if (mappedTransactions.length) {
+        const resolved = await resolveCustomersForTransactions(prisma, mappedTransactions);
+        const seenBookingEventKeys = new Set();
+
+        for (const transaction of resolved.transactions) {
+          if (seenBookingEventKeys.has(transaction.bookingEventKey)) {
+            summary.skippedRows += 1;
+            summary.errors.push({
+              transactionId: transaction.id,
+              rowNumber: transaction.rowNumber,
+              batchId: transaction.batchId,
+              message: `Duplicate booking event: ${transaction.bookingEventKey}.`,
+            });
+            continue;
+          }
+
+          seenBookingEventKeys.add(transaction.bookingEventKey);
+
+          try {
+            const { id, ...data } = transaction;
+            const updatedTransaction = await prisma.facilityTransaction.update({
+              where: {
+                id,
+              },
+              data,
+              select: facilityTransactionSyncSelect,
+            });
+
+            updatedTransactions.push(updatedTransaction);
+            summary.updatedRows += 1;
+          } catch (error) {
+            summary.skippedRows += 1;
+            summary.errors.push({
+              transactionId: transaction.id,
+              rowNumber: transaction.rowNumber,
+              batchId: transaction.batchId,
+              message: error instanceof Error ? error.message : "Backfill failed.",
+            });
+          }
         }
       }
 
@@ -603,10 +711,42 @@ router.get("/batches/:id/rows", authorize("operational", "it_support"), async (r
         createdAt: true,
       },
     });
+    const generatedTransactions = await prisma.facilityTransaction.findMany({
+      where: {
+        batchId,
+        rawRowId: {
+          in: rows.map((row) => row.id),
+        },
+      },
+      select: {
+        rawRowId: true,
+        customerIdentity: true,
+        customerKey: true,
+        bookingEventKey: true,
+      },
+    });
+    const generatedByRawRowId = new Map(
+      generatedTransactions.map((transaction) => [transaction.rawRowId, transaction])
+    );
+    const rowsWithGeneratedFeatures = rows.map((row) => {
+      const generated = generatedByRawRowId.get(row.id);
+
+      return {
+        ...row,
+        data: generated
+          ? {
+              ...row.data,
+              customerIdentity: generated.customerIdentity,
+              customerKey: generated.customerKey,
+              bookingEventKey: generated.bookingEventKey,
+            }
+          : row.data,
+      };
+    });
 
     await logItSupportActivity(req, "IT_SUPPORT_RAW_IMPORT_VIEW", {
       batchId,
-      rowCount: rows.length,
+      rowCount: rowsWithGeneratedFeatures.length,
     });
 
     return res.json({
@@ -614,7 +754,7 @@ router.get("/batches/:id/rows", authorize("operational", "it_support"), async (r
       message: "Raw transaction rows fetched successfully.",
       data: {
         batch,
-        rows,
+        rows: rowsWithGeneratedFeatures,
       },
     });
   } catch (error) {

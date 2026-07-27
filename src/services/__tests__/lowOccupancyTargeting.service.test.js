@@ -12,9 +12,13 @@ import {
 
 test("resolveSessionNameByHour maps hours into business sessions", () => {
   assert.equal(resolveSessionNameByHour(6), "Morning")
-  assert.equal(resolveSessionNameByHour(12), "Afternoon")
-  assert.equal(resolveSessionNameByHour(17), "Evening")
-  assert.equal(resolveSessionNameByHour(21), "Night")
+  assert.equal(resolveSessionNameByHour(10), "Morning")
+  assert.equal(resolveSessionNameByHour(11), "Afternoon")
+  assert.equal(resolveSessionNameByHour(14), "Afternoon")
+  assert.equal(resolveSessionNameByHour(15), "Evening")
+  assert.equal(resolveSessionNameByHour(18), "Evening")
+  assert.equal(resolveSessionNameByHour(19), "Night")
+  assert.equal(resolveSessionNameByHour(23), "Night")
   assert.equal(resolveSessionNameByHour(2), null)
 })
 
@@ -22,7 +26,7 @@ test("getSessionDefinitionByName returns the configured session window", () => {
   assert.deepEqual(getSessionDefinitionByName("Morning"), {
     name: "Morning",
     startHour: 6,
-    endHour: 11,
+    endHour: 10,
   })
 })
 
