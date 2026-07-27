@@ -1,3 +1,10 @@
+import { badRequest } from "../utils/http-error.js"
+import {
+  CANONICAL_TRANSACTION_STATUSES,
+  DASHBOARD_TRANSACTION_GROUPS,
+  normalizeDashboardTransactionGroup,
+} from "./transactionStatus.service.js"
+
 const MONTH_LABELS = [
   "Jan",
   "Feb",
@@ -190,52 +197,76 @@ export const normalizeBookingTypeFilter = ({
   customerType,
   bookingType,
 }) => {
-  const explicitBookingType = String(bookingType ?? "").trim().toLowerCase()
-
-  if (
-    explicitBookingType === "membership" ||
-    explicitBookingType === "non_membership" ||
-    explicitBookingType === "internal"
-  ) {
-    return explicitBookingType
+  const rawBookingType = String(bookingType ?? "").trim()
+  const explicitGroup = normalizeDashboardTransactionGroup(bookingType)
+  if (explicitGroup && explicitGroup !== DASHBOARD_TRANSACTION_GROUPS.ALL) {
+    return explicitGroup
+  }
+  if (rawBookingType && !explicitGroup) {
+    throw badRequest("Unknown booking type filter.")
   }
 
-  if (
-    explicitBookingType === "non membership" ||
-    explicitBookingType === "non-member" ||
-    explicitBookingType === "non member"
-  ) {
-    return "non_membership"
-  }
-
-  const selectedCustomerType = String(customerType ?? "").trim().toLowerCase()
-
-  if (
-    !selectedCustomerType ||
-    selectedCustomerType === "all" ||
-    selectedCustomerType === "all type"
-  ) {
-    return null
-  }
-
-  if (selectedCustomerType === "membership") {
-    return "membership"
-  }
-
-  if (
-    selectedCustomerType === "non membership" ||
-    selectedCustomerType === "non_membership" ||
-    selectedCustomerType === "non-member" ||
-    selectedCustomerType === "non member"
-  ) {
-    return "non_membership"
-  }
-
-  if (selectedCustomerType === "internal") {
-    return "internal"
+  const rawCustomerType = String(customerType ?? "").trim()
+  const selectedGroup = normalizeDashboardTransactionGroup(customerType)
+  if (selectedGroup) return selectedGroup
+  if (rawCustomerType) {
+    throw badRequest("Unknown customer type filter.")
   }
 
   return null
+}
+
+const CUSTOMER_STATUSES = [
+  CANONICAL_TRANSACTION_STATUSES.PAYMENT_COMPLETED,
+  CANONICAL_TRANSACTION_STATUSES.MANUAL_WALK_IN,
+]
+
+const OPERATIONAL_STATUSES = [
+  CANONICAL_TRANSACTION_STATUSES.INTERNAL,
+  CANONICAL_TRANSACTION_STATUSES.TUTUP,
+  CANONICAL_TRANSACTION_STATUSES.MAINTENANCE,
+  CANONICAL_TRANSACTION_STATUSES.TUTUP_MAINTENANCE,
+]
+
+export const buildDashboardTransactionGroupCondition = ({
+  customerType,
+  bookingType,
+  includeOperational = false,
+}) => {
+  const group =
+    normalizeBookingTypeFilter({ customerType, bookingType }) ||
+    DASHBOARD_TRANSACTION_GROUPS.ALL
+  const customerCondition = {
+    status: { in: CUSTOMER_STATUSES },
+    customerKey: { startsWith: "CUST-" },
+    netRevenue: { gt: 0 },
+  }
+  const operationalCondition = {
+    status: { in: OPERATIONAL_STATUSES },
+    customerKey: { startsWith: "SYS-" },
+  }
+
+  if (group === DASHBOARD_TRANSACTION_GROUPS.MEMBERSHIP) {
+    return {
+      ...customerCondition,
+      bookingType: DASHBOARD_TRANSACTION_GROUPS.MEMBERSHIP,
+    }
+  }
+
+  if (group === DASHBOARD_TRANSACTION_GROUPS.NON_MEMBERSHIP) {
+    return {
+      ...customerCondition,
+      bookingType: DASHBOARD_TRANSACTION_GROUPS.NON_MEMBERSHIP,
+    }
+  }
+
+  if (group === DASHBOARD_TRANSACTION_GROUPS.INTERNAL) {
+    return operationalCondition
+  }
+
+  return includeOperational
+    ? { OR: [customerCondition, operationalCondition] }
+    : customerCondition
 }
 
 export const getCourtCount = (courtType) => (courtType ? 1 : 2)
@@ -256,12 +287,8 @@ export const buildFacilityTransactionWhere = ({
   customerType,
   bookingType,
   requireValidBooking = true,
+  includeOperational = false,
 }) => {
-  const normalizedBookingType = normalizeBookingTypeFilter({
-    customerType,
-    bookingType,
-  })
-
   const where = {
     batch: {
       fileName: {
@@ -281,13 +308,17 @@ export const buildFacilityTransactionWhere = ({
     where.validBooking = true
   }
 
+  where.AND = [
+    buildDashboardTransactionGroupCondition({
+      customerType,
+      bookingType,
+      includeOperational,
+    }),
+  ]
+
  if (courtType && courtType !== "all") {
   where.courtType = courtType
 }
-
-  if (normalizedBookingType) {
-    where.bookingType = normalizedBookingType
-  }
 
   return where
 }
@@ -299,12 +330,8 @@ export const buildCourtHourUsageWhere = ({
   customerType,
   bookingType,
   requireValidBooking = true,
+  includeOperational = false,
 }) => {
-  const normalizedBookingType = normalizeBookingTypeFilter({
-    customerType,
-    bookingType,
-  })
-
   const where = {
     transaction: {
       batch: {
@@ -330,9 +357,13 @@ export const buildCourtHourUsageWhere = ({
     where.transaction.validBooking = true
   }
 
-  if (normalizedBookingType) {
-    where.transaction.bookingType = normalizedBookingType
-  }
+  where.transaction.AND = [
+    buildDashboardTransactionGroupCondition({
+      customerType,
+      bookingType,
+      includeOperational,
+    }),
+  ]
 
   return where
 }
@@ -471,6 +502,3 @@ export const buildOccupancyTrendPeriods = ({
 
 export const getWeekdayLabel = (date) =>
   ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][date.getDay()]
-
-
-

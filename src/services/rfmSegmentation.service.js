@@ -5,6 +5,10 @@ import {
   normalizeCourtTypeFilter,
   resolveSelectedDateRange,
 } from "./dashboardPeriod.service.js"
+import {
+  CANONICAL_TRANSACTION_STATUSES,
+  isEligibleCustomerStatus,
+} from "./transactionStatus.service.js"
 
 const DEFAULT_K = 4
 const DEFAULT_MIN_K = 2
@@ -203,16 +207,6 @@ const buildSegmentationTransactionWhere = (scope) => {
     bookingType: scope.filterBookingType,
   })
 
-  const rfmEligibleStatuses = [
-    {
-      equals: "Payment Completed",
-
-    },
-    {
-      equals: "Manual/Walk-in",
-    },
-  ]
-
   if (baseWhere.playDate) {
     baseWhere.playDate = {
       ...baseWhere.playDate,
@@ -235,9 +229,17 @@ const buildSegmentationTransactionWhere = (scope) => {
       },
     },
     {
-      OR: rfmEligibleStatuses.map((status) => ({
-        status,
-      })),
+      status: {
+        in: [
+          CANONICAL_TRANSACTION_STATUSES.PAYMENT_COMPLETED,
+          CANONICAL_TRANSACTION_STATUSES.MANUAL_WALK_IN,
+        ],
+      },
+    },
+    {
+      customerKey: {
+        startsWith: "CUST-",
+      },
     },
   ]
 
@@ -285,11 +287,18 @@ const determineDominantBookingType = (bookingTypeEventMap) => {
   return mapBookingTypeToDisplayLabel(topBookingType)
 }
 
-const aggregateCustomerMetrics = (transactions, analysisDate) => {
+export const aggregateCustomerMetrics = (transactions, analysisDate) => {
   const customerMap = new Map()
 
   for (const transaction of transactions) {
-    if (!transaction.customerKey || !transaction.playDate || !transaction.bookingEventKey) {
+    if (
+      !transaction.customerKey ||
+      !transaction.customerKey.startsWith("CUST-") ||
+      transaction.customerKey.startsWith("SYS-") ||
+      !isEligibleCustomerStatus(transaction.status) ||
+      !transaction.playDate ||
+      !transaction.bookingEventKey
+    ) {
       continue
     }
 
@@ -1318,6 +1327,7 @@ export const runRfmSegmentation = async (input = {}) => {
           normalizedName: true,
           nama: true,
           bookingType: true,
+          status: true,
           playDate: true,
           bookingEventKey: true,
           netRevenue: true,

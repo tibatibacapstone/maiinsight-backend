@@ -96,7 +96,8 @@ model RawTransactionTable {
 
 model Customer {
   id                    Int                   @id @default(autoincrement())
-  customerKey           String                @unique
+  customerIdentity      String                @unique @db.VarChar(255)
+  customerKey           String                @unique @db.VarChar(50)
   name                  String?
   email                 String?
   phone                 String?               @db.VarChar(50)
@@ -117,7 +118,8 @@ model FacilityTransaction {
   rowNumber             Int
   orderId               String?          @db.VarChar(100)
   customerId            Int?
-  customerKey           String
+  customerIdentity      String           @db.VarChar(255)
+  customerKey           String           @db.VarChar(50)
   customerName          String?
   normalizedEmail       String?
   normalizedPhone       String?          @db.VarChar(50)
@@ -131,7 +133,7 @@ model FacilityTransaction {
   courtType             String?          @db.VarChar(50)
   bookingType           String           @db.VarChar(50)
   validBooking          Boolean          @default(false)
-  bookingEventKey       String           @db.VarChar(255)
+  bookingEventKey       String           @unique @db.VarChar(255)
   bookingRangeKey       String           @db.VarChar(255)
   netRevenue            Decimal          @db.Decimal(14, 2)
   addOnRevenue          Decimal          @db.Decimal(14, 2)
@@ -172,6 +174,7 @@ model FacilityTransaction {
   @@index([batchId])
   @@index([rawRowId])
   @@index([customerId])
+  @@index([customerIdentity])
   @@index([orderId])
   @@index([nama])
   @@index([email])
@@ -183,7 +186,6 @@ model FacilityTransaction {
   @@index([courtType])
   @@index([bookingType])
   @@index([validBooking])
-  @@index([bookingEventKey])
   @@index([bookingRangeKey])
   @@map("facility_transactions")
 }
@@ -298,20 +300,20 @@ model MetaRawResponse {
 }
 
 model InstagramAccount {
-  id               String                           @id @default(cuid()) @db.VarChar(30)
-  igUserId         String                           @unique @db.VarChar(100)
-  username         String?                          @db.VarChar(100)
-  name             String?                          @db.VarChar(150)
-  followersCount   Int?
-  followsCount     Int?
-  mediaCount       Int?
-  rawJson          Json?
-  createdAt        DateTime                         @default(now())
-  updatedAt        DateTime                         @updatedAt
-  accountInsights  InstagramAccountInsight[]
-  snapshots        InstagramAccountSnapshot[]
-  audienceInsights InstagramAudienceInsight[]
-  media            InstagramMedia[]
+  id                 String                             @id @default(cuid()) @db.VarChar(30)
+  igUserId           String                             @unique @db.VarChar(100)
+  username           String?                            @db.VarChar(100)
+  name               String?                            @db.VarChar(150)
+  followersCount     Int?
+  followsCount       Int?
+  mediaCount         Int?
+  rawJson            Json?
+  createdAt          DateTime                           @default(now())
+  updatedAt          DateTime                           @updatedAt
+  accountInsights    InstagramAccountInsight[]
+  snapshots          InstagramAccountSnapshot[]
+  audienceInsights   InstagramAudienceInsight[]
+  media              InstagramMedia[]
   monthlyPerformance InstagramMonthlyMediaPerformance[]
 
   @@map("instagram_accounts")
@@ -423,28 +425,28 @@ model InstagramContentSummary {
 }
 
 model InstagramMonthlyMediaPerformance {
-  id                          String           @id @default(cuid()) @db.VarChar(30)
-  accountId                   String           @db.VarChar(30)
-  month                       DateTime
-  contentType                 String           @db.VarChar(50)
-  views                       Int              @default(0)
-  viewsFromFollowers          Int              @default(0)
-  viewsFromNonFollowers       Int              @default(0)
-  reach                       Int              @default(0)
-  reachFromFollowers          Int              @default(0)
-  reachFromNonFollowers       Int              @default(0)
-  interactions                Int              @default(0)
-  interactionsFromFollowers   Int              @default(0)
-  interactionsFromNonFollowers Int             @default(0)
-  likes                       Int              @default(0)
-  comments                    Int              @default(0)
-  shares                      Int              @default(0)
-  saved                       Int              @default(0)
-  contentCount                Int              @default(0)
-  rawJson                     Json?
-  createdAt                   DateTime         @default(now())
-  updatedAt                   DateTime         @updatedAt
-  account                     InstagramAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  id                           String           @id @default(cuid()) @db.VarChar(30)
+  accountId                    String           @db.VarChar(30)
+  month                        DateTime
+  contentType                  String           @db.VarChar(50)
+  views                        Int              @default(0)
+  viewsFromFollowers           Int              @default(0)
+  viewsFromNonFollowers        Int              @default(0)
+  reach                        Int              @default(0)
+  reachFromFollowers           Int              @default(0)
+  reachFromNonFollowers        Int              @default(0)
+  interactions                 Int              @default(0)
+  interactionsFromFollowers    Int              @default(0)
+  interactionsFromNonFollowers Int              @default(0)
+  likes                        Int              @default(0)
+  comments                     Int              @default(0)
+  shares                       Int              @default(0)
+  saved                        Int              @default(0)
+  contentCount                 Int              @default(0)
+  rawJson                      Json?
+  createdAt                    DateTime         @default(now())
+  updatedAt                    DateTime         @updatedAt
+  account                      InstagramAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
 
   @@unique([accountId, month, contentType])
   @@map("instagram_monthly_media_performance")

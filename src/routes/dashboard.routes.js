@@ -13,6 +13,7 @@ import {
   normalizeCourtTypeFilter,
   resolveSelectedDateRange,
 } from "../services/dashboardPeriod.service.js";
+import { buildEmptySlotHeatmap } from "../services/emptySlotHeatmap.service.js";
 
 export const dashboardRouter = Router();
 
@@ -233,6 +234,7 @@ const getLowSessionSummary = async ({
       courtType,
       customerType,
       bookingType,
+      includeOperational: true,
     }),
     select: {
       hourStart: true,
@@ -403,6 +405,7 @@ dashboardRouter.get(
         courtType,
         customerType: filters.customerType,
         bookingType: filters.bookingType,
+        includeOperational: true,
       });
 
       const transactions = await prisma.facilityTransaction.findMany({
@@ -410,7 +413,8 @@ dashboardRouter.get(
         select: {
           playDate: true,
           startHour: true,
-          nama: true,
+          customerKey: true,
+          bookingEventKey: true,
         },
       });
 
@@ -422,17 +426,26 @@ dashboardRouter.get(
       };
 
       const customerSet = new Set();
+      const sessionEventKeys = new Set();
+      const sessionEventKeysByGroup = new Map(
+        SESSION_DEFINITIONS.map((session) => [session.name, new Set()])
+      );
 
       transactions.forEach((tx) => {
         const sessionName = resolveSessionNameByHour(tx.startHour);
 
-        if (!sessionName) return;
+        if (!sessionName || !tx.bookingEventKey) return;
 
-        sessionCounts[sessionName] += 1;
+        sessionEventKeys.add(tx.bookingEventKey);
+        sessionEventKeysByGroup.get(sessionName)?.add(tx.bookingEventKey);
 
-        if (tx.nama) {
-          customerSet.add(tx.nama);
+        if (tx.customerKey && !tx.customerKey.startsWith("SYS-")) {
+          customerSet.add(tx.customerKey);
         }
+      });
+
+      SESSION_DEFINITIONS.forEach((session) => {
+        sessionCounts[session.name] = sessionEventKeysByGroup.get(session.name)?.size || 0;
       });
 
       const sessionByTime = SESSION_DEFINITIONS
@@ -449,7 +462,7 @@ dashboardRouter.get(
         message: "Playtime mix fetched successfully.",
         data: {
           sessionByTime,
-          totalSessions: transactions.length,
+          totalSessions: sessionEventKeys.size,
           totalCustomers: customerSet.size,
           heatmapSummary,
         },
@@ -462,29 +475,6 @@ dashboardRouter.get(
 
 // ⬅️ NEW: Empty Slot Heatmap derived from actual court-hour-usage data
 // (replaces the previous ML playtime source).
-const HEATMAP_DAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
-const HEATMAP_SESSION_DEFINITIONS = [
-  { name: "Morning", startHour: 6, endHour: 11 },
-  { name: "Afternoon", startHour: 12, endHour: 15 },
-  { name: "Evening", startHour: 16, endHour: 18 },
-  { name: "Night", startHour: 19, endHour: 23 },
-]
-
-const getHeatmapSessionNameByHour = (hourValue) => {
-  const hour = Number(String(hourValue ?? "").split(":")[0])
-  if (!Number.isFinite(hour)) return null
-  return (
-    HEATMAP_SESSION_DEFINITIONS.find(
-      (session) => hour >= session.startHour && hour <= session.endHour
-    )?.name || null
-  )
-}
-
-const getHeatmapDayLabel = (date) => {
-  const dayIndex = date.getDay()
-  return HEATMAP_DAY_LABELS[dayIndex] || null
-}
-
 dashboardRouter.get(
   "/empty-slot-heatmap",
   authorize("operational", "management", "it_support"),
@@ -516,118 +506,40 @@ dashboardRouter.get(
       const { startDate, endDate } = selectedRange
       const courtCount = courtType ? 1 : 2
 
-      const baseWhere = {
-        transaction: {
-          batch: {
-            fileName: { notIn: EXCLUDED_IMPORT_BATCH_FILE_NAMES },
-          },
-        },
-      }
-      if (startDate || endDate) {
-        baseWhere.playDate = {}
-        if (startDate) baseWhere.playDate.gte = startDate
-        if (endDate) baseWhere.playDate.lte = endDate
-      }
-      if (courtType) baseWhere.courtType = courtType
-
-      const usageWhere = { ...baseWhere, transaction: { ...baseWhere.transaction } }
-      const normalizedBookingType = (() => {
-        const raw = String(filters.bookingType ?? "all").trim().toLowerCase()
-        if (!raw || raw === "all") return null
-        if (raw === "regular_booking") return "regular_booking"
-        if (raw === "member_internal_booking") return "member_internal_booking"
-        if (raw === "other") return "other"
-        return null
-      })()
-      if (normalizedBookingType) {
-        usageWhere.transaction.bookingType = normalizedBookingType
-      }
-      usageWhere.transaction.validBooking = true
+      const usageWhere = buildCourtHourUsageWhere({
+        startDate,
+        endDate,
+        courtType,
+        customerType: filters.customerType,
+        bookingType: filters.bookingType,
+        includeOperational: true,
+      })
 
       // Aggregate booked hours per (dayOfWeek, startHour)
       const usageRows = await prisma.courtHourUsage.findMany({
         where: usageWhere,
-        select: { playDate: true, hourStart: true },
+        select: {
+          courtHourKey: true,
+          courtType: true,
+          playDate: true,
+          hourStart: true,
+          transaction: {
+            select: {
+              status: true,
+            },
+          },
+        },
       })
-
-      if (usageRows.length === 0) {
-        return res.json({
-          success: true,
-          message: "Empty slot heatmap fetched successfully.",
-          data: { slots: [], mostEmptySlot: null },
-        })
-      }
-
-      // Compute total available sessions per (dayOfWeek, startHour) by stepping through
-      // the date range and bucketing each day into its weekday, multiplied by courtCount.
-      const availableByKey = new Map()
-      const cursor = startOfDay(startDate)
-      const last = startOfDay(endDate)
-      while (cursor.getTime() <= last.getTime()) {
-        const dayLabel = getHeatmapDayLabel(cursor)
-        if (dayLabel) {
-          for (let hour = 6; hour <= 23; hour += 1) {
-            const key = `${dayLabel}|${String(hour).padStart(2, "0")}:00`
-            availableByKey.set(key, (availableByKey.get(key) || 0) + courtCount)
-          }
-        }
-        cursor.setDate(cursor.getDate() + 1)
-      }
-
-      const bookedByKey = new Map()
-      usageRows.forEach((row) => {
-        if (!row.playDate || !row.hourStart) return
-        const dayLabel = getHeatmapDayLabel(new Date(row.playDate))
-        if (!dayLabel) return
-        const hour = Number(String(row.hourStart).split(":")[0])
-        if (!Number.isFinite(hour)) return
-        const key = `${dayLabel}|${String(hour).padStart(2, "0")}:00`
-        bookedByKey.set(key, (bookedByKey.get(key) || 0) + 1)
-      })
-
-      // Build the slot list: empty count = max(0, available - booked) for each
-      // (day, hour) that had at least one available session in the range.
-      const slots = []
-      for (const [key, available] of availableByKey.entries()) {
-        const [day_short, startHour] = key.split("|")
-        const booked = bookedByKey.get(key) || 0
-        const empty = Math.max(0, available - booked)
-        if (empty <= 0) continue
-        const sessionName = getHeatmapSessionNameByHour(Number(startHour.split(":")[0]))
-        slots.push({
-          day_short,
-          startHour,
-          session_count: empty,
-          session_label: sessionName,
-        })
-      }
-
-      // Find the most-empty slot (largest empty count; break ties by earliest hour then day order)
-      const dayOrder = HEATMAP_DAY_LABELS
-      const mostEmpty = [...slots].sort((left, right) => {
-        if (right.session_count !== left.session_count) {
-          return right.session_count - left.session_count
-        }
-        if (left.startHour !== right.startHour) {
-          return left.startHour.localeCompare(right.startHour)
-        }
-        return dayOrder.indexOf(left.day_short) - dayOrder.indexOf(right.day_short)
-      })[0] || null
 
       res.json({
         success: true,
         message: "Empty slot heatmap fetched successfully.",
-        data: {
-          slots,
-          mostEmptySlot: mostEmpty
-            ? {
-                dayLabel: mostEmpty.day_short,
-                hourLabel: mostEmpty.startHour,
-                sessionLabel: mostEmpty.session_label,
-                sessionCount: mostEmpty.session_count,
-              }
-            : null,
-        },
+        data: buildEmptySlotHeatmap({
+          usageRows,
+          startDate,
+          endDate,
+          courtCount,
+        }),
       })
     } catch (error) {
       next(error)
@@ -859,6 +771,7 @@ dashboardRouter.get(
         courtType,
         customerType: filters.customerType,
         bookingType: filters.bookingType,
+        includeOperational: true,
       });
 
       const previousTransactionWhere = buildFacilityTransactionWhere({
@@ -867,6 +780,7 @@ dashboardRouter.get(
         courtType,
         customerType: filters.customerType,
         bookingType: filters.bookingType,
+        includeOperational: true,
       });
 
       const courtHourWhere = buildCourtHourUsageWhere({
@@ -875,6 +789,7 @@ dashboardRouter.get(
         courtType,
         customerType: filters.customerType,
         bookingType: filters.bookingType,
+        includeOperational: true,
       });
 
       const previousCourtHourWhere = buildCourtHourUsageWhere({
@@ -883,6 +798,7 @@ dashboardRouter.get(
         courtType,
         customerType: filters.customerType,
         bookingType: filters.bookingType,
+        includeOperational: true,
       });
 
       const [
@@ -943,12 +859,11 @@ dashboardRouter.get(
         const hourStr = tx.startHour || "";
         const hour = Number(String(hourStr).split(":")[0]);
 
-        let session = "Night";
-        if (hour >= 6 && hour <= 11) session = "Morning";
-        else if (hour >= 12 && hour <= 15) session = "Afternoon";
-        else if (hour >= 16 && hour <= 18) session = "Evening";
+        const session = resolveSessionNameByHour(hour);
 
-        sessionRevenue[session] += Number(tx.netRevenue || 0);
+        if (session) {
+          sessionRevenue[session] += Number(tx.netRevenue || 0);
+        }
       });
 
       const peakSession =
@@ -1048,6 +963,7 @@ dashboardRouter.get(
               courtType,
               customerType: filters.customerType,
               bookingType: filters.bookingType,
+              includeOperational: true,
             }),
           });
 

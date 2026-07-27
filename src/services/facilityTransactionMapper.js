@@ -1,4 +1,11 @@
-const UNKNOWN_CUSTOMER_PREFIX = "UNKNOWN";
+import {
+  buildCustomerIdentity,
+} from "./transactionFeatureEngineering.service.js";
+import {
+  classifyTransactionRevenue,
+  classifyTransactionStatus,
+  TRANSACTION_ROW_CATEGORIES,
+} from "./transactionStatus.service.js";
 
 const getValue = (row, keys) => {
   for (const key of keys) {
@@ -19,32 +26,6 @@ const normalizeWhitespace = (value) =>
     .trim();
 
 const normalizeText = (value) => normalizeWhitespace(value).toLowerCase();
-
-const normalizeName = (value) => {
-  const text = normalizeWhitespace(value);
-  return text ? text.toLowerCase() : null;
-};
-
-const normalizeEmail = (value) => {
-  const text = normalizeText(value);
-
-  if (!text || !text.includes("@")) return null;
-
-  const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-  return emailPattern.test(text) ? text : null;
-};
-
-const normalizePhone = (value) => {
-  const digits = String(value ?? "").replace(/[^\d+]/g, "");
-
-  if (!digits) return null;
-
-  if (digits.startsWith("+")) {
-    return digits;
-  }
-
-  return digits.replace(/^0+/, "") || digits;
-};
 
 const parseAmount = (value) => {
   if (value === null || value === undefined || value === "") return 0
@@ -282,85 +263,9 @@ const getDateKey = (date) => {
 
   return `${year}-${month}-${day}`;
 };
-const isPaymentCompleted = (status) =>
-  normalizeText(status) === "payment completed";
-
-const isManualWalkIn = (status) =>
-  normalizeText(status) === "manual/walk-in";
-
-const isInternalBooking = (status) =>
-  normalizeText(status) === "internal";
-
-const isAllowedTransactionStatus = (status) =>
-  isPaymentCompleted(status) || isManualWalkIn(status) || isInternalBooking(status);
-
-const buildCustomerIdentity = ({
-  rawRowId,
-  normalizedEmailValue,
-  normalizedPhoneValue,
-  normalizedNameValue,
-}) => {
-  if (normalizedEmailValue) {
-    return {
-      customerKey: `EMAIL:${normalizedEmailValue}`,
-      customerKeyType: "email",
-      customerKeyConfidence: "high",
-    };
-  }
-
-  if (normalizedPhoneValue) {
-    return {
-      customerKey: `PHONE:${normalizedPhoneValue}`,
-      customerKeyType: "phone",
-      customerKeyConfidence: "medium",
-    };
-  }
-
-  if (normalizedNameValue) {
-    return {
-      customerKey: `NAME:${normalizedNameValue}`,
-      customerKeyType: "name",
-      customerKeyConfidence: "low",
-    };
-  }
-
-  return {
-    customerKey: `${UNKNOWN_CUSTOMER_PREFIX}:${rawRowId}`,
-    customerKeyType: "unknown",
-    customerKeyConfidence: "unknown",
-  };
-};
-
-const buildBookingType = ({ status }) => {
-  const normalizedStatus = normalizeText(status);
-
-  if (normalizedStatus === "payment completed") {
-    return "membership";
-  }
-
-  if (normalizedStatus === "manual/walk-in") {
-    return "non_membership";
-  }
-
-  if (normalizedStatus === "internal") {
-    return "internal";
-  }
-
-  return "other";
-};
-
-const buildBookingEventKey = ({ orderId, customerKey, transactionDate, bookingType }) => {
-  const normalizedOrderId = normalizeWhitespace(orderId);
-
-  if (normalizedOrderId) return `ORDER:${normalizedOrderId}`;
-
-  const transactionDateKey = transactionDate ? getDateKey(transactionDate) : "no-transaction-date";
-  return `${customerKey}|${transactionDateKey}|${bookingType}`;
-};
-
-const buildBookingRangeKey = ({ bookingEventKey, playDate, playTime, court }) => {
+const buildBookingRangeKey = ({ customerIdentity, playDate, playTime, court }) => {
   const playDateKey = playDate ? getDateKey(playDate) : "no-play-date";
-  return `${bookingEventKey}|${playDateKey}|${playTime || "no-play-time"}|${court || "no-court"}`;
+  return `${customerIdentity}|${playDateKey}|${playTime || "no-play-time"}|${court || "no-court"}`;
 };
 
 const resolveRawRowId = ({ rawRowId, batchId, rowNumber }) => {
@@ -383,8 +288,16 @@ const resolveRawRowId = ({ rawRowId, batchId, rowNumber }) => {
 
 const buildFacilityTransactionPayload = (
   row,
-  { batchId, rowNumber, rawRowId, includeRawData = true } = {}
+  { batchId, rowNumber, rawRowId, includeRawData = true, returnResult = false } = {}
 ) => {
+  const skipped = (reason) =>
+    returnResult
+      ? {
+          outcome: "skipped",
+          reason,
+          payload: null,
+        }
+      : null;
   const resolvedBatchId = Number(batchId);
   const resolvedRowNumber = Number(rowNumber);
   const resolvedRawRowId = resolveRawRowId({ rawRowId, batchId, rowNumber });
@@ -401,26 +314,27 @@ const buildFacilityTransactionPayload = (
   const playDate = parseDate(
     getValue(row, ["Tanggal Main", "tanggal_main", "tanggalMain", "playDate"])
   );
-  if (!transactionDate) {
-  throw new Error("Invalid transaction date format.")
-}
-
-if (!playDate) {
-  throw new Error("Invalid play date format.")
-}
-
   const jamMainRaw = getValue(row, ["Jam Main", "jam_main", "jamMain", "playTime"]);
   const parsedJamMain = parseJamMain(jamMainRaw);
   const orderId = normalizeWhitespace(
     getValue(row, ["Order ID", "Order Id", "order_id", "orderId"])
   ) || null;
   
-const status =
-  normalizeWhitespace(getValue(row, ["Status", "status"])) || null;
+  const statusClassification = classifyTransactionStatus(
+    getValue(row, ["Status", "status"])
+  );
 
-if (!isAllowedTransactionStatus(status)) {
-  return null;
-}
+  if (statusClassification.category === TRANSACTION_ROW_CATEGORIES.EXCLUDED) {
+    return skipped("excluded_status");
+  }
+
+  if (!transactionDate) {
+    throw new Error("Invalid transaction date format.")
+  }
+
+  if (!playDate) {
+    throw new Error("Invalid play date format.")
+  }
 
   const courtSource =
     getValue(row, ["Lapangan", "lapangan", "Court", "court", "Venue", "venue"]) || null;
@@ -430,12 +344,8 @@ if (!isAllowedTransactionStatus(status)) {
     normalizeWhitespace(
       getValue(row, ["Nama", "nama", "Customer Name", "customer_name", "customerName", "Team", "team"])
     ) || null;
-  const normalizedNameValue = normalizeName(customerName);
-  const normalizedEmailValue = normalizeEmail(
-    getValue(row, ["Email", "email", "normalizedEmail"])
-  );
-  const normalizedPhoneValue = normalizePhone(
-    getValue(row, [
+  const rawEmail = getValue(row, ["Email", "email", "normalizedEmail"]);
+  const rawPhone = getValue(row, [
       "No. Telep",
       "No Telep",
       "No. Telepon",
@@ -446,30 +356,66 @@ if (!isAllowedTransactionStatus(status)) {
       "No HP",
       "No. HP",
       "normalizedPhone",
-    ])
-  );
-
-  const { customerKey, customerKeyType, customerKeyConfidence } = buildCustomerIdentity({
-    rawRowId: resolvedRawRowId,
-    normalizedEmailValue,
-    normalizedPhoneValue,
-    normalizedNameValue,
-  });
-
-  const baseRevenue = parseAmount(
-    getValue(row, ["Harga Bersih", "harga_bersih", "hargaBersih", "netRevenue"])
-  );
-
-  const addOnRevenue = parseAmount(
-    getValue(row, [
+    ]);
+  const rawBaseRevenue = getValue(row, [
+    "Harga Bersih",
+    "harga_bersih",
+    "hargaBersih",
+    "netRevenue",
+  ]);
+  const rawAddOnRevenue = getValue(row, [
       "Harga Add Ons Bersih",
       "harga_add_ons_bersih",
       "hargaAddOnsBersih",
       "Harga Add Ons",
       "harga_add_ons",
       "hargaAddOns",
-    ])
-  );
+    ]);
+  const revenue = classifyTransactionRevenue({
+    baseRevenue: rawBaseRevenue,
+    addOnRevenue: rawAddOnRevenue,
+    category: statusClassification.category,
+  });
+
+  if (
+    statusClassification.category === TRANSACTION_ROW_CATEGORIES.CUSTOMER &&
+    revenue.shouldSkip
+  ) {
+    return skipped("non_positive_or_invalid_customer_revenue");
+  }
+
+  const identity =
+    statusClassification.category === TRANSACTION_ROW_CATEGORIES.OPERATIONAL
+      ? {
+          customerIdentity: statusClassification.customerIdentity,
+          customerKeyType: "operational",
+          customerKeyConfidence: "system",
+          normalizedEmail: null,
+          normalizedName: null,
+          normalizedPhone: null,
+        }
+      : buildCustomerIdentity({
+          email: rawEmail,
+          name: customerName,
+          phone: rawPhone,
+        });
+
+  if (!identity) {
+    throw new Error("Customer email, name, or phone must contain a usable identity value.");
+  }
+
+  const {
+    customerIdentity,
+    customerKeyType,
+    customerKeyConfidence,
+    normalizedEmail: normalizedEmailValue,
+    normalizedName: normalizedNameValue,
+    normalizedPhone: normalizedPhoneValue,
+  } = identity;
+  const customerKey =
+    statusClassification.category === TRANSACTION_ROW_CATEGORIES.OPERATIONAL
+      ? statusClassification.customerKey
+      : customerIdentity;
 
   const voucherDiscount = parseAmount(
     getValue(row, [
@@ -482,22 +428,18 @@ if (!isAllowedTransactionStatus(status)) {
     ])
   );
 
-  const bookingType = buildBookingType({ status, orderId });
-  const validBooking = isAllowedTransactionStatus(status);
-  const bookingEventKey = buildBookingEventKey({
-    orderId,
-    customerKey,
-    transactionDate,
-    bookingType,
-  });
+  const bookingType = statusClassification.bookingType;
+  const validBooking = true;
   const bookingRangeKey = buildBookingRangeKey({
-    bookingEventKey,
+    customerIdentity,
     playDate,
     playTime: parsedJamMain.playTime,
     court,
   });
 
-  const netRevenue = baseRevenue + addOnRevenue;
+  const baseRevenue = revenue.baseRevenue;
+  const addOnRevenue = revenue.addOnRevenue;
+  const netRevenue = revenue.netRevenue;
   const venue = normalizeWhitespace(getValue(row, ["Venue", "venue"])) || null;
   const playTimeGroup = classifyPlayTime(parsedJamMain.startHourNumber);
   const promoName =
@@ -507,12 +449,13 @@ if (!isAllowedTransactionStatus(status)) {
   const description =
     normalizeWhitespace(getValue(row, ["Deskripsi", "deskripsi", "Description", "description"])) || null;
 
-  return {
+  const payload = {
     batchId: Number.isFinite(resolvedBatchId) ? resolvedBatchId : 0,
     rawRowId: resolvedRawRowId,
     rowNumber: Number.isFinite(resolvedRowNumber) ? resolvedRowNumber : 0,
     orderId,
     customerId: Number.isFinite(Number(row?.customerId)) ? Number(row.customerId) : null,
+    customerIdentity,
     customerKey,
     customerName,
     normalizedName: normalizedNameValue,
@@ -554,7 +497,7 @@ if (!isAllowedTransactionStatus(status)) {
     hargaVoucher: voucherDiscount,
     voucherDiscount,
 
-    status,
+    status: statusClassification.canonicalStatus,
     promoName,
     sportPurpose,
     description,
@@ -567,10 +510,21 @@ if (!isAllowedTransactionStatus(status)) {
     playTimeGroup,
     bookingType,
     validBooking,
-    bookingEventKey,
+    bookingEventKey: bookingRangeKey,
     bookingRangeKey,
     rawData: includeRawData ? row : undefined,
   };
+
+  return returnResult
+    ? {
+        outcome:
+          statusClassification.category === TRANSACTION_ROW_CATEGORIES.OPERATIONAL
+            ? "operational"
+            : "customer",
+        reason: null,
+        payload,
+      }
+    : payload;
 };
 
 const getHourSlots = (transaction) => {
@@ -641,6 +595,15 @@ export const mapRawRowToFacilityTransaction = (row, batchId, rowNumber, rawRowId
     rowNumber,
     rawRowId,
     includeRawData: true,
+  });
+
+export const mapRawRowToFacilityTransactionResult = (row, batchId, rowNumber, rawRowId) =>
+  buildFacilityTransactionPayload(row, {
+    batchId,
+    rowNumber,
+    rawRowId,
+    includeRawData: true,
+    returnResult: true,
   });
 
 export const mapFacilityTransactionToCanonicalUpdate = (transaction) => {

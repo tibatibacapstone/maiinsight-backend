@@ -125,7 +125,6 @@ router.post("/google", async (req, res, next) => {
     }
 
     let email
-    let name
 
     if (env.googleClientId) {
       // Try as ID token first (from GoogleLogin component)
@@ -138,7 +137,6 @@ router.post("/google", async (req, res, next) => {
         })
         const payload = ticket.getPayload()
         email = payload?.email
-        name = payload?.name
       } catch {
         // Not an ID token — try as access token (from useGoogleLogin)
       }
@@ -153,7 +151,6 @@ router.post("/google", async (req, res, next) => {
         if (resp.ok) {
           const userInfo = await resp.json()
           email = userInfo.email
-          name = userInfo.name
         }
       } catch {
         // Failed both methods
