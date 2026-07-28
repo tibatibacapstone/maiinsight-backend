@@ -314,38 +314,49 @@ async function saveMediaInsights(media) {
         metric.total_value?.value ??
         null;
 
-      await prisma.instagramMediaInsight.upsert({
-        where: {
-          mediaId_metricName_insightDate_period: {
+      try {
+        await prisma.instagramMediaInsight.upsert({
+          where: {
+            mediaId_metricName_insightDate_period: {
+              mediaId: media.id,
+              metricName: group.normalizedName,
+              insightDate: today,
+              period: metric.period || "lifetime",
+            },
+          },
+          update: {
+            metricValue: numberOrNull(metricValue),
+            rawJson: {
+              sourceMetricName: metric.name || insightResult.sourceMetricName,
+              normalizedMetricName: group.normalizedName,
+              originalResponse: metric,
+            },
+          },
+          create: {
             mediaId: media.id,
             metricName: group.normalizedName,
-            insightDate: today,
+            metricValue: numberOrNull(metricValue),
             period: metric.period || "lifetime",
+            insightDate: today,
+            rawJson: {
+              sourceMetricName: metric.name || insightResult.sourceMetricName,
+              normalizedMetricName: group.normalizedName,
+              originalResponse: metric,
+            },
           },
-        },
-        update: {
-          metricValue: numberOrNull(metricValue),
-          rawJson: {
-            sourceMetricName: metric.name || insightResult.sourceMetricName,
-            normalizedMetricName: group.normalizedName,
-            originalResponse: metric,
-          },
-        },
-        create: {
-          mediaId: media.id,
-          metricName: group.normalizedName,
-          metricValue: numberOrNull(metricValue),
-          period: metric.period || "lifetime",
-          insightDate: today,
-          rawJson: {
-            sourceMetricName: metric.name || insightResult.sourceMetricName,
-            normalizedMetricName: group.normalizedName,
-            originalResponse: metric,
-          },
-        },
-      });
+        });
 
-      savedCount++;
+        savedCount++;
+      } catch (insightError) {
+        const msg = insightError instanceof Error ? insightError.message : String(insightError);
+        if (msg.includes("Unique constraint")) {
+          console.warn(
+            `Skipping duplicate media insight: mediaId=${media.id}, metric=${group.normalizedName}, date=${today}, period=${metric.period || "lifetime"}`
+          );
+        } else {
+          throw insightError;
+        }
+      }
     }
   }
 
@@ -1859,6 +1870,21 @@ export async function syncMetaRawToAnalytics({ since, until } = {}) {
   const startDate = since || dateString(new Date(Date.now() - 30 * 24 * 60 * 60 * 1000));
   const endDate = until || dateString(new Date());
   const staleStartedBefore = new Date(Date.now() - STALE_SYNC_MINUTES * 60 * 1000);
+
+  const runningSyncs = await prisma.metaSyncLog.findFirst({
+    where: {
+      status: "RUNNING",
+      startedAt: { gte: staleStartedBefore },
+    },
+    select: { id: true, startedAt: true },
+  });
+
+  if (runningSyncs) {
+    const elapsed = Math.round((Date.now() - new Date(runningSyncs.startedAt).getTime()) / 1000);
+    throw new Error(
+      `A Meta sync is already in progress (started ${elapsed}s ago). Please wait for it to finish before starting a new sync.`
+    );
+  }
 
   await prisma.metaSyncLog.updateMany({
     where: {

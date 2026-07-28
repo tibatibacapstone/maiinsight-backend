@@ -225,6 +225,25 @@ metaRouter.get(
         }
       }
 
+      let tokenExpiresAt = null;
+      if (configured) {
+        try {
+          const config = await buildConfigSnapshot();
+          const baseUrl = process.env.META_API_BASE_URL || "https://graph.facebook.com";
+          const debugUrl = `${baseUrl.replace(/\/$/, "")}/${config.metaGraphVersion}/debug_token?input_token=${config.metaAccessToken}&access_token=${config.metaAccessToken}`;
+          const debugRes = await fetch(debugUrl);
+          const debugData = await debugRes.json();
+          if (debugData.data?.data_access_expires_at) {
+            const ts = debugData.data.data_access_expires_at;
+            if (ts > 0) {
+              tokenExpiresAt = new Date(ts * 1000).toISOString();
+            }
+          }
+        } catch (_) {
+          /* non-critical — ignore */
+        }
+      }
+
       return res.json({
         success: true,
         data: {
@@ -241,6 +260,7 @@ metaRouter.get(
               : null
             : buildMetaSetupResponse().suggestion,
           connectionError,
+          tokenExpiresAt,
         },
       });
     } catch (error) {

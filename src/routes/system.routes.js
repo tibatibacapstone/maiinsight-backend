@@ -69,6 +69,21 @@ router.get("/summary", async (req, res, next) => {
       }),
     ])
 
+    let metaTokenExpiry = null
+    if (config.metaAccessToken && config.metaEnabled) {
+      try {
+        const baseUrl = process.env.META_API_BASE_URL || "https://graph.facebook.com"
+        const debugUrl = `${baseUrl.replace(/\/$/, "")}/${config.metaGraphVersion}/debug_token?input_token=${config.metaAccessToken}&access_token=${config.metaAccessToken}`
+        const debugRes = await fetch(debugUrl)
+        const debugData = await debugRes.json()
+        if (debugData.data?.data_access_expires_at && debugData.data.data_access_expires_at > 0) {
+          metaTokenExpiry = new Date(debugData.data.data_access_expires_at * 1000).toISOString()
+        }
+      } catch (_) {
+        /* non-critical */
+      }
+    }
+
     return res.json({
       success: true,
       data: {
@@ -103,6 +118,7 @@ router.get("/summary", async (req, res, next) => {
         latestImport,
         latestSegmentationRun,
         latestMetaSync,
+        metaTokenExpiry,
         tokenManagementMode: "database",
         users,
       },

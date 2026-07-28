@@ -4,6 +4,7 @@ import { Router } from "express"
 
 import { env } from "../config/env.js"
 import { prisma } from "../config/prisma.js"
+import { authenticate } from "../middleware/auth.js"
 import { sendPasswordResetEmail } from "../services/email.service.js"
 
 const router = Router()
@@ -236,6 +237,23 @@ router.post("/reset-password", async (req, res, next) => {
     })
 
     return res.json({ success: true, message: "Password reset successfully." })
+  } catch (error) {
+    next(error)
+  }
+})
+
+router.get("/me", authenticate, async (req, res, next) => {
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id: req.user.userId },
+      select: { id: true, name: true, email: true, role: true },
+    })
+
+    if (!user) {
+      return res.status(401).json({ error: "User not found." })
+    }
+
+    return res.json({ success: true, data: user })
   } catch (error) {
     next(error)
   }

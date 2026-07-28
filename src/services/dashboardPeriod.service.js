@@ -238,7 +238,7 @@ export const buildDashboardTransactionGroupCondition = ({
     DASHBOARD_TRANSACTION_GROUPS.ALL
   const customerCondition = {
     status: { in: CUSTOMER_STATUSES },
-    customerKey: { startsWith: "CUST-" },
+    customerKey: { not: { startsWith: "SYS-" } },
     netRevenue: { gt: 0 },
   }
   const operationalCondition = {

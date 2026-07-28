@@ -238,7 +238,7 @@ const buildSegmentationTransactionWhere = (scope) => {
     },
     {
       customerKey: {
-        startsWith: "CUST-",
+        not: { startsWith: "SYS-" },
       },
     },
   ]
@@ -293,7 +293,6 @@ export const aggregateCustomerMetrics = (transactions, analysisDate) => {
   for (const transaction of transactions) {
     if (
       !transaction.customerKey ||
-      !transaction.customerKey.startsWith("CUST-") ||
       transaction.customerKey.startsWith("SYS-") ||
       !isEligibleCustomerStatus(transaction.status) ||
       !transaction.playDate ||

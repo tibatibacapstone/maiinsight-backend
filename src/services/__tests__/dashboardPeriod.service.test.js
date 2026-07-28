@@ -10,7 +10,7 @@ import {
 
 const customerStatusCondition = {
   status: { in: ["Payment Completed", "Manual/Walk-in"] },
-  customerKey: { startsWith: "CUST-" },
+  customerKey: { not: { startsWith: "SYS-" } },
   netRevenue: { gt: 0 },
 }
 
