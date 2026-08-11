@@ -24,7 +24,13 @@ export const getHeatmapSessionNameByHour = (hourValue) => {
   )
 }
 
-const getHeatmapDayLabel = (date) => HEATMAP_DAY_LABELS[date.getDay()] || null
+const getHeatmapDayLabel = (date) => {
+  const weekday = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Jakarta",
+    weekday: "short",
+  }).format(date)
+  return HEATMAP_DAY_LABELS.includes(weekday) ? weekday : null
+}
 
 const toCellKey = (dayLabel, hour) =>
   `${dayLabel}|${String(hour).padStart(2, "0")}:00`
