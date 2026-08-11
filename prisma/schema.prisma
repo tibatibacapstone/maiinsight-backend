@@ -12,11 +12,18 @@ model User {
   email          String        @unique
   name           String
   password       String?
+  passwordResetVersion Int           @default(0)
+  isActive       Boolean       @default(true)
   role           Role          @default(operational)
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @updatedAt
   logs           ActivityLog[]
   invitesCreated UserInvite[]  @relation("InvitesCreatedBy")
+  notificationReads NotificationRead[]
+  importBatches     ImportBatch[]       @relation("ImportBatchPerformedBy")
+  metaSyncLogs      MetaSyncLog[]       @relation("MetaSyncPerformedBy")
+  segmentationRuns SegmentationRun[]   @relation("SegmentationRunPerformedBy")
+  aiStrategies      AiStrategy[]        @relation("AiStrategyPerformedBy")
 }
 
 model AppSetting {
@@ -63,6 +70,39 @@ model Notification {
   role      Role
   read      Boolean  @default(false)
   createdAt DateTime @default(now())
+  reads     NotificationRead[]
+}
+
+model NotificationRead {
+  notificationId Int
+  userId         Int
+  readAt         DateTime     @default(now())
+  notification   Notification @relation(fields: [notificationId], references: [id], onDelete: Cascade)
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([notificationId, userId])
+  @@index([userId])
+  @@map("notification_reads")
+}
+
+model AiStrategy {
+  id                 Int      @id @default(autoincrement())
+  provider           String   @db.VarChar(50)
+  model              String   @db.VarChar(100)
+  targetSegmentKey   String   @db.VarChar(50)
+  targetVenueKey     String?  @db.VarChar(50)
+  targetSessionKey   String?  @db.VarChar(50)
+  campaignObjectiveKey String? @db.VarChar(100)
+  offerFrameworkKey  String?  @db.VarChar(100)
+  strategy           Json
+  generatedAt        DateTime @default(now())
+  performedByUserId  Int?
+  performedBy        User?    @relation("AiStrategyPerformedBy", fields: [performedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([generatedAt])
+  @@index([targetSegmentKey])
+  @@index([performedByUserId])
+  @@map("ai_strategies")
 }
 
 model ImportBatch {
@@ -74,9 +114,12 @@ model ImportBatch {
   errorMessage         String?               @db.Text
   createdAt            DateTime              @default(now())
   updatedAt            DateTime              @updatedAt
+  performedByUserId    Int?
+  performedBy          User?                 @relation("ImportBatchPerformedBy", fields: [performedByUserId], references: [id], onDelete: SetNull)
   facilityTransactions FacilityTransaction[]
   rawTransactions      RawTransactionTable[]
 
+  @@index([performedByUserId])
   @@map("import_batches")
 }
 
@@ -95,18 +138,23 @@ model RawTransactionTable {
 }
 
 model Customer {
-  id                    Int                   @id @default(autoincrement())
-  customerIdentity      String                @unique @db.VarChar(255)
-  customerKey           String                @unique @db.VarChar(50)
-  name                  String?
-  email                 String?
-  phone                 String?               @db.VarChar(50)
-  customerProfile       Json?
-  customerKeyType       String                @db.VarChar(50)
-  customerKeyConfidence Float?
-  createdAt             DateTime              @default(now())
-  updatedAt             DateTime              @updatedAt
-  facilityTransactions  FacilityTransaction[]
+  id                            Int                   @id @default(autoincrement())
+  customerIdentity              String                @unique @db.VarChar(255)
+  customerKey                   String                @unique @db.VarChar(50)
+  name                          String?
+  email                         String?
+  phone                         String?               @db.VarChar(50)
+  customerProfile               Json?
+  customerKeyType               String                @db.VarChar(50)
+  customerKeyConfidence         Float?
+  customerType                  String                @default("unknown") @db.VarChar(50)
+  membershipTransactionCount    Int                   @default(0)
+  nonMembershipTransactionCount Int                   @default(0)
+  internalTransactionCount      Int                   @default(0)
+  customerTypeCalculatedAt      DateTime?
+  createdAt                     DateTime              @default(now())
+  updatedAt                     DateTime              @updatedAt
+  facilityTransactions          FacilityTransaction[]
 
   @@map("customers")
 }
@@ -229,11 +277,14 @@ model SegmentationRun {
   kEvaluation       Json?
   clusterProfiles   ClusterProfile[]
   customerScores    CustomerRfmScore[]
+  performedByUserId Int?
+  performedBy       User?              @relation("SegmentationRunPerformedBy", fields: [performedByUserId], references: [id], onDelete: SetNull)
 
   @@index([runDate])
   @@index([status])
   @@index([filterYear, filterMonth, filterPeriodType])
   @@index([filterCourtType, filterBookingType])
+  @@index([performedByUserId])
   @@map("segmentation_runs")
 }
 
@@ -459,7 +510,10 @@ model MetaSyncLog {
   message    String?   @db.Text
   startedAt  DateTime  @default(now())
   finishedAt DateTime?
+  performedByUserId Int?
+  performedBy User? @relation("MetaSyncPerformedBy", fields: [performedByUserId], references: [id], onDelete: SetNull)
 
+  @@index([performedByUserId])
   @@map("meta_sync_logs")
 }
 

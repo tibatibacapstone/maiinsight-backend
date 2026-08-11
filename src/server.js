@@ -1,5 +1,7 @@
 import { app } from "./app.js";
-import { env } from "./config/env.js";
+import { env, validateRuntimeEnvironment } from "./config/env.js";
+
+validateRuntimeEnvironment();
 
 const server = app.listen(env.port, "0.0.0.0", () => {
   console.log(`MaiinSight API is running on port ${env.port}`);

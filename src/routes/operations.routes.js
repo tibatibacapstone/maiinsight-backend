@@ -3,13 +3,21 @@ import { Router } from "express"
 import { prisma } from "../config/prisma.js"
 import { authenticate, authorize } from "../middleware/auth.js"
 import {
+  buildNotificationReadInclude,
+  buildNotificationReceiptKey,
+  buildNotificationReceiptRows,
+  buildUnreadNotificationWhere,
+} from "../services/notificationRead.service.js"
+import {
   buildCourtHourUsageWhere,
   buildFacilityTransactionWhere,
   EXCLUDED_IMPORT_BATCH_FILE_NAMES,
+  formatIsoDate,
   getAvailableCourtHours,
   getCourtCount,
   getPreviousComparisonRange,
   normalizeCourtTypeFilter,
+  resolveCustomDateRange,
 } from "../services/dashboardPeriod.service.js"
 import {
   DASHBOARD_TRANSACTION_GROUPS,
@@ -530,6 +538,7 @@ router.get(
     try {
       const storedNotifications = await prisma.notification.findMany({
         where: { role: req.user.role },
+        include: buildNotificationReadInclude(req.user.userId),
         orderBy: { createdAt: "desc" },
         take: 50,
       })
@@ -541,7 +550,7 @@ router.get(
           id: String(item.id),
           title: item.title,
           message: item.message,
-          read: item.read,
+          read: item.reads.length > 0,
           createdAt: item.createdAt,
           relativeTime: formatRelativeTime(item.createdAt),
           category: getActivityType(item.title),
@@ -571,10 +580,7 @@ router.get(
   async (req, res, next) => {
     try {
       const unreadCount = await prisma.notification.count({
-        where: {
-          role: req.user.role,
-          read: false,
-        },
+        where: buildUnreadNotificationWhere(req.user.role, req.user.userId),
       })
 
       return res.json({
@@ -617,9 +623,13 @@ router.patch(
         })
       }
 
-      await prisma.notification.update({
-        where: { id },
-        data: { read: true },
+      await prisma.notificationRead.upsert({
+        where: buildNotificationReceiptKey(id, req.user.userId),
+        update: { readAt: new Date() },
+        create: {
+          notificationId: id,
+          userId: req.user.userId,
+        },
       })
 
       return res.json({
@@ -637,13 +647,17 @@ router.post(
   authorize("operational", "it_support"),
   async (req, res, next) => {
     try {
-      await prisma.notification.updateMany({
-        where: {
-          role: req.user.role,
-          read: false,
-        },
-        data: { read: true },
+      const visibleNotifications = await prisma.notification.findMany({
+        where: buildUnreadNotificationWhere(req.user.role, req.user.userId),
+        select: { id: true },
       })
+
+      if (visibleNotifications.length) {
+        await prisma.notificationRead.createMany({
+          data: buildNotificationReceiptRows(visibleNotifications, req.user.userId),
+          skipDuplicates: true,
+        })
+      }
 
       return res.json({
         success: true,
@@ -700,22 +714,25 @@ router.get(
   authorize("operational", "management", "it_support"),
   async (req, res, next) => {
     try {
-      const startDate = req.query.startDate ? new Date(String(req.query.startDate)) : null
-      const endDate = req.query.endDate ? new Date(String(req.query.endDate)) : null
       const courtType = normalizeCourtTypeFilter(req.query.courtType)
       const bookingType = req.query.bookingType ? String(req.query.bookingType) : "all"
       const customerType = req.query.customerType ? String(req.query.customerType) : "All Type"
 
-      if (!startDate || !endDate || Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime()) || startDate > endDate) {
+      if (!req.query.startDate || !req.query.endDate) {
         return res.status(400).json({
           success: false,
           message: "Please choose a valid reporting date range.",
         })
       }
+      const { startDate, endDateExclusive } = resolveCustomDateRange({
+        startDate: String(req.query.startDate),
+        endDate: String(req.query.endDate),
+      })
+      const inclusiveEndDate = new Date(endDateExclusive.getTime() - 1)
 
       const transactionWhere = buildFacilityTransactionWhere({
         startDate,
-        endDate,
+        endDateExclusive,
         courtType,
         customerType,
         bookingType,
@@ -724,7 +741,7 @@ router.get(
 
       const courtHourWhere = buildCourtHourUsageWhere({
         startDate,
-        endDate,
+        endDateExclusive,
         courtType,
         customerType,
         bookingType,
@@ -757,7 +774,7 @@ router.get(
       ])
 
       const courtCount = getCourtCount(courtType)
-      const availableSessions = getAvailableCourtHours(startDate, endDate, courtCount)
+      const availableSessions = getAvailableCourtHours(startDate, endDateExclusive, courtCount)
       const totalBookings = new Set(
         transactions.map((item) => item.bookingEventKey).filter(Boolean)
       ).size
@@ -769,18 +786,23 @@ router.get(
       const occupancyRate = availableSessions > 0 ? (courtHourCount / availableSessions) * 100 : 0
 
       const groupedTrend = new Map()
-      const useDailyGrouping = Math.ceil((endDate - startDate) / 86400000) <= 45
+      const useDailyGrouping =
+        Math.round((endDateExclusive - startDate) / 86400000) <= 45
 
       transactions.forEach((item) => {
         if (!item.playDate) return
 
         const date = new Date(item.playDate)
         const key = useDailyGrouping
-          ? date.toISOString().slice(0, 10)
-          : `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`
+          ? formatIsoDate(date)
+          : new Intl.DateTimeFormat("en-CA", {
+              year: "numeric",
+              month: "2-digit",
+              timeZone: "Asia/Bangkok",
+            }).format(date)
         const label = useDailyGrouping
-          ? new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" }).format(date)
-          : new Intl.DateTimeFormat("en-US", { month: "short", year: "2-digit" }).format(date)
+          ? new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", timeZone: "Asia/Bangkok" }).format(date)
+          : new Intl.DateTimeFormat("en-US", { month: "short", year: "2-digit", timeZone: "Asia/Bangkok" }).format(date)
 
         const existing = groupedTrend.get(key) || {
           key,
@@ -816,10 +838,10 @@ router.get(
       const bookingTypeBreakdown = Object.fromEntries(
         [...bookingTypeEvents.entries()].map(([key, events]) => [key, events.size])
       )
-      const previousRange = getPreviousComparisonRange({ startDate, endDate })
+      const previousRange = getPreviousComparisonRange({ startDate, endDateExclusive })
       const previousTransactionWhere = buildFacilityTransactionWhere({
           startDate: previousRange.startDate,
-          endDate: previousRange.endDate,
+          endDateExclusive: previousRange.endDateExclusive,
           courtType,
           customerType,
           bookingType,
@@ -827,7 +849,7 @@ router.get(
         })
       const previousCourtHourWhere = buildCourtHourUsageWhere({
           startDate: previousRange.startDate,
-          endDate: previousRange.endDate,
+          endDateExclusive: previousRange.endDateExclusive,
           courtType,
           customerType,
           bookingType,
@@ -866,10 +888,13 @@ router.get(
         segmentationCustomers.map((item) => [item.customerKey, item.segmentName || "Unsegmented"])
       )
 
-      const reportDays = Math.max(1, Math.round((endDate.getTime() - startDate.getTime()) / 86400000) + 1)
+      const reportDays = Math.max(
+        1,
+        Math.round((endDateExclusive.getTime() - startDate.getTime()) / 86400000)
+      )
       const previousAvailableSessions = getAvailableCourtHours(
         previousRange.startDate,
-        previousRange.endDate,
+        previousRange.endDateExclusive,
         courtCount
       )
       const previousRevenue = previousTransactions.reduce((sum, item) => sum + toNumber(item.netRevenue), 0)
@@ -941,10 +966,12 @@ router.get(
               segmentName,
               revenue: 0,
               bookings: 0,
+              customerKeys: new Set(),
             }
 
             existing.revenue += toNumber(item.netRevenue)
             existing.bookings += 1
+            if (item.customerKey) existing.customerKeys.add(item.customerKey)
             accumulator.set(segmentName, existing)
             return accumulator
           }, new Map())
@@ -954,17 +981,22 @@ router.get(
               segmentName: "Unsegmented",
               revenue: 0,
               bookings: 0,
+              customerKeys: new Set(),
             }
 
             existing.revenue += toNumber(item.netRevenue)
             existing.bookings += 1
+            if (item.customerKey) existing.customerKeys.add(item.customerKey)
             accumulator.set("Unsegmented", existing)
             return accumulator
           }, new Map())
 
       const segmentContributionRows = [...segmentContribution.values()]
         .map((item) => ({
-          ...item,
+          segmentName: item.segmentName,
+          revenue: item.revenue,
+          bookings: item.bookings,
+          customerCount: item.customerKeys.size,
           revenueShare: totalRevenue > 0 ? roundTo((item.revenue / totalRevenue) * 100, 1) : 0,
           bookingShare: totalBookings > 0 ? roundTo((item.bookings / totalBookings) * 100, 1) : 0,
         }))
@@ -1032,7 +1064,7 @@ router.get(
         data: {
           filters: {
             startDate: startDate.toISOString(),
-            endDate: endDate.toISOString(),
+            endDate: inclusiveEndDate.toISOString(),
             courtType: courtType || "all",
             bookingType,
             customerType,
@@ -1049,13 +1081,13 @@ router.get(
           },
           period: {
             startDate: startDate.toISOString(),
-            endDate: endDate.toISOString(),
-            label: new Intl.DateTimeFormat("en-US", { dateStyle: "medium" }).format(startDate) + " - " + new Intl.DateTimeFormat("en-US", { dateStyle: "medium" }).format(endDate),
+            endDate: inclusiveEndDate.toISOString(),
+            label: new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeZone: "Asia/Bangkok" }).format(startDate) + " - " + new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeZone: "Asia/Bangkok" }).format(inclusiveEndDate),
           },
           comparisonPeriod: {
             startDate: previousRange.startDate.toISOString(),
-            endDate: previousRange.endDate.toISOString(),
-            label: new Intl.DateTimeFormat("en-US", { dateStyle: "medium" }).format(previousRange.startDate) + " - " + new Intl.DateTimeFormat("en-US", { dateStyle: "medium" }).format(previousRange.endDate),
+            endDate: new Date(previousRange.endDateExclusive.getTime() - 1).toISOString(),
+            label: new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeZone: "Asia/Bangkok" }).format(previousRange.startDate) + " - " + new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeZone: "Asia/Bangkok" }).format(new Date(previousRange.endDateExclusive.getTime() - 1)),
           },
           revenueTrend,
           bookingTypeBreakdown,

@@ -1,356 +1,717 @@
-﻿import { prisma } from "../config/prisma.js";
-import { buildConfigSnapshot } from "./appConfig.service.js";
-import { metaGet } from "./metaRaw.service.js";
+import { prisma } from "../config/prisma.js";
+import { getIgUserId, metaGet, numberOrNull, startOfDay } from "./meta.service.js";
 
-const classifyInstagramContent = (caption = "") => {
-  const text = String(caption || "").toLowerCase();
+// Canonical account-level history and retry policy
+export const HISTORICAL_ACCOUNT_MONTHS = 24;
+export const RECENT_ACCOUNT_MONTHS_TO_REFRESH = 2;
+export const FAILED_HISTORICAL_MONTH_RETRIES_PER_SYNC = 2;
 
-  const promotionKeywords = [
-    "promo",
-    "promotion",
-    "promosi",
-    "discount",
-    "diskon",
-    "voucher",
-    "cashback",
-    "special offer",
-    "limited offer",
-    "limited time",
-    "early bird",
-    "bundle",
-    "sale",
-    "free",
-    "buy 1 get 1",
-    "competition",
-    "membership",
-    "member",
-    "paket",
-    "hemat",
-  ];
-
-  const isPromotion = promotionKeywords.some((keyword) =>
-    text.includes(keyword)
-  );
-
-  if (isPromotion) {
-    return "content_promotion";
-  }
-
-  return "content_advertisement";
-};
-
-async function getIgUserId() {
-  const config = await buildConfigSnapshot();
-  return config.metaIgUserId || process.env.META_IG_USER_ID || "";
-}
-
-const MEDIA_INSIGHT_GROUPS = [
-  {
-    normalizedName: "views",
-    candidates: ["views", "impressions", "plays", "video_views"],
-  },
-  {
-    normalizedName: "reach",
-    candidates: ["reach"],
-  },
-  {
-    normalizedName: "likes",
-    candidates: ["likes"],
-  },
-  {
-    normalizedName: "comments",
-    candidates: ["comments"],
-  },
-  {
-    normalizedName: "shares",
-    candidates: ["shares"],
-  },
-  {
-    normalizedName: "saved",
-    candidates: ["saved"],
-  },
-  {
-    normalizedName: "total_interactions",
-    candidates: ["total_interactions", "engagement"],
-  },
+const BASE_METRICS = [
+  "views",
+  "reach",
+  "total_interactions",
+  "profile_views",
 ];
 
-const MEDIA_INSIGHT_METRICS = MEDIA_INSIGHT_GROUPS.map(
-  (group) => group.normalizedName
-);
-const MAX_MEDIA_INSIGHTS_PER_SYNC = Number(process.env.META_MAX_MEDIA_INSIGHT_SYNC || 12);
-const STALE_SYNC_MINUTES = Number(process.env.META_STALE_SYNC_MINUTES || 15);
+const FOLLOW_UNFOLLOW_METRIC = "follows_and_unfollows";
+const MAX_META_INSIGHT_RANGE_DAYS = 28;
 
-function startOfDay(dateInput = new Date()) {
-  const date = new Date(dateInput);
-  date.setUTCHours(0, 0, 0, 0);
-  return date;
+const BREAKDOWN_METRICS = [
+  ["views", "views_from_followers", "views_from_non_followers"],
+  ["reach", "reach_from_followers", "reach_from_non_followers"],
+];
+
+export const HISTORICAL_ACCOUNT_METRICS = [
+  ...BASE_METRICS,
+  "follows",
+  "unfollows",
+  "views_from_followers",
+  "views_from_non_followers",
+  "reach_from_followers",
+  "reach_from_non_followers",
+];
+
+const dateOnly = (value) => new Date(value).toISOString().slice(0, 10);
+
+export function buildHistoricalInsightChunks(
+  start,
+  endInclusive,
+  maxDays = MAX_META_INSIGHT_RANGE_DAYS
+) {
+  const chunks = [];
+  let cursor = new Date(start);
+  const end = new Date(endInclusive);
+
+  while (cursor <= end) {
+    const chunkEnd = new Date(cursor);
+    chunkEnd.setUTCDate(chunkEnd.getUTCDate() + maxDays - 1);
+    if (chunkEnd > end) chunkEnd.setTime(end.getTime());
+    chunks.push({
+      start: new Date(cursor),
+      endInclusive: new Date(chunkEnd),
+      since: dateOnly(cursor),
+      until: dateOnly(chunkEnd),
+    });
+    cursor = new Date(chunkEnd);
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+  }
+
+  return chunks;
 }
 
-function dateString(dateInput = new Date()) {
-  return new Date(dateInput).toISOString().slice(0, 10);
+function toMetaInclusiveRange(range, now) {
+  const syncBoundary = new Date(Date.UTC(
+    now.getUTCFullYear(),
+    now.getUTCMonth(),
+    now.getUTCDate()
+  ));
+  const monthEndInclusive = new Date(range.endExclusive);
+  monthEndInclusive.setUTCDate(monthEndInclusive.getUTCDate() - 1);
+  const endInclusive = monthEndInclusive > syncBoundary ? syncBoundary : monthEndInclusive;
+  return {
+    ...range,
+    endInclusive,
+    until: dateOnly(endInclusive),
+  };
 }
 
-function numberOrNull(value) {
+export function buildHistoricalCalendarMonths(
+  now = new Date(),
+  count = HISTORICAL_ACCOUNT_MONTHS
+) {
+  const endMonth = new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)
+  );
+  const ranges = [];
+
+  for (let offset = Math.max(0, count) - 1; offset >= 0; offset -= 1) {
+    const start = new Date(
+      Date.UTC(endMonth.getUTCFullYear(), endMonth.getUTCMonth() - offset, 1)
+    );
+    const endExclusive = new Date(
+      Date.UTC(start.getUTCFullYear(), start.getUTCMonth() + 1, 1)
+    );
+    ranges.push({
+      start,
+      endExclusive,
+      since: dateOnly(start),
+      until: dateOnly(endExclusive),
+    });
+  }
+
+  return ranges;
+}
+
+function parseMetricValue(response) {
+  let available = false;
+  let value = 0;
+
+  for (const metric of response?.data || []) {
+    if (metric?.total_value?.value !== undefined && metric.total_value.value !== null) {
+      available = true;
+      value += Number(metric.total_value.value);
+    } else {
+      for (const item of metric?.values || []) {
+        if (item?.value !== undefined && item.value !== null) {
+          available = true;
+          value += Number(item.value);
+        }
+      }
+    }
+  }
+
+  return { available, value: available ? value : null };
+}
+
+function parseFollowTypeBreakdown(response) {
+  let followers = 0;
+  let nonFollowers = 0;
+  let available = false;
+
+  for (const metric of response?.data || []) {
+    for (const breakdown of metric?.total_value?.breakdowns || []) {
+      for (const result of breakdown?.results || []) {
+        const label = String(
+          result?.dimension_values?.[0] ??
+            result?.dimension_value ??
+            result?.name ??
+            ""
+        ).toLowerCase();
+        const rawValue =
+          result?.value?.value ?? result?.value ?? result?.metric_value;
+        if (rawValue === undefined || rawValue === null) continue;
+        const numericValue = Number(rawValue);
+        if (!Number.isFinite(numericValue)) continue;
+        available = true;
+        if (label.includes("non")) nonFollowers += numericValue;
+        else if (label.includes("follower")) followers += numericValue;
+      }
+    }
+  }
+
+  return {
+    available,
+    followers: available ? followers : null,
+    nonFollowers: available ? nonFollowers : null,
+  };
+}
+
+function parseFollowUnfollowBreakdown(response) {
+  const result = {
+    follows: 0,
+    unfollows: 0,
+    followsAvailable: false,
+    unfollowsAvailable: false,
+  };
+  for (const metric of response?.data || []) {
+    for (const breakdown of metric?.total_value?.breakdowns || []) {
+      for (const item of breakdown?.results || []) {
+        const label = String(
+          item?.dimension_values?.[0] ?? item?.dimension_value ?? item?.name ?? ""
+        ).toLowerCase();
+        const rawValue = item?.value?.value ?? item?.value ?? item?.metric_value;
+        if (rawValue === undefined || rawValue === null) continue;
+        const value = Number(rawValue);
+        if (!Number.isFinite(value)) continue;
+        // Meta returns FOLLOWER/NON_FOLLOWER for the follow_type breakdown of
+        // follows_and_unfollows. In this metric-specific response those are the
+        // follow and unfollow result buckets respectively.
+        if (label.includes("unfollow") || label === "non_follower") {
+          result.unfollows += value;
+          result.unfollowsAvailable = true;
+        } else if (label === "follow" || label === "follower" || label.includes("follows")) {
+          result.follows += value;
+          result.followsAvailable = true;
+        }
+      }
+    }
+  }
+  return result;
+}
+
+function sanitizedError(error) {
+  return {
+    name: error instanceof Error ? error.name : "MetaRequestError",
+    message: error instanceof Error ? error.message : String(error),
+  };
+}
+
+const RETENTION_ERROR_PATTERNS = [
+  /retention/i,
+  /outside (?:the )?(?:available|supported|historical) (?:range|window)/i,
+  /older than/i,
+  /cannot request data before/i,
+  /only available for the (?:last|past)/i,
+];
+
+const UNSUPPORTED_ERROR_PATTERNS = [
+  /not supported/i,
+  /unsupported/i,
+  /invalid metric/i,
+  /does not support/i,
+];
+
+export function classifyHistoricalAttempt({ available, empty = false, error = null }) {
+  if (available) return { status: "available", reason: null };
+  const message = error instanceof Error ? error.message : String(error || "");
+  if (RETENTION_ERROR_PATTERNS.some((pattern) => pattern.test(message))) {
+    return { status: "unavailable", reason: "historical_retention" };
+  }
+  if (UNSUPPORTED_ERROR_PATTERNS.some((pattern) => pattern.test(message))) {
+    return { status: "unsupported", reason: "metric_or_request_unsupported" };
+  }
+  if (empty) return { status: "unavailable", reason: "empty_meta_dataset" };
+  return { status: "api_error", reason: "meta_request_failed" };
+}
+
+function logHistoricalAttempt({ metricName, range, status, reason, value }) {
+  if (process.env.NODE_ENV === "test") return;
+  const suffix = status === "available"
+    ? `value=${value}`
+    : `reason=${reason}`;
+  console.info(`[Meta Historical] metric=${metricName} month=${range.since.slice(0, 7)} status=${status} ${suffix}`);
+}
+
+async function persistHistoricalMetric({
+  prisma,
+  accountId,
+  metricName,
+  range,
+  value,
+  available,
+  request,
+  error = null,
+  empty = false,
+}) {
+  const key = {
+    accountId,
+    metricName,
+    insightDate: range.start,
+    period: "month",
+  };
+  const existing = await prisma.instagramAccountInsight.findUnique({
+    where: { accountId_metricName_insightDate_period: key },
+  });
+  const attempt = classifyHistoricalAttempt({ available, empty, error });
+  const preserved = !available && existing?.metricValue != null;
+  const metricValue = available ? value : existing?.metricValue ?? null;
+  const status = metricValue != null
+    ? (Number(metricValue) === 0 ? "zero" : "available")
+    : attempt.status;
+  const rawJson = {
+    source: "historical_account_period",
+    status,
+    reason: preserved ? existing?.rawJson?.reason ?? null : attempt.reason,
+    available: metricValue != null,
+    lastAttemptAvailable: available,
+    lastAttemptStatus: available && Number(value) === 0 ? "zero" : attempt.status,
+    lastAttemptReason: attempt.reason,
+    preservedStoredValue: preserved,
+    periodStart: range.since,
+    periodEndInclusive: range.until,
+    periodEndExclusive: dateOnly(range.endExclusive),
+    lastAttemptAt: new Date().toISOString(),
+    request,
+    ...(error ? { error: sanitizedError(error) } : {}),
+  };
+
+  // An empty, unsupported, retention-limited, or failed response must never
+  // erase a previously captured numeric value (including an explicit zero).
+  await prisma.instagramAccountInsight.upsert({
+    where: { accountId_metricName_insightDate_period: key },
+    update: { metricValue, rawJson },
+    create: { ...key, metricValue, rawJson },
+  });
+  logHistoricalAttempt({
+    metricName,
+    range,
+    status: available && Number(value) === 0 ? "zero" : attempt.status,
+    reason: attempt.reason,
+    value,
+  });
+}
+
+async function syncBaseMetric({ prisma, accountId, igUserId, metricName, range, fetchMetric }) {
+  const requests = [{
+    metric: metricName, period: "day", metric_type: "total_value",
+    since: range.since, until: range.until,
+  }];
+  try {
+    const parsed = parseMetricValue(
+      await fetchMetric(`/${igUserId}/insights`, requests[0])
+    );
+    if (!parsed.available) {
+      await persistHistoricalMetric({
+        prisma, accountId, metricName, range, value: null,
+        available: false, request: requests, empty: true,
+      });
+      return { available: false, requestCount: requests.length };
+    }
+    await persistHistoricalMetric({
+      prisma, accountId, metricName, range, value: parsed.value,
+      available: true, request: requests,
+    });
+    return { available: true, requestCount: requests.length };
+  } catch (error) {
+    await persistHistoricalMetric({
+      prisma, accountId, metricName, range, value: null, available: false,
+      request: requests, error,
+    });
+    return { available: false, requestCount: requests.length };
+  }
+}
+
+async function syncBreakdownMetric({
+  prisma,
+  accountId,
+  igUserId,
+  sourceMetric,
+  followersMetric,
+  nonFollowersMetric,
+  range,
+  fetchMetric,
+}) {
+  const requests = [{
+    metric: sourceMetric, period: "day", metric_type: "total_value",
+    breakdown: "follow_type", since: range.since, until: range.until,
+  }];
+  try {
+    const parsed = parseFollowTypeBreakdown(
+      await fetchMetric(`/${igUserId}/insights`, requests[0])
+    );
+    if (!parsed.available) {
+      for (const metricName of [followersMetric, nonFollowersMetric]) {
+        await persistHistoricalMetric({
+          prisma, accountId, metricName, range, value: null,
+          available: false, request: requests, empty: true,
+        });
+      }
+      return { available: false, requestCount: requests.length };
+    }
+    await persistHistoricalMetric({
+      prisma, accountId, metricName: followersMetric, range,
+      value: parsed.followers, available: true, request: requests,
+    });
+    await persistHistoricalMetric({
+      prisma, accountId, metricName: nonFollowersMetric, range,
+      value: parsed.nonFollowers, available: true, request: requests,
+    });
+    return { available: true, requestCount: requests.length };
+  } catch (error) {
+    for (const metricName of [followersMetric, nonFollowersMetric]) {
+      await persistHistoricalMetric({
+        prisma, accountId, metricName, range, value: null,
+        available: false, request: requests, error,
+      });
+    }
+    return { available: false, requestCount: requests.length };
+  }
+}
+
+async function syncFollowUnfollowMetric({ prisma, accountId, igUserId, range, fetchMetric }) {
+  const requests = [{
+    metric: FOLLOW_UNFOLLOW_METRIC, period: "day", metric_type: "total_value",
+    breakdown: "follow_type", since: range.since, until: range.until,
+  }];
+  const totals = { follows: 0, unfollows: 0 };
+  const availability = { follows: true, unfollows: true };
+  let error = null;
+  try {
+    const parsed = parseFollowUnfollowBreakdown(
+      await fetchMetric(`/${igUserId}/insights`, requests[0])
+    );
+    for (const metricName of ["follows", "unfollows"]) {
+      const key = `${metricName}Available`;
+      if (!parsed[key]) availability[metricName] = false;
+      else totals[metricName] = parsed[metricName];
+    }
+  } catch (caught) {
+    error = caught;
+    availability.follows = false;
+    availability.unfollows = false;
+  }
+  for (const metricName of ["follows", "unfollows"]) {
+    const metricError = error || null;
+    await persistHistoricalMetric({
+      prisma, accountId, metricName, range,
+      value: availability[metricName] ? totals[metricName] : null,
+      available: availability[metricName], request: requests, error: metricError,
+      empty: !error && !availability[metricName],
+    });
+  }
+  return {
+    availableCount: Number(availability.follows) + Number(availability.unfollows),
+    requestCount: requests.length,
+  };
+}
+
+export async function resolveHistoricalRangesToSync({
+  prisma,
+  accountId,
+  now = new Date(),
+  historyMonths = HISTORICAL_ACCOUNT_MONTHS,
+  recentMonths = RECENT_ACCOUNT_MONTHS_TO_REFRESH,
+  failedMonthRetryLimit = FAILED_HISTORICAL_MONTH_RETRIES_PER_SYNC,
+}) {
+  const ranges = buildHistoricalCalendarMonths(now, historyMonths);
+  if (!ranges.length) return [];
+  const existing = await prisma.instagramAccountInsight.findMany({
+    where: {
+      accountId,
+      period: "month",
+      metricName: { in: HISTORICAL_ACCOUNT_METRICS },
+      insightDate: { gte: ranges[0].start, lt: ranges.at(-1).endExclusive },
+    },
+    select: {
+      metricName: true,
+      metricValue: true,
+      insightDate: true,
+      rawJson: true,
+      updatedAt: true,
+    },
+  });
+  const attempted = new Set(
+    existing.map((row) => `${dateOnly(row.insightDate)}:${row.metricName}`)
+  );
+  const recentStart = Math.max(0, ranges.length - Math.max(1, recentMonths));
+  const failedMonths = new Map();
+  for (const row of existing) {
+    if (row.metricValue != null) continue;
+    const legacyApiError = row.rawJson?.lastAttemptStatus == null && row.rawJson?.error;
+    if (row.rawJson?.lastAttemptStatus !== "api_error" && !legacyApiError) continue;
+    const month = dateOnly(row.insightDate);
+    const attemptedAt = new Date(row.rawJson?.lastAttemptAt || row.updatedAt || 0).getTime();
+    const previous = failedMonths.get(month);
+    if (previous == null || attemptedAt > previous) failedMonths.set(month, attemptedAt);
+  }
+  const missing = ranges.filter((range, index) =>
+    index < recentStart && HISTORICAL_ACCOUNT_METRICS.some(
+      (metric) => !attempted.has(`${range.since}:${metric}`)
+    )
+  );
+  const missingKeys = new Set(missing.map((range) => range.since));
+  const retryFailed = ranges
+    .filter((range, index) =>
+      index < recentStart &&
+      !missingKeys.has(range.since) &&
+      failedMonths.has(range.since)
+    )
+    .sort((left, right) =>
+      failedMonths.get(left.since) - failedMonths.get(right.since)
+    )
+    .slice(0, Math.max(0, failedMonthRetryLimit));
+  const recent = ranges.slice(recentStart);
+  const selectedKeys = new Set(
+    [...missing, ...retryFailed, ...recent].map((range) => range.since)
+  );
+  return ranges.filter((range) => selectedKeys.has(range.since));
+}
+
+export async function syncHistoricalAccountMetrics({
+  prisma,
+  accountId,
+  igUserId,
+  now = new Date(),
+  historyMonths = HISTORICAL_ACCOUNT_MONTHS,
+  fetchMetric = metaGet,
+}) {
+  const ranges = await resolveHistoricalRangesToSync({
+    prisma, accountId, now, historyMonths,
+  });
+  let availableMetricCount = 0;
+  let requestCount = 0;
+
+  // Sequential by design: bounded chunk requests are never concurrent.
+  for (const originalRange of ranges) {
+    const range = toMetaInclusiveRange(originalRange, now);
+    if (range.start > range.endInclusive) continue;
+    for (const metricName of BASE_METRICS) {
+      const result = await syncBaseMetric({
+        prisma, accountId, igUserId, metricName, range, fetchMetric,
+      });
+      availableMetricCount += Number(result.available);
+      requestCount += result.requestCount;
+    }
+    for (const [sourceMetric, followersMetric, nonFollowersMetric] of BREAKDOWN_METRICS) {
+      const result = await syncBreakdownMetric({
+        prisma, accountId, igUserId, sourceMetric, followersMetric,
+        nonFollowersMetric, range, fetchMetric,
+      });
+      availableMetricCount += Number(result.available);
+      requestCount += result.requestCount;
+    }
+    const followResult = await syncFollowUnfollowMetric({
+      prisma, accountId, igUserId, range, fetchMetric,
+    });
+    availableMetricCount += followResult.availableCount;
+    requestCount += followResult.requestCount;
+  }
+
+  return {
+    monthsAttempted: ranges.length,
+    requestCount,
+    availableMetricCount,
+    ranges: ranges.map(({ since, until }) => ({ since, until })),
+  };
+}
+
+// Metric availability
+export function metricValueOrNull(value) {
+  if (value === null || value === undefined || value === "") return null;
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
 }
 
-async function saveAccountProfile() {
-  const igUserId = await getIgUserId();
-  const accountData = await metaGet(`/${igUserId}`, {
-    fields: "id,username,name,followers_count,follows_count,media_count",
-  });
-
-  const account = await prisma.instagramAccount.upsert({
-    where: {
-      igUserId: accountData.id,
-    },
-    update: {
-      username: accountData.username ?? null,
-      name: accountData.name ?? null,
-      followersCount: accountData.followers_count ?? null,
-      followsCount: accountData.follows_count ?? null,
-      mediaCount: accountData.media_count ?? null,
-      rawJson: accountData,
-    },
-    create: {
-      igUserId: accountData.id,
-      username: accountData.username ?? null,
-      name: accountData.name ?? null,
-      followersCount: accountData.followers_count ?? null,
-      followsCount: accountData.follows_count ?? null,
-      mediaCount: accountData.media_count ?? null,
-      rawJson: accountData,
-    },
-  });
-
- 
-
-const snapshotDate = new Date()
-snapshotDate.setUTCDate(1)
-snapshotDate.setUTCHours(0, 0, 0, 0)
-
-await prisma.instagramAccountSnapshot.upsert({
-  where: {
-    accountId_snapshotDate: {
-      accountId: account.id,
-      snapshotDate,
-    },
-  },
-  update: {
-    followersCount: Number(accountData.followers_count || 0),
-    followsCount: Number(accountData.follows_count || 0),
-    mediaCount: Number(accountData.media_count || 0),
-    rawJson: {
-      ...accountData,
-      snapshotType: "monthly",
-      source: "meta_current_followers_count",
-    },
-  },
-  create: {
-    accountId: account.id,
-    followersCount: Number(accountData.followers_count || 0),
-    followsCount: Number(accountData.follows_count || 0),
-    mediaCount: Number(accountData.media_count || 0),
-    snapshotDate,
-    rawJson: {
-      ...accountData,
-      snapshotType: "monthly",
-      source: "meta_current_followers_count",
-    },
-  },
-})
-
-  return account;
+export function hasAvailableMetric(insights, metricNames) {
+  const acceptedNames = new Set(metricNames);
+  return insights.some(
+    (insight) =>
+      acceptedNames.has(insight.metricName) &&
+      metricValueOrNull(insight.metricValue) !== null
+  );
 }
 
-async function fetchAllMedia() {
-  const igUserId = await getIgUserId();
-  const mediaItems = [];
-  let after = null;
-  let hasNext = true;
-  let consecutiveErrors = 0;
-  const MAX_CONSECUTIVE_ERRORS = 3;
+// Historical dashboard aggregation
+export const HISTORICAL_DASHBOARD_METRICS = [
+  "views",
+  "reach",
+  "total_interactions",
+  "profile_views",
+  "follows",
+  "unfollows",
+  "views_from_followers",
+  "views_from_non_followers",
+  "reach_from_followers",
+  "reach_from_non_followers",
+];
 
-  while (hasNext) {
-    try {
-      const data = await metaGet(`/${igUserId}/media`, {
-        fields:
-    "id,caption,media_type,media_product_type,media_url,thumbnail_url,permalink,timestamp,like_count,comments_count",
-        limit: 100,
-        after,
-      });
+const monthKey = (value) => new Date(value).toISOString().slice(0, 7);
 
-      mediaItems.push(...(data.data || []));
-      consecutiveErrors = 0;
+function availableRows(rows, metricName) {
+  return rows.filter(
+    (row) =>
+      row.metricName === metricName &&
+      row.metricValue !== null &&
+      row.metricValue !== undefined &&
+      row.rawJson?.available !== false
+  );
+}
 
-      after = data.paging?.cursors?.after || null;
-      hasNext = Boolean(data.paging?.next && after);
-    } catch (error) {
-      consecutiveErrors++;
-      console.warn(`[fetchAllMedia] Error fetching page: ${error.message} (consecutive errors: ${consecutiveErrors})`);
+function totalFor(rows, metricName) {
+  const matched = availableRows(rows, metricName);
+  if (!matched.length) return null;
+  return matched.reduce((sum, row) => sum + Number(row.metricValue), 0);
+}
 
-      if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
-        console.error(`[fetchAllMedia] Stopping after ${MAX_CONSECUTIVE_ERRORS} consecutive errors. Returning ${mediaItems.length} items fetched so far.`);
-        break;
-      }
+function rate(numerator, denominator) {
+  if (numerator == null || denominator == null) return null;
+  if (denominator === 0) return 0;
+  return Number(((numerator / denominator) * 100).toFixed(2));
+}
 
-      hasNext = true;
-    }
+function rateForCompatibleMonths(rows, numeratorMetric, denominatorMetric) {
+  const numeratorByMonth = new Map();
+  const denominatorByMonth = new Map();
+
+  for (const row of availableRows(rows, numeratorMetric)) {
+    const month = monthKey(row.insightDate);
+    numeratorByMonth.set(month, (numeratorByMonth.get(month) || 0) + Number(row.metricValue));
+  }
+  for (const row of availableRows(rows, denominatorMetric)) {
+    const month = monthKey(row.insightDate);
+    denominatorByMonth.set(month, (denominatorByMonth.get(month) || 0) + Number(row.metricValue));
   }
 
-  return mediaItems;
+  const compatibleMonths = [...numeratorByMonth.keys()].filter((month) =>
+    denominatorByMonth.has(month)
+  );
+  if (!compatibleMonths.length) return null;
+
+  const numerator = compatibleMonths.reduce((sum, month) => sum + numeratorByMonth.get(month), 0);
+  const denominator = compatibleMonths.reduce((sum, month) => sum + denominatorByMonth.get(month), 0);
+  return rate(numerator, denominator);
 }
 
-async function saveMediaItems(accountId, mediaItems) {
-  const saved = [];
+export function aggregateHistoricalAccountMetrics(rows = []) {
+  const totalViews = totalFor(rows, "views");
+  const totalReach = totalFor(rows, "reach");
+  const totalInteractions = totalFor(rows, "total_interactions");
+  const totalProfileViews = totalFor(rows, "profile_views");
+  const viewsFromFollowers = totalFor(rows, "views_from_followers");
+  const viewsFromNonFollowers = totalFor(rows, "views_from_non_followers");
+  const reachFromFollowers = totalFor(rows, "reach_from_followers");
+  const reachFromNonFollowers = totalFor(rows, "reach_from_non_followers");
+  const newFollowsCount = totalFor(rows, "follows");
+  const unfollowsCount = totalFor(rows, "unfollows");
 
-  for (const item of mediaItems) {
-    const contentLabel = classifyInstagramContent(item.caption || "");
+  return {
+    totalViews,
+    totalReach,
+    totalInteractions,
+    totalProfileViews,
+    viewsFromFollowers,
+    viewsFromNonFollowers,
+    reachFromFollowers,
+    reachFromNonFollowers,
+    newFollowsCount,
+    unfollowsCount,
+    engagementRate: rateForCompatibleMonths(rows, "total_interactions", "reach"),
+    profileVisitRate: rateForCompatibleMonths(rows, "profile_views", "reach"),
+  };
+}
 
-    const media = await prisma.instagramMedia.upsert({
-      where: {
-        igMediaId: item.id,
-      },
-      update: {
-        caption: item.caption ?? null,
-        mediaType: item.media_type ?? null,
-        mediaProductType: item.media_product_type ?? null,
-        mediaUrl: item.media_url ?? null,
-        thumbnailUrl: item.thumbnail_url ?? null,
-        permalink: item.permalink ?? null,
-        postedAt: item.timestamp ? new Date(item.timestamp) : null,
-        rawJson: item,
-        contentLabel,
-      },
-      create: {
-        igMediaId: item.id,
-        accountId,
-        caption: item.caption ?? null,
-        mediaType: item.media_type ?? null,
-        mediaProductType: item.media_product_type ?? null,
-        mediaUrl: item.media_url ?? null,
-        thumbnailUrl: item.thumbnail_url ?? null,
-        permalink: item.permalink ?? null,
-        postedAt: item.timestamp ? new Date(item.timestamp) : null,
-        rawJson: item,
-        contentLabel,
-      },
+export function buildHistoricalAccountTrend(rows = []) {
+  const months = new Map();
+  for (const row of rows) {
+    const key = monthKey(row.insightDate);
+    if (!months.has(key)) months.set(key, []);
+    months.get(key).push(row);
+  }
+
+  return Array.from(months.entries())
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([month, monthRows]) => {
+      const metrics = aggregateHistoricalAccountMetrics(monthRows);
+      return {
+        month,
+        views: metrics.totalViews,
+        reach: metrics.totalReach,
+        interactions: metrics.totalInteractions,
+        profileViews: metrics.totalProfileViews,
+      };
     });
-
-    saved.push(media);
-  }
-
-  return saved;
 }
 
-async function fetchFirstSupportedMediaMetric(igMediaId, metricCandidates = []) {
-  for (const metricName of metricCandidates) {
-    try {
-      const response = await metaGet(`/${igMediaId}/insights`, {
-        metric: metricName,
-      });
-
-      if (response?.data?.length) {
-        return {
-          sourceMetricName: metricName,
-          response,
-        };
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-
-      console.warn(
-        `Metric ${metricName} failed for media ${igMediaId}: ${message}`
+export function buildHistoricalCoverage(rows = [], totalMonths = null) {
+  const metricCoverage = Object.fromEntries(
+    HISTORICAL_DASHBOARD_METRICS.map((metricName) => {
+      const attemptedMonths = new Set(
+        rows.filter((row) => row.metricName === metricName).map((row) => monthKey(row.insightDate))
       );
-    }
-  }
-
-  return null;
-}
-
-async function saveMediaInsights(media) {
-  const today = startOfDay();
-
-  const existingMetrics = await prisma.instagramMediaInsight.findMany({
-    where: {
-      mediaId: media.id,
-      insightDate: today,
-      metricName: {
-        in: MEDIA_INSIGHT_METRICS,
-      },
-    },
-    select: {
-      metricName: true,
-    },
-  });
-
-  const existingMetricNames = new Set(
-    existingMetrics.map((metric) => metric.metricName)
+      const availableMonths = new Set(
+        availableRows(rows, metricName).map((row) => monthKey(row.insightDate))
+      );
+      const expectedMonths = totalMonths ?? attemptedMonths.size;
+      return [metricName, {
+        source: "historical_account",
+        attemptedMonths: attemptedMonths.size,
+        availableMonths: availableMonths.size,
+        totalMonths: expectedMonths,
+        complete: availableMonths.size === expectedMonths,
+        availability:
+          availableMonths.size === 0
+            ? "unavailable"
+            : availableMonths.size < expectedMonths
+              ? "partial"
+              : "available",
+        aggregation: "sum_of_monthly_period_values",
+      }];
+    })
   );
 
-  const pendingGroups = MEDIA_INSIGHT_GROUPS.filter(
-    (group) => !existingMetricNames.has(group.normalizedName)
-  );
-
-  let savedCount = 0;
-
-  for (const group of pendingGroups) {
-    const insightResult = await fetchFirstSupportedMediaMetric(
-      media.igMediaId,
-      group.candidates
+  const rateCoverage = (numeratorMetric, denominatorMetric) => {
+    const numeratorAttempted = new Set(
+      rows.filter((row) => row.metricName === numeratorMetric).map((row) => monthKey(row.insightDate))
     );
+    const denominatorAttempted = new Set(
+      rows.filter((row) => row.metricName === denominatorMetric).map((row) => monthKey(row.insightDate))
+    );
+    const numeratorAvailable = new Set(
+      availableRows(rows, numeratorMetric).map((row) => monthKey(row.insightDate))
+    );
+    const denominatorAvailable = new Set(
+      availableRows(rows, denominatorMetric).map((row) => monthKey(row.insightDate))
+    );
+    const attemptedMonths = new Set([...numeratorAttempted, ...denominatorAttempted]);
+    const availableMonths = new Set(
+      [...numeratorAvailable].filter((month) => denominatorAvailable.has(month))
+    );
+    const expectedMonths = totalMonths ?? attemptedMonths.size;
 
-    if (!insightResult?.response?.data?.length) {
-      continue;
-    }
+    return {
+      source: "historical_account",
+      attemptedMonths: attemptedMonths.size,
+      availableMonths: availableMonths.size,
+      totalMonths: expectedMonths,
+      complete: availableMonths.size === expectedMonths,
+      availability:
+        availableMonths.size === 0
+          ? "unavailable"
+          : availableMonths.size < expectedMonths
+            ? "partial"
+            : "available",
+      aggregation: `ratio_of_compatible_monthly_${numeratorMetric}_to_${denominatorMetric}`,
+    };
+  };
 
-    for (const metric of insightResult.response.data) {
-      const valueItem = metric.values?.[0];
-
-      const metricValue =
-        valueItem?.value ??
-        metric.total_value?.value ??
-        null;
-
-      await prisma.instagramMediaInsight.upsert({
-        where: {
-          mediaId_metricName_insightDate_period: {
-            mediaId: media.id,
-            metricName: group.normalizedName,
-            insightDate: today,
-            period: metric.period || "lifetime",
-          },
-        },
-        update: {
-          metricValue: numberOrNull(metricValue),
-          rawJson: {
-            sourceMetricName: metric.name || insightResult.sourceMetricName,
-            normalizedMetricName: group.normalizedName,
-            originalResponse: metric,
-          },
-        },
-        create: {
-          mediaId: media.id,
-          metricName: group.normalizedName,
-          metricValue: numberOrNull(metricValue),
-          period: metric.period || "lifetime",
-          insightDate: today,
-          rawJson: {
-            sourceMetricName: metric.name || insightResult.sourceMetricName,
-            normalizedMetricName: group.normalizedName,
-            originalResponse: metric,
-          },
-        },
-      });
-
-      savedCount++;
-    }
-  }
-
-  return savedCount;
+  return {
+    ...metricCoverage,
+    engagement_rate: rateCoverage("total_interactions", "reach"),
+    profile_visit_rate: rateCoverage("profile_views", "reach"),
+  };
 }
+
+// Legacy historical collectors retained unchanged for compatibility
 async function saveAccountInsightValues(accountId, insightResponse) {
   let savedCount = 0;
 
@@ -473,7 +834,7 @@ async function syncAccountInsights(accountId, since, until) {
   return savedCount;
 }
 
-async function syncAccountInsightsInChunks(accountId, since, until) {
+export async function syncAccountInsightsInChunks(accountId, since, until) {
   const chunks = buildDateChunks(since, until, 28);
 
   let totalSavedCount = 0;
@@ -491,7 +852,7 @@ async function syncAccountInsightsInChunks(accountId, since, until) {
   return totalSavedCount;
 }
 
-async function syncAudienceInsights(accountId) {
+export async function syncAudienceInsights(accountId) {
   const igUserId = await getIgUserId();
   const today = startOfDay()
 
@@ -577,177 +938,8 @@ async function syncAudienceInsights(accountId) {
 
   return savedCount
 }
-function getMonthStart(dateInput) {
-  const date = new Date(dateInput);
-  date.setUTCDate(1);
-  date.setUTCHours(0, 0, 0, 0);
-  return date;
-}
 
-function getMediaContentTypes(media) {
-  const productType = String(media.mediaProductType || "").toUpperCase();
-  const mediaType = String(media.mediaType || "").toUpperCase();
-
-  if (
-    productType.includes("REELS") ||
-    productType.includes("REEL") ||
-    mediaType.includes("VIDEO")
-  ) {
-    return ["all", "reels"];
-  }
-
-  if (
-    productType.includes("FEED") ||
-    mediaType.includes("IMAGE") ||
-    mediaType.includes("CAROUSEL")
-  ) {
-    return ["all", "feed"];
-  }
-
-  return ["all"];
-}
-
-function getLatestInsightValue(insights = [], metricNames = []) {
-  const matchedInsights = insights
-    .filter((insight) => metricNames.includes(insight.metricName))
-    .sort((a, b) => new Date(b.insightDate) - new Date(a.insightDate));
-
-  if (!matchedInsights.length) return 0;
-
-  return Number(matchedInsights[0].metricValue || 0);
-}
-
-async function rebuildMonthlyMediaPerformance(accountId) {
-  const mediaRows = await prisma.instagramMedia.findMany({
-    where: {
-      accountId,
-      postedAt: {
-        not: null,
-      },
-    },
-    include: {
-      insights: true,
-    },
-    orderBy: {
-      postedAt: "asc",
-    },
-  });
-
-  const monthMap = new Map();
-
-  for (const media of mediaRows) {
-    if (!media.postedAt) continue;
-
-    const month = getMonthStart(media.postedAt);
-    const monthKey = month.toISOString().slice(0, 10);
-
-    const views = getLatestInsightValue(media.insights, [
-      "views",
-      "impressions",
-      "plays",
-    ]);
-
-    const reach = getLatestInsightValue(media.insights, ["reach"]);
-    const rawMedia = media.rawJson || {};
-
-const likes =
-  getLatestInsightValue(media.insights, ["likes"]) ||
-  Number(rawMedia.like_count || 0);
-
-const comments =
-  getLatestInsightValue(media.insights, ["comments"]) ||
-  Number(rawMedia.comments_count || 0);
-    
-    const shares = getLatestInsightValue(media.insights, ["shares"]);
-    const saved = getLatestInsightValue(media.insights, ["saved"]);
-
-    const totalInteractions =
-      getLatestInsightValue(media.insights, ["total_interactions"]) ||
-      likes + comments + shares + saved;
-
-    const contentTypes = getMediaContentTypes(media);
-
-    for (const contentType of contentTypes) {
-      const key = `${monthKey}-${contentType}`;
-
-      const existing = monthMap.get(key) || {
-        month,
-        contentType,
-        views: 0,
-        reach: 0,
-        interactions: 0,
-        likes: 0,
-        comments: 0,
-        shares: 0,
-        saved: 0,
-        contentCount: 0,
-      };
-
-      existing.views += views;
-      existing.reach += reach;
-      existing.interactions += totalInteractions;
-      existing.likes += likes;
-      existing.comments += comments;
-      existing.shares += shares;
-      existing.saved += saved;
-      existing.contentCount += 1;
-
-      monthMap.set(key, existing);
-    }
-  }
-
-  const monthlyRows = Array.from(monthMap.values());
-
-  for (const row of monthlyRows) {
-    await prisma.instagramMonthlyMediaPerformance.upsert({
-      where: {
-        accountId_month_contentType: {
-          accountId,
-          month: row.month,
-          contentType: row.contentType,
-        },
-      },
-      update: {
-        views: row.views,
-        reach: row.reach,
-        interactions: row.interactions,
-        likes: row.likes,
-        comments: row.comments,
-        shares: row.shares,
-        saved: row.saved,
-        contentCount: row.contentCount,
-        rawJson: {
-          source: "media_lifetime_insights_grouped_by_posting_month",
-          meaning:
-            "Aggregated latest lifetime media insights based on the month each media was posted.",
-        },
-      },
-      create: {
-        accountId,
-        month: row.month,
-        contentType: row.contentType,
-        views: row.views,
-        reach: row.reach,
-        interactions: row.interactions,
-        likes: row.likes,
-        comments: row.comments,
-        shares: row.shares,
-        saved: row.saved,
-        contentCount: row.contentCount,
-        rawJson: {
-          source: "media_lifetime_insights_grouped_by_posting_month",
-          meaning:
-            "Aggregated latest lifetime media insights based on the month each media was posted.",
-        },
-      },
-    });
-  }
-
-  return monthlyRows.length;
-
-}
-
-async function rebuildMonthlyViewsBreakdown(accountId, since, until) {
+export async function rebuildMonthlyViewsBreakdown(accountId, since, until) {
   const start = new Date(since);
   const end = new Date(until);
 
@@ -777,7 +969,7 @@ async function rebuildMonthlyViewsBreakdown(accountId, since, until) {
     const viewsFromNonFollowers = Number(breakdown.viewsFromNonFollowers || 0);
 
     const breakdownTotalViews = viewsFromFollowers + viewsFromNonFollowers;
-    const hasBreakdownData = breakdownTotalViews > 0;
+    const hasBreakdownData = breakdown.available;
 
     const existingMonthlyRow =
       await prisma.instagramMonthlyMediaPerformance.findUnique({
@@ -849,7 +1041,7 @@ async function rebuildMonthlyViewsBreakdown(accountId, since, until) {
   return updatedCount;
 }
 
-async function rebuildMonthlyReachBreakdown(accountId, since, until) {
+export async function rebuildMonthlyReachBreakdown(accountId, since, until) {
   const start = new Date(since);
   const end = new Date(until);
 
@@ -879,7 +1071,7 @@ async function rebuildMonthlyReachBreakdown(accountId, since, until) {
     const reachFromNonFollowers = Number(breakdown.reachFromNonFollowers || 0);
 
     const breakdownTotalReach = reachFromFollowers + reachFromNonFollowers;
-    const hasBreakdownData = breakdownTotalReach > 0;
+    const hasBreakdownData = breakdown.available;
 
     const existingMonthlyRow =
       await prisma.instagramMonthlyMediaPerformance.findUnique({
@@ -956,7 +1148,7 @@ async function rebuildMonthlyReachBreakdown(accountId, since, until) {
   return updatedCount;
 }
 
-async function rebuildMonthlyInteractionsBreakdown(accountId, since, until) {
+export async function rebuildMonthlyInteractionsBreakdown(accountId, since, until) {
   const start = new Date(since);
   const end = new Date(until);
 
@@ -1082,7 +1274,7 @@ async function rebuildMonthlyInteractionsBreakdown(accountId, since, until) {
   return updatedCount;
 }
 
-async function syncViewsBreakdownInsights(accountId, since, until) {
+export async function syncViewsBreakdownInsights(accountId, since, until) {
   const igUserId = await getIgUserId();
   let savedCount = 0;
   const chunks = buildDateChunks(since, until, 28);
@@ -1206,6 +1398,7 @@ async function fetchViewsBreakdownForMonth(since, until) {
   let viewsFromFollowers = 0;
   let viewsFromNonFollowers = 0;
   const rawResponses = [];
+  let available = false;
 
   for (const chunk of chunks) {
     let response = null;
@@ -1244,6 +1437,7 @@ async function fetchViewsBreakdownForMonth(since, until) {
 
       for (const breakdown of breakdowns) {
         for (const result of breakdown.results || []) {
+          available = true;
           const breakdownValue =
             result.dimension_values?.[0] ??
             result.dimension_value ??
@@ -1273,6 +1467,7 @@ async function fetchViewsBreakdownForMonth(since, until) {
   return {
     viewsFromFollowers,
     viewsFromNonFollowers,
+    available,
     rawJson: rawResponses,
   };
 }
@@ -1283,6 +1478,7 @@ async function fetchReachBreakdownForMonth(since, until) {
   let reachFromFollowers = 0;
   let reachFromNonFollowers = 0;
   const rawResponses = [];
+  let available = false;
 
   for (const chunk of chunks) {
     let response = null;
@@ -1321,6 +1517,7 @@ async function fetchReachBreakdownForMonth(since, until) {
 
       for (const breakdown of breakdowns) {
         for (const result of breakdown.results || []) {
+          available = true;
           const breakdownValue =
             result.dimension_values?.[0] ??
             result.dimension_value ??
@@ -1350,6 +1547,7 @@ async function fetchReachBreakdownForMonth(since, until) {
   return {
     reachFromFollowers,
     reachFromNonFollowers,
+    available,
     rawJson: rawResponses,
   };
 }
@@ -1503,7 +1701,7 @@ function buildDateChunks(since, until, maxDays = 28) {
   const finalEnd = startOfDay(until);
 
   while (currentStart <= finalEnd) {
-    let currentEnd = addDays(currentStart, maxDays);
+    let currentEnd = addDays(currentStart, maxDays - 1);
 
     if (currentEnd > finalEnd) {
       currentEnd = finalEnd;
@@ -1555,7 +1753,8 @@ async function saveAccountInsightMetric({
 function extractFollowUnfollowBreakdown(response) {
   let follows = 0;
   let unfollows = 0;
-  let hasBreakdown = false;
+  let followsAvailable = false;
+  let unfollowsAvailable = false;
 
   for (const metric of response?.data || []) {
     const breakdowns = metric.total_value?.breakdowns || [];
@@ -1580,16 +1779,18 @@ function extractFollowUnfollowBreakdown(response) {
 
         if (!Number.isFinite(value)) continue;
 
-        if (normalized.includes("unfollow")) {
+        // Meta's follows_and_unfollows follow_type response uses
+        // FOLLOWER/NON_FOLLOWER as its two result buckets.
+        if (normalized.includes("unfollow") || normalized === "non_follower") {
           unfollows += value;
-          hasBreakdown = true;
+          unfollowsAvailable = true;
         } else if (
           normalized === "follow" ||
           normalized === "follower" ||
           normalized.includes("follows")
         ) {
           follows += value;
-          hasBreakdown = true;
+          followsAvailable = true;
         }
       }
     }
@@ -1598,11 +1799,13 @@ function extractFollowUnfollowBreakdown(response) {
   return {
     follows,
     unfollows,
-    hasBreakdown,
+    followsAvailable,
+    unfollowsAvailable,
+    hasBreakdown: followsAvailable || unfollowsAvailable,
   };
 }
 
-async function syncFollowUnfollowInsights(accountId, since, until) {
+export async function syncFollowUnfollowInsights(accountId, since, until) {
   const igUserId = await getIgUserId();
   const chunks = buildDateChunks(since, until, 28);
   let savedCount = 0;
@@ -1615,6 +1818,8 @@ async function syncFollowUnfollowInsights(accountId, since, until) {
       unfollows: 0,
       hasBreakdown: false,
     };
+    let followsAvailable = false;
+    let unfollowsAvailable = false;
 
     const rawResponses = [];
 
@@ -1629,6 +1834,8 @@ async function syncFollowUnfollowInsights(accountId, since, until) {
       });
 
       parsed = extractFollowUnfollowBreakdown(response);
+      followsAvailable = parsed.followsAvailable;
+      unfollowsAvailable = parsed.unfollowsAvailable;
 
       rawResponses.push({
         source: "follows_and_unfollows_breakdown",
@@ -1646,71 +1853,7 @@ async function syncFollowUnfollowInsights(accountId, since, until) {
       });
     }
 
-    if (!parsed.hasBreakdown) {
-      try {
-        const followsResponse = await metaGet(`/${igUserId}/insights`, {
-          metric: "follows",
-          period: "day",
-          metric_type: "total_value",
-          since: chunk.since,
-          until: chunk.until,
-        });
-
-        const followsValue =
-          followsResponse?.data?.[0]?.total_value?.value ??
-          followsResponse?.data?.[0]?.values?.[0]?.value ??
-          0;
-
-        parsed.follows = Number(followsValue || 0);
-
-        rawResponses.push({
-          source: "follows_metric",
-          since: chunk.since,
-          until: chunk.until,
-          response: followsResponse,
-        });
-      } catch (error) {
-        rawResponses.push({
-          source: "follows_metric",
-          since: chunk.since,
-          until: chunk.until,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-
-      try {
-        const unfollowsResponse = await metaGet(`/${igUserId}/insights`, {
-          metric: "unfollows",
-          period: "day",
-          metric_type: "total_value",
-          since: chunk.since,
-          until: chunk.until,
-        });
-
-        const unfollowsValue =
-          unfollowsResponse?.data?.[0]?.total_value?.value ??
-          unfollowsResponse?.data?.[0]?.values?.[0]?.value ??
-          0;
-
-        parsed.unfollows = Number(unfollowsValue || 0);
-
-        rawResponses.push({
-          source: "unfollows_metric",
-          since: chunk.since,
-          until: chunk.until,
-          response: unfollowsResponse,
-        });
-      } catch (error) {
-        rawResponses.push({
-          source: "unfollows_metric",
-          since: chunk.since,
-          until: chunk.until,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-    }
-
-    await saveAccountInsightMetric({
+    if (followsAvailable) await saveAccountInsightMetric({
       accountId,
       metricName: "follows",
       metricValue: parsed.follows,
@@ -1724,7 +1867,7 @@ async function syncFollowUnfollowInsights(accountId, since, until) {
       },
     });
 
-    await saveAccountInsightMetric({
+    if (unfollowsAvailable) await saveAccountInsightMetric({
       accountId,
       metricName: "unfollows",
       metricValue: parsed.unfollows,
@@ -1738,246 +1881,20 @@ async function syncFollowUnfollowInsights(accountId, since, until) {
       },
     });
 
-    savedCount += 2;
+    savedCount += Number(followsAvailable) + Number(unfollowsAvailable);
   }
 
   return savedCount;
 }
 
-async function fetchProfileViewsForRange(since, until) {
-  const igUserId = await getIgUserId();
-  let profileViews = 0;
-  const rawResponses = [];
-
-  try {
-    const response = await metaGet(`/${igUserId}/insights`, {
-      metric: "profile_views",
-      period: "day",
-      metric_type: "total_value",
-      since,
-      until,
-    });
-
-    for (const metric of response?.data || []) {
-      if (metric.total_value?.value !== undefined) {
-        profileViews += Number(metric.total_value.value || 0);
-      }
-
-      for (const valueItem of metric.values || []) {
-        profileViews += Number(valueItem.value || 0);
-      }
-    }
-
-    rawResponses.push({
-      since,
-      until,
-      response,
-    });
-  } catch (error) {
-    rawResponses.push({
-      since,
-      until,
-      error: error instanceof Error ? error.message : String(error),
-    });
+export async function collectCompleteProfileViews(chunks, fetchRange) {
+  let value = 0;
+  const results = [];
+  for (const chunk of chunks) {
+    const result = await fetchRange(chunk.since, chunk.until);
+    results.push({ chunk, result });
+    if (!result.available) return { available: false, value: null, results };
+    value += Number(result.profileViews);
   }
-
-  return {
-    profileViews,
-    rawResponses,
-  };
-}
-
-async function syncMonthlyProfileViewsInsights(accountId, since, until) {
-  const start = new Date(since);
-  const end = new Date(until);
-
-  const startYear = start.getUTCFullYear();
-  const startMonth = start.getUTCMonth();
-
-  const endYear = end.getUTCFullYear();
-  const endMonth = end.getUTCMonth();
-
-  let currentYear = startYear;
-  let currentMonth = startMonth;
-
-  let savedCount = 0;
-
-  while (
-    currentYear < endYear ||
-    (currentYear === endYear && currentMonth <= endMonth)
-  ) {
-    const monthRange = getMonthRange(currentYear, currentMonth);
-
-    const chunks = buildDateChunks(monthRange.since, monthRange.until, 28);
-
-    let monthProfileViews = 0;
-    const monthRawResponses = [];
-
-    for (const chunk of chunks) {
-      const result = await fetchProfileViewsForRange(
-        chunk.since,
-        chunk.until
-      );
-
-      monthProfileViews += Number(result.profileViews || 0);
-
-      monthRawResponses.push({
-        since: chunk.since,
-        until: chunk.until,
-        result,
-      });
-    }
-
-    await saveAccountInsightMetric({
-      accountId,
-      metricName: "profile_views",
-      metricValue: monthProfileViews,
-      insightDate: monthRange.startDate,
-      period: "month",
-      rawJson: {
-        source: "monthly_profile_views_sync",
-        since: monthRange.since,
-        until: monthRange.until,
-        rawResponses: monthRawResponses,
-      },
-    });
-
-    savedCount++;
-
-    currentMonth++;
-
-    if (currentMonth > 11) {
-      currentMonth = 0;
-      currentYear++;
-    }
-  }
-
-  return savedCount;
-}
-
-export async function syncMetaRawToAnalytics({ since, until } = {}) {
-  const startDate = since || dateString(new Date(Date.now() - 30 * 24 * 60 * 60 * 1000));
-  const endDate = until || dateString(new Date());
-  const staleStartedBefore = new Date(Date.now() - STALE_SYNC_MINUTES * 60 * 1000);
-
-  await prisma.metaSyncLog.updateMany({
-    where: {
-      status: "RUNNING",
-      finishedAt: null,
-      startedAt: { lt: staleStartedBefore },
-    },
-    data: {
-      status: "FAILED",
-      message: "Sync was marked failed after becoming stale.",
-      finishedAt: new Date(),
-    },
-  });
-
-  const log = await prisma.metaSyncLog.create({
-    data: {
-      syncType: "META_RAW_TO_ANALYTICS",
-      status: "RUNNING",
-    },
-  });
-
-  try {
-    const account = await saveAccountProfile();
-
-    const mediaItems = await fetchAllMedia();
-    const savedMedia = await saveMediaItems(account.id, mediaItems);
-
-    let mediaInsightCount = 0;
-    const mediaForInsightSync = savedMedia.slice(0, MAX_MEDIA_INSIGHTS_PER_SYNC);
-
-    for (const media of mediaForInsightSync) {
-  mediaInsightCount += await saveMediaInsights(media);
-}
-
-const monthlyMediaPerformanceCount = await rebuildMonthlyMediaPerformance(account.id);
-
-const monthlyViewsBreakdownCount = await rebuildMonthlyViewsBreakdown(
-  account.id,
-  startDate,
-  endDate
-);
-
-const monthlyReachBreakdownCount = await rebuildMonthlyReachBreakdown(
-  account.id,
-  startDate,
-  endDate
-);
-
-const monthlyInteractionsBreakdownCount =
-  await rebuildMonthlyInteractionsBreakdown(
-    account.id,
-    startDate,
-    endDate
-  );
-
-const accountInsightCount = await syncAccountInsightsInChunks(
-  account.id,
-  startDate,
-  endDate
-);
-
-const monthlyProfileViewsInsightCount =
-  await syncMonthlyProfileViewsInsights(
-    account.id,
-    startDate,
-    endDate
-  );
-
-const followUnfollowInsightCount = await syncFollowUnfollowInsights(
-  account.id,
-  startDate,
-  endDate
-);
-
-const viewsBreakdownInsightCount = await syncViewsBreakdownInsights(
-  account.id,
-  startDate,
-  endDate
-);
-console.log("VIEWS BREAKDOWN COUNT:", viewsBreakdownInsightCount);
-
-    const audienceInsightCount = await syncAudienceInsights(account.id);
-
-    await prisma.metaSyncLog.update({
-      where: { id: log.id },
-      data: {
-        status: "SUCCESS",
-        message: `Synced ${savedMedia.length} media, refreshed insights for ${mediaForInsightSync.length} media item(s), ${mediaInsightCount} media insights, ${monthlyMediaPerformanceCount} monthly media performance rows, ${accountInsightCount} account insights, ${audienceInsightCount} audience insights.`,
-        finishedAt: new Date(),
-      },
-    });
-
-    return {
-      success: true,
-      since: startDate,
-      until: endDate,
-      mediaCount: savedMedia.length,
-      mediaInsightCount,
-      mediaInsightLimit: mediaForInsightSync.length,
-      monthlyMediaPerformanceCount,
-      accountInsightCount,
-      audienceInsightCount,
-      viewsBreakdownInsightCount,
-      monthlyViewsBreakdownCount,
-      monthlyReachBreakdownCount,
-      monthlyInteractionsBreakdownCount,
-      followUnfollowInsightCount,
-      monthlyProfileViewsInsightCount,
-    };
-  } catch (error) {
-    await prisma.metaSyncLog.update({
-      where: { id: log.id },
-      data: {
-        status: "FAILED",
-        message: error.message,
-        finishedAt: new Date(),
-      },
-    });
-
-    throw error;
-  }
+  return { available: chunks.length > 0, value: chunks.length ? value : null, results };
 }

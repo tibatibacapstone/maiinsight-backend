@@ -1,30 +1,11 @@
 import "dotenv/config";
-import bcrypt from "bcryptjs";
 import { PrismaClient } from "@prisma/client";
+import { seedUsers } from "../src/services/seedUsers.service.js";
 
 const prisma = new PrismaClient();
 
 async function main() {
-  const passwordHash = await bcrypt.hash("Password123!", 10);
-
-  const users = [
-    { email: "operational@maiin.com", name: "Marketing Operational User", role: "operational" },
-    { email: "management@maiin.com", name: "Management User", role: "management" },
-    { email: "support@maiin.com", name: "IT Support", role: "it_support" },
-  ];
-
-  for (const user of users) {
-    await prisma.user.upsert({
-      where: { email: user.email },
-      update: { name: user.name, role: user.role, password: passwordHash },
-      create: {
-        email: user.email,
-        name: user.name,
-        role: user.role,
-        password: passwordHash,
-      },
-    });
-  }
+  await seedUsers(prisma);
 
   const appSettings = {
     GEMINI_API_KEY: process.env.GEMINI_API_KEY || "",

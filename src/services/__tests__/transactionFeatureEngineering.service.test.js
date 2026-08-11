@@ -33,7 +33,7 @@ test("duplicate booking events are rejected while the first occurrence is accept
   assert.deepEqual(result.duplicates.map((item) => item.rowNumber), [2])
 })
 
-test("missing email uses normalized uppercase name before phone", () => {
+test("phone is a strong identity and name is used only when phone is unusable", () => {
   const first = buildCustomerIdentity({
     name: "  Aditya   25 Basketball ",
     phone: "081315235649",
@@ -43,11 +43,11 @@ test("missing email uses normalized uppercase name before phone", () => {
     phone: "0000000000",
   })
 
-  assert.equal(first.customerIdentity, "NAME|ADITYA 25 BASKETBALL")
-  assert.equal(second.customerIdentity, first.customerIdentity)
+  assert.equal(first.customerIdentity, "PHONE|81315235649")
+  assert.equal(second.customerIdentity, "NAME|ADITYA 25 BASKETBALL")
 })
 
-test("valid phone is used only when email and name are unavailable", () => {
+test("valid phone is used when email is unavailable", () => {
   assert.equal(
     buildCustomerIdentity({ email: "n/a", name: "-", phone: "(0813) 1523-5649" })
       .customerIdentity,

@@ -1,7 +1,10 @@
 import { prisma } from "../config/prisma.js"
 import { buildCourtHourUsageWhere } from "./dashboardPeriod.service.js"
+import { buildEmptySlotHeatmap } from "./emptySlotHeatmap.service.js"
 import {
   CANONICAL_TRANSACTION_STATUSES,
+  DASHBOARD_TRANSACTION_GROUPS,
+  getDashboardTransactionGroup,
   isEligibleCustomerStatus,
 } from "./transactionStatus.service.js"
 
@@ -86,8 +89,8 @@ export const resolveSessionNameByHour = (hour) => {
 const mapCourtTypeLabel = (courtType) => COURT_TYPE_LABELS[courtType] || courtType || "Unknown"
 
 const mapCustomerTypeLabel = (bookingTypeDominant) => {
-  if (bookingTypeDominant === "member_internal_booking") return "Membership"
-  if (bookingTypeDominant === "regular_booking") return "Non Membership"
+  if (bookingTypeDominant === "membership") return "Membership"
+  if (bookingTypeDominant === "non_membership") return "Non Membership"
   return "Mixed/Other"
 }
 
@@ -120,9 +123,85 @@ const buildDateRange = (inputDate) => {
 }
 
 const buildBookingTypeFilter = (customerType) => {
-  if (customerType === "membership") return "member_internal_booking"
-  if (customerType === "non_membership") return "regular_booking"
+  if (customerType === "membership") return "membership"
+  if (customerType === "non_membership") return "non_membership"
   return null
+}
+
+const CAMPAIGN_VALID_PLAY_DATE_WHERE = {
+  validBooking: true,
+  customerKey: { not: "" },
+  status: {
+    in: [
+      CANONICAL_TRANSACTION_STATUSES.PAYMENT_COMPLETED,
+      CANONICAL_TRANSACTION_STATUSES.MANUAL_WALK_IN,
+    ],
+  },
+  netRevenue: { gt: 0 },
+  NOT: {
+    customerKey: {
+      startsWith: "SYS-",
+    },
+  },
+  bookingEventKey: { not: "" },
+  playDate: { not: null },
+  batch: {
+    fileName: {
+      not: "tmp-upload-sample.csv",
+    },
+  },
+}
+
+export const getLatestCampaignPlayDate = async (database = prisma) => {
+  const result = await database.facilityTransaction.aggregate({
+    where: CAMPAIGN_VALID_PLAY_DATE_WHERE,
+    _max: { playDate: true },
+  })
+
+  return result?._max?.playDate || null
+}
+
+export const buildCampaignAnalysisRange = (latestPlayDate, analysisPeriodMonths) => {
+  if (!latestPlayDate) return null
+
+  const analysisEnd = endOfDay(latestPlayDate)
+  return {
+    analysisStart: new Date(
+      analysisEnd.getFullYear(),
+      analysisEnd.getMonth() - analysisPeriodMonths + 1,
+      1
+    ),
+    analysisEnd,
+  }
+}
+
+const getJakartaWeekdayIndex = (value) => {
+  const weekday = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Jakarta",
+    weekday: "long",
+  }).format(new Date(value))
+  return ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"].indexOf(weekday)
+}
+
+export const matchesCampaignPlayContext = ({
+  playDate,
+  startHour,
+  campaignDay,
+  sessionName,
+  rangeStart = null,
+  rangeEnd = null,
+}) => {
+  if (!playDate) return false
+
+  const date = new Date(playDate)
+  if (rangeStart && date < rangeStart) return false
+  if (rangeEnd && date > rangeEnd) return false
+
+  const dayIndex = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"].indexOf(campaignDay)
+  return (
+    getJakartaWeekdayIndex(date) === dayIndex &&
+    resolveSessionNameByHour(parseHourValue(startHour)) === sessionName
+  )
 }
 
 const bucketRecencyScore = (recencyDays) => {
@@ -369,7 +448,7 @@ export const getLowOccupancySessions = async ({ date, courtType = "all", thresho
   const usageRows = await prisma.courtHourUsage.findMany({
     where: buildCourtHourUsageWhere({
       startDate,
-      endDate,
+      endDateExclusive: new Date(endDate.getTime() + 1),
       courtType: courtType === "all" ? null : courtType,
     }),
     select: {
@@ -408,7 +487,6 @@ export const getLowOccupancySessions = async ({ date, courtType = "all", thresho
           startsWith: "SYS-",
         },
       },
-      playDate: { not: null },
       bookingEventKey: { not: "" },
       ...(courtType === "all" ? {} : { courtType }),
       batch: {
@@ -465,17 +543,27 @@ export const getLowOccupancySessions = async ({ date, courtType = "all", thresho
 }
 
 export const getRecommendedCustomers = async ({
-  date,
+  campaignDay = "Monday",
+  analysisPeriodMonths = 3,
   courtType = "all",
   sessionName,
   customerType = "all",
   segmentName = null,
-  minSessionBookingCount = 1,
   limit = 50,
   offset = 0,
 }) => {
-  const { date: selectedDate } = buildDateRange(date)
+  const latestPlayDate = await getLatestCampaignPlayDate(prisma)
+  if (!latestPlayDate) {
+    return { campaignDay, analysisPeriodMonths, latestPlayDate: null, unavailableReason: "LATEST_PLAY_DATE_NOT_AVAILABLE", monthlyPerformance: [], historicalSummary: null, courtType, sessionName, segmentName, customerType, customers: [], totalCustomers: 0, pagination: { limit, offset, returned: 0, totalCustomers: 0, hasMore: false } }
+  }
+  const { analysisStart, analysisEnd } = buildCampaignAnalysisRange(
+    latestPlayDate,
+    analysisPeriodMonths
+  )
+  const selectedDate = formatIsoDate(latestPlayDate)
   const bookingType = buildBookingTypeFilter(customerType)
+  const dayIndex = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"].indexOf(campaignDay)
+  const session = getSessionDefinitionByName(sessionName)
 
   const transactions = await prisma.facilityTransaction.findMany({
     where: {
@@ -493,8 +581,8 @@ export const getRecommendedCustomers = async ({
           startsWith: "SYS-",
         },
       },
-      playDate: { not: null },
       bookingEventKey: { not: "" },
+      playDate: { gte: analysisStart, lte: analysisEnd },
       ...(bookingType ? { bookingType } : {}),
       ...(courtType && courtType !== "all" ? { courtType } : {}),
       batch: {
@@ -523,27 +611,15 @@ export const getRecommendedCustomers = async ({
     },
   })
 
-  const aggregatedCustomers = aggregateCustomerHistory(transactions, sessionName, courtType)
-    .filter((customer) => customer.selectedSessionBookingCount >= minSessionBookingCount)
-
-  if (!aggregatedCustomers.length) {
-    return {
-      date: selectedDate,
-      courtType,
+  const campaignTransactions = transactions.filter((transaction) =>
+    matchesCampaignPlayContext({
+      playDate: transaction.playDate,
+      startHour: transaction.startHour,
+      campaignDay,
       sessionName,
-      segmentName,
-      customerType,
-      customers: [],
-      totalCustomers: 0,
-      pagination: {
-        limit,
-        offset,
-        returned: 0,
-        totalCustomers: 0,
-        hasMore: false,
-      },
-    }
-  }
+    })
+  )
+  const aggregatedCustomers = aggregateCustomerHistory(campaignTransactions, sessionName, courtType)
 
   const segmentByCustomerKey = await buildSegmentMap(
     aggregatedCustomers.map((customer) => customer.customerKey)
@@ -570,25 +646,6 @@ export const getRecommendedCustomers = async ({
       }
     })
     .filter((customer) => (segmentName ? customer.rfmSegmentName === segmentName : true))
-
-  if (!filteredCustomers.length) {
-    return {
-      date: selectedDate,
-      courtType,
-      sessionName,
-      segmentName,
-      customerType,
-      customers: [],
-      totalCustomers: 0,
-      pagination: {
-        limit,
-        offset,
-        returned: 0,
-        totalCustomers: 0,
-        hasMore: false,
-      },
-    }
-  }
 
   const maxSelectedSessionBookingCount = Math.max(
     ...filteredCustomers.map((customer) => customer.selectedSessionBookingCount),
@@ -668,14 +725,75 @@ export const getRecommendedCustomers = async ({
 
   const pagedCustomers = rankedCustomers.slice(offset, offset + limit)
 
+  const capacityCourtCount = courtType === "all" ? 2 : 1
+  const allUsage = await prisma.courtHourUsage.findMany({
+    where: buildCourtHourUsageWhere({
+      startDate: analysisStart,
+      endDateExclusive: new Date(analysisEnd.getTime() + 1),
+      courtType: courtType === "all" ? null : courtType,
+      customerType: "all",
+      bookingType: "all",
+      includeOperational: true,
+    }),
+    select: { courtHourKey: true, playDate: true, hourStart: true, transaction: { select: { status: true, netRevenue: true, bookingEventKey: true } } },
+  })
+  const monthlyPerformance = []
+  for (let offsetMonth = analysisPeriodMonths - 1; offsetMonth >= 0; offsetMonth -= 1) {
+    const monthStart = new Date(analysisEnd.getFullYear(), analysisEnd.getMonth() - offsetMonth, 1)
+    const nextMonth = new Date(monthStart.getFullYear(), monthStart.getMonth() + 1, 1)
+    const monthEnd = nextMonth > analysisEnd ? analysisEnd : new Date(nextMonth.getTime() - 1)
+    const matching = allUsage.filter((row) => {
+      const playDate = new Date(row.playDate)
+      const hour = parseHourValue(row.hourStart)
+      return playDate >= monthStart && playDate <= monthEnd && getJakartaWeekdayIndex(playDate) === dayIndex && hour >= session.startHour && hour <= session.endHour
+    })
+    const monthUsage = allUsage.filter((row) => new Date(row.playDate) >= monthStart && new Date(row.playDate) <= monthEnd)
+    const heatmap = buildEmptySlotHeatmap({ usageRows: monthUsage, startDate: monthStart, endDate: monthEnd, courtCount: capacityCourtCount })
+    const dayShort = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][dayIndex]
+    const campaignCells = heatmap.slots.filter((cell) => {
+      const hour = parseHourValue(cell.startHour)
+      return cell.day_short === dayShort && hour >= session.startHour && hour <= session.endHour
+    })
+    const occupiedSlots = campaignCells.reduce((sum, cell) => sum + cell.occupiedSlots, 0)
+    const totalPossibleSlots = campaignCells.reduce((sum, cell) => sum + cell.totalPossibleSlots, 0)
+    let revenue = 0
+    const revenueEvents = new Set()
+    for (const row of matching) {
+      const group = getDashboardTransactionGroup(row.transaction.status)
+      if (group === DASHBOARD_TRANSACTION_GROUPS.MEMBERSHIP || group === DASHBOARD_TRANSACTION_GROUPS.NON_MEMBERSHIP) {
+        const eventKey = row.transaction.bookingEventKey
+        if (!revenueEvents.has(eventKey)) { revenueEvents.add(eventKey); revenue += toNumber(row.transaction.netRevenue) }
+      }
+    }
+    const emptySlots = Math.max(0, totalPossibleSlots - occupiedSlots)
+    monthlyPerformance.push({
+      month: `${monthStart.getFullYear()}-${String(monthStart.getMonth() + 1).padStart(2, "0")}`,
+      monthLabel: monthStart.toLocaleString("en-US", { month: "long", year: "numeric" }),
+      dataThrough: formatIsoDate(monthEnd), totalPossibleSlots, occupiedSlots, emptySlots,
+      occupancyRate: totalPossibleSlots > 0 ? roundNumber((occupiedSlots / totalPossibleSlots) * 100, 1) : null,
+      revenue: roundNumber(revenue),
+    })
+  }
+  const availableMonths = monthlyPerformance.filter((month) => month.occupancyRate !== null)
+  const totalRevenue = monthlyPerformance.reduce((sum, month) => sum + month.revenue, 0)
+  const historicalSummary = {
+    analysisPeriodMonths,
+    averageOccupancy: availableMonths.length ? roundNumber(availableMonths.reduce((sum, month) => sum + month.occupancyRate, 0) / availableMonths.length, 1) : null,
+    averageFilledSlots: roundNumber(monthlyPerformance.reduce((sum, month) => sum + month.occupiedSlots, 0) / monthlyPerformance.length, 1),
+    totalRevenue: roundNumber(totalRevenue),
+    averageMonthlyRevenue: roundNumber(totalRevenue / monthlyPerformance.length),
+  }
+
   return {
-    date: selectedDate,
+    campaignDay, analysisPeriodMonths, latestPlayDate: selectedDate, unavailableReason: null,
     courtType,
     sessionName,
     segmentName,
     customerType,
     customers: pagedCustomers,
     totalCustomers: rankedCustomers.length,
+    monthlyPerformance,
+    historicalSummary,
     pagination: {
       limit,
       offset,

@@ -6,14 +6,19 @@ import {
   buildFacilityTransactionWhere,
   buildOccupancyTrendPeriods,
   EXCLUDED_IMPORT_BATCH_FILE_NAMES,
+  createApplicationDateStart,
+  getApplicationCalendarParts,
+  getApplicationWeekday,
   getAvailableCourtHours,
     buildCustomRangeOccupancyPeriods,
   getCourtCount,
   getPreviousComparisonRange,
   normalizeCourtTypeFilter,
+  resolveCustomDateRange,
   resolveSelectedDateRange,
 } from "../services/dashboardPeriod.service.js";
 import { buildEmptySlotHeatmap } from "../services/emptySlotHeatmap.service.js";
+import { getLatestTransactionDate } from "../services/dataCenterTransactionStatus.service.js";
 
 export const dashboardRouter = Router();
 
@@ -54,28 +59,6 @@ const SESSION_DEFINITIONS = [
 ];
 const EARLY_MONTH_REFERENCE_THRESHOLD_DAYS = 7;
 
-const cloneDate = (value) => new Date(value.getTime());
-
-const startOfDay = (value) => {
-  const date = cloneDate(value);
-  date.setHours(0, 0, 0, 0);
-  return date;
-};
-
-const endOfDay = (value) => {
-  const date = cloneDate(value);
-  date.setHours(23, 59, 59, 999);
-  return date;
-};
-
-const getRangeDayCount = (startDate, endDate) =>
-  Math.max(
-    0,
-    Math.round(
-      (endOfDay(endDate).getTime() - startOfDay(startDate).getTime()) / 86400000
-    )
-  ) + 1;
-
 const resolveSessionNameByHour = (hourStart) => {
   const parsedHour = Number(String(hourStart ?? "").split(":")[0]);
 
@@ -95,7 +78,7 @@ const getShortDayLabel = (dateValue) => {
 
   if (Number.isNaN(date.getTime())) return null;
 
-  return DAY_LABELS[date.getDay()];
+  return DAY_LABELS[getApplicationWeekday(date)];
 };
 
 const normalizeStartHourLabel = (value) => {
@@ -165,26 +148,27 @@ const buildHeatmapSummaryFromTransactions = (transactions = []) => {
 };
 
 const getPreviousMonthRange = (referenceDate) => {
-  const year = referenceDate.getFullYear();
-  const monthIndex = referenceDate.getMonth();
+  const parts = getApplicationCalendarParts(referenceDate);
 
   return {
-    startDate: startOfDay(new Date(year, monthIndex - 1, 1)),
-    endDate: endOfDay(new Date(year, monthIndex, 0)),
+    startDate: createApplicationDateStart(parts.year, parts.month - 1, 1),
+    endDateExclusive: createApplicationDateStart(parts.year, parts.month, 1),
   };
 };
 
 const getLowSessionSummary = async ({
   startDate,
-  endDate,
+  endDateExclusive,
   courtType,
   customerType,
   bookingType,
   periodType,
 }) => {
-  const selectedStartDate = startOfDay(new Date(startDate));
-  const selectedEndDate = endOfDay(new Date(endDate));
-  const selectedRangeDays = getRangeDayCount(selectedStartDate, selectedEndDate);
+  const selectedStartDate = new Date(startDate);
+  const selectedEndDate = new Date(endDateExclusive.getTime() - 1);
+  const selectedRangeDays = Math.round(
+    (endDateExclusive.getTime() - selectedStartDate.getTime()) / 86400000
+  );
 
   let referenceStartDate = selectedStartDate;
   let referenceEndDate = selectedEndDate;
@@ -192,19 +176,21 @@ const getLowSessionSummary = async ({
   let lowSessionDetail =
     "Based on historical occupancy within the selected play-date period.";
 
+  const startParts = getApplicationCalendarParts(selectedStartDate);
+  const endParts = getApplicationCalendarParts(selectedEndDate);
   const isSingleMonthRange =
-    selectedStartDate.getFullYear() === selectedEndDate.getFullYear() &&
-    selectedStartDate.getMonth() === selectedEndDate.getMonth();
+    startParts.year === endParts.year &&
+    startParts.month === endParts.month;
 
   if (
     periodType === "MTD" &&
     isSingleMonthRange &&
-    selectedStartDate.getDate() === 1 &&
+    startParts.day === 1 &&
     selectedRangeDays <= EARLY_MONTH_REFERENCE_THRESHOLD_DAYS
   ) {
     const previousMonthRange = getPreviousMonthRange(selectedStartDate);
     referenceStartDate = previousMonthRange.startDate;
-    referenceEndDate = previousMonthRange.endDate;
+    referenceEndDate = new Date(previousMonthRange.endDateExclusive.getTime() - 1);
     lowSessionBasis = "previous_month";
     lowSessionDetail = `Predicted from the previous month because the selected month only has ${selectedRangeDays} uploaded play day(s) so far.`;
   }
@@ -230,7 +216,7 @@ const getLowSessionSummary = async ({
   const usageRows = await prisma.courtHourUsage.findMany({
     where: buildCourtHourUsageWhere({
       startDate: referenceStartDate,
-      endDate: referenceEndDate,
+      endDateExclusive: new Date(referenceEndDate.getTime() + 1),
       courtType,
       customerType,
       bookingType,
@@ -377,10 +363,10 @@ dashboardRouter.get(
 
       const selectedRange =
   req.query.startDate && req.query.endDate
-    ? {
-        startDate: startOfDay(new Date(req.query.startDate)),
-        endDate: endOfDay(new Date(req.query.endDate)),
-      }
+    ? resolveCustomDateRange({
+        startDate: req.query.startDate,
+        endDate: req.query.endDate,
+      })
     : resolveSelectedDateRange({
         selectedYear: filters.year,
         selectedMonth: filters.month,
@@ -401,7 +387,7 @@ dashboardRouter.get(
 
       const transactionWhere = buildFacilityTransactionWhere({
         startDate: selectedRange.startDate,
-        endDate: selectedRange.endDate,
+        endDateExclusive: selectedRange.endDateExclusive,
         courtType,
         customerType: filters.customerType,
         bookingType: filters.bookingType,
@@ -485,10 +471,10 @@ dashboardRouter.get(
 
       const selectedRange =
         req.query.startDate && req.query.endDate
-          ? {
-              startDate: startOfDay(new Date(req.query.startDate)),
-              endDate: endOfDay(new Date(req.query.endDate)),
-            }
+          ? resolveCustomDateRange({
+              startDate: req.query.startDate,
+              endDate: req.query.endDate,
+            })
           : resolveSelectedDateRange({
               selectedYear: filters.year,
               selectedMonth: filters.month,
@@ -503,41 +489,47 @@ dashboardRouter.get(
         })
       }
 
-      const { startDate, endDate } = selectedRange
+      const { startDate, endDateExclusive } = selectedRange
       const courtCount = courtType ? 1 : 2
 
-      const usageWhere = buildCourtHourUsageWhere({
+      const customerUsageWhere = buildCourtHourUsageWhere({
         startDate,
-        endDate,
+        endDateExclusive,
         courtType,
         customerType: filters.customerType,
         bookingType: filters.bookingType,
+        includeOperational: false,
+      })
+      const operationalUsageWhere = buildCourtHourUsageWhere({
+        startDate,
+        endDateExclusive,
+        courtType,
+        customerType: "internal",
+        bookingType: "all",
         includeOperational: true,
       })
 
       // Aggregate booked hours per (dayOfWeek, startHour)
-      const usageRows = await prisma.courtHourUsage.findMany({
-        where: usageWhere,
-        select: {
-          courtHourKey: true,
-          courtType: true,
-          playDate: true,
-          hourStart: true,
-          transaction: {
-            select: {
-              status: true,
-            },
-          },
-        },
-      })
+      const usageSelect = {
+        courtHourKey: true,
+        court: true,
+        courtType: true,
+        playDate: true,
+        hourStart: true,
+        transaction: { select: { status: true } },
+      }
+      const [customerUsageRows, operationalUsageRows] = await Promise.all([
+        prisma.courtHourUsage.findMany({ where: customerUsageWhere, select: usageSelect }),
+        prisma.courtHourUsage.findMany({ where: operationalUsageWhere, select: usageSelect }),
+      ])
 
       res.json({
         success: true,
         message: "Empty slot heatmap fetched successfully.",
         data: buildEmptySlotHeatmap({
-          usageRows,
+          usageRows: [...customerUsageRows, ...operationalUsageRows],
           startDate,
-          endDate,
+          endDate: new Date(endDateExclusive.getTime() - 1),
           courtCount,
         }),
       })
@@ -556,6 +548,7 @@ dashboardRouter.get(
         totalBatches,
         totalRawRows,
         totalFacilityTransactions,
+        latestTransactionDate,
         totalCourtHourUsages,
         completedBatches,
         failedBatches,
@@ -596,6 +589,8 @@ dashboardRouter.get(
             },
           },
         }),
+
+        getLatestTransactionDate(prisma),
 
         prisma.courtHourUsage.count({
           where: {
@@ -685,6 +680,7 @@ dashboardRouter.get(
           totalBatches,
           totalRawRows,
           totalFacilityTransactions,
+          latestTransactionDate,
           totalCourtHourUsages,
           completedBatches,
           failedBatches,
@@ -732,10 +728,10 @@ dashboardRouter.get(
       const courtType = normalizeCourtTypeFilter(filters.venue);
       const selectedRange =
   req.query.startDate && req.query.endDate
-    ? {
-        startDate: startOfDay(new Date(req.query.startDate)),
-        endDate: endOfDay(new Date(req.query.endDate)),
-      }
+    ? resolveCustomDateRange({
+        startDate: req.query.startDate,
+        endDate: req.query.endDate,
+      })
     : resolveSelectedDateRange({
         selectedYear: filters.year,
         selectedMonth: filters.month,
@@ -767,7 +763,7 @@ dashboardRouter.get(
 
       const transactionWhere = buildFacilityTransactionWhere({
         startDate: selectedRange.startDate,
-        endDate: selectedRange.endDate,
+        endDateExclusive: selectedRange.endDateExclusive,
         courtType,
         customerType: filters.customerType,
         bookingType: filters.bookingType,
@@ -776,7 +772,7 @@ dashboardRouter.get(
 
       const previousTransactionWhere = buildFacilityTransactionWhere({
         startDate: previousRange.startDate,
-        endDate: previousRange.endDate,
+        endDateExclusive: previousRange.endDateExclusive,
         courtType,
         customerType: filters.customerType,
         bookingType: filters.bookingType,
@@ -785,7 +781,7 @@ dashboardRouter.get(
 
       const courtHourWhere = buildCourtHourUsageWhere({
         startDate: selectedRange.startDate,
-        endDate: selectedRange.endDate,
+        endDateExclusive: selectedRange.endDateExclusive,
         courtType,
         customerType: filters.customerType,
         bookingType: filters.bookingType,
@@ -794,7 +790,7 @@ dashboardRouter.get(
 
       const previousCourtHourWhere = buildCourtHourUsageWhere({
         startDate: previousRange.startDate,
-        endDate: previousRange.endDate,
+        endDateExclusive: previousRange.endDateExclusive,
         courtType,
         customerType: filters.customerType,
         bookingType: filters.bookingType,
@@ -829,7 +825,7 @@ dashboardRouter.get(
         }),
         getLowSessionSummary({
           startDate: selectedRange.startDate,
-          endDate: selectedRange.endDate,
+          endDateExclusive: selectedRange.endDateExclusive,
           courtType,
           customerType: filters.customerType,
           bookingType: filters.bookingType,
@@ -879,12 +875,12 @@ dashboardRouter.get(
       const courtCount = getCourtCount(courtType);
       const availableSessions = getAvailableCourtHours(
         selectedRange.startDate,
-        selectedRange.endDate,
+        selectedRange.endDateExclusive,
         courtCount
       );
       const previousAvailableSessions = getAvailableCourtHours(
         previousRange.startDate,
-        previousRange.endDate,
+        previousRange.endDateExclusive,
         courtCount
       );
 
@@ -959,7 +955,7 @@ dashboardRouter.get(
           const bookedSessions = await prisma.courtHourUsage.count({
             where: buildCourtHourUsageWhere({
               startDate: period.startDate,
-              endDate: period.endDate,
+              endDateExclusive: period.endDateExclusive,
               courtType,
               customerType: filters.customerType,
               bookingType: filters.bookingType,
@@ -969,21 +965,26 @@ dashboardRouter.get(
 
           const availableSessions = getAvailableCourtHours(
             period.startDate,
-            period.endDate,
+            period.endDateExclusive,
             courtCount
           );
 
           const rate =
             availableSessions > 0 ? (bookedSessions / availableSessions) * 100 : 0;
 
-          return {
-            label: period.label,
-            month: period.month,
-            date: period.date,
-            bookedSessions,
-            availableSessions,
-            rate: Number(rate.toFixed(1)),
-          };
+          const key =
+  period.key ||
+  period.date ||
+  period.month ||
+  period.label;
+
+return {
+  key,
+  label: period.label,
+  bookedSessions,
+  availableSessions,
+  rate: Number(rate.toFixed(1)),
+};
         })
       );
 

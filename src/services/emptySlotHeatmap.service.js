@@ -1,4 +1,5 @@
 import {
+  CANONICAL_TRANSACTION_STATUSES,
   DASHBOARD_TRANSACTION_GROUPS,
   getDashboardTransactionGroup,
 } from "./transactionStatus.service.js"
@@ -51,8 +52,9 @@ export const buildEmptySlotHeatmap = ({
     cursor.setDate(cursor.getDate() + 1)
   }
 
-  const occupiedCustomerByCell = new Map()
+  const occupiedByCell = new Map()
   const internalByCell = new Map()
+  const blockedByCell = new Map()
   const seenCourtHours = new Set()
 
   usageRows.forEach((row) => {
@@ -64,50 +66,64 @@ export const buildEmptySlotHeatmap = ({
 
     const physicalSlotKey =
       row.courtHourKey ||
-      `${new Date(row.playDate).toISOString()}|${row.hourStart}|${row.courtType || ""}`
+      `${new Date(row.playDate).toISOString()}|${row.hourStart}|${row.court || row.courtType || ""}`
     if (seenCourtHours.has(physicalSlotKey)) return
     seenCourtHours.add(physicalSlotKey)
 
     const cellKey = toCellKey(dayLabel, hour)
     const group = getDashboardTransactionGroup(row.transaction?.status)
 
-    if (group === DASHBOARD_TRANSACTION_GROUPS.INTERNAL) {
+    if (row.transaction?.status === CANONICAL_TRANSACTION_STATUSES.INTERNAL) {
       internalByCell.set(cellKey, (internalByCell.get(cellKey) || 0) + 1)
+    } else if (group === DASHBOARD_TRANSACTION_GROUPS.INTERNAL) {
+      blockedByCell.set(cellKey, (blockedByCell.get(cellKey) || 0) + 1)
     } else if (
       group === DASHBOARD_TRANSACTION_GROUPS.MEMBERSHIP ||
       group === DASHBOARD_TRANSACTION_GROUPS.NON_MEMBERSHIP
     ) {
-      occupiedCustomerByCell.set(cellKey, (occupiedCustomerByCell.get(cellKey) || 0) + 1)
+      occupiedByCell.set(cellKey, (occupiedByCell.get(cellKey) || 0) + 1)
     }
   })
 
-  const slots = [...capacityByCell.entries()].map(([key, totalCapacity]) => {
+  const slots = [...capacityByCell.entries()].map(([key, grossCapacity]) => {
     const [day_short, startHour] = key.split("|")
-    const occupiedCustomerSessions = occupiedCustomerByCell.get(key) || 0
+    const occupiedSlots = occupiedByCell.get(key) || 0
     const internalSessions = internalByCell.get(key) || 0
-    const emptySessions = Math.max(
-      0,
-      totalCapacity - occupiedCustomerSessions - internalSessions
-    )
+    const blockedSlots = blockedByCell.get(key) || 0
+    const unavailableSlots = internalSessions + blockedSlots
+    const totalPossibleSlots = Math.max(0, grossCapacity - unavailableSlots)
+    const emptySlots = Math.max(0, totalPossibleSlots - occupiedSlots)
+    const occupancyRate = totalPossibleSlots > 0
+      ? (occupiedSlots / totalPossibleSlots) * 100
+      : null
 
     return {
+      dayOfWeek: day_short,
       day_short,
+      hour: startHour,
       startHour,
-      session_count: emptySessions,
+      session_count: emptySlots,
       session_label: getHeatmapSessionNameByHour(startHour),
-      totalCapacity,
-      totalPossibleSessions: totalCapacity,
-      occupiedCustomerSessions,
+      grossCapacity,
+      totalCapacity: totalPossibleSlots,
+      totalPossibleSlots,
+      totalPossibleSessions: totalPossibleSlots,
+      occupiedSlots,
+      occupiedCustomerSessions: occupiedSlots,
       internalSessions,
-      emptySessions,
-      emptyRate: totalCapacity > 0 ? emptySessions / totalCapacity : 0,
-      internalRate: totalCapacity > 0 ? internalSessions / totalCapacity : 0,
+      blockedSlots,
+      unavailableSlots,
+      emptySlots,
+      emptySessions: emptySlots,
+      occupancyRate,
+      emptyRate: totalPossibleSlots > 0 ? emptySlots / totalPossibleSlots : null,
+      internalRate: grossCapacity > 0 ? unavailableSlots / grossCapacity : 0,
     }
   })
 
   const mostEmpty = [...slots].sort((left, right) => {
-    if (right.emptySessions !== left.emptySessions) {
-      return right.emptySessions - left.emptySessions
+    if (right.emptySlots !== left.emptySlots) {
+      return right.emptySlots - left.emptySlots
     }
     if (left.startHour !== right.startHour) {
       return left.startHour.localeCompare(right.startHour)
@@ -125,7 +141,7 @@ export const buildEmptySlotHeatmap = ({
           dayLabel: mostEmpty.day_short,
           hourLabel: mostEmpty.startHour,
           sessionLabel: mostEmpty.session_label,
-          sessionCount: mostEmpty.emptySessions,
+          sessionCount: mostEmpty.emptySlots,
         }
       : null,
   }

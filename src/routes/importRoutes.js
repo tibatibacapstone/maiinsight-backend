@@ -2,7 +2,7 @@ import { Router } from "express";
 import multer from "multer";
 import { prisma } from "../config/prisma.js";
 import { authenticate, authorize } from "../middleware/auth.js";
-import { logItSupportActivity } from "../services/activityLog.service.js";
+import { logActivity, logItSupportActivity } from "../services/activityLog.service.js";
 import {
   buildCourtHourUsageEntries,
   mapFacilityTransactionToCanonicalUpdate,
@@ -12,6 +12,7 @@ import {
   resolveCustomersForTransactions,
   syncCustomersForTransactions,
 } from "../services/customerCanonicalization.service.js";
+import { deleteImportBatchData } from "../services/importBatchDeletion.service.js";
 import {
   buildFriendlyImportFailure,
   createImportError,
@@ -23,6 +24,12 @@ import {
 } from "../services/importFile.service.js";
 import { EXCLUDED_IMPORT_BATCH_FILE_NAMES } from "../services/dashboardPeriod.service.js";
 import { partitionUniqueBookingEvents } from "../services/transactionFeatureEngineering.service.js";
+import {
+  buildTransformedBatchColumns,
+  buildTransformedBatchCsv,
+  buildTransformedBatchRows,
+  IMPORT_BATCH_PREVIEW_LIMIT,
+} from "../services/importBatchExport.service.js";
 
 const router = Router();
 
@@ -52,6 +59,7 @@ const createFailedImportHistory = async ({
   rowCount = 0,
   headers = [],
   message,
+  performedByUserId = null,
 }) => {
   if (!fileName) return null;
 
@@ -62,6 +70,7 @@ const createFailedImportHistory = async ({
       headers,
       status: "failed",
       errorMessage: message || "Import failed.",
+      performedByUserId,
     },
   });
 };
@@ -141,6 +150,36 @@ const facilityTransactionSyncSelect = {
   bookingEventKey: true,
 };
 
+const rawBatchRowSelect = {
+  id: true,
+  batchId: true,
+  rowNumber: true,
+  data: true,
+  status: true,
+  errorMessage: true,
+  createdAt: true,
+};
+
+const getTransformedBatchRows = async (batchId, { take } = {}) => {
+  const rows = await prisma.rawTransactionTable.findMany({
+    where: { batchId },
+    orderBy: { rowNumber: "asc" },
+    ...(take ? { take } : {}),
+    select: rawBatchRowSelect,
+  });
+  const generatedTransactions = rows.length
+    ? await prisma.facilityTransaction.findMany({
+        where: {
+          batchId,
+          rawRowId: { in: rows.map((row) => row.id) },
+        },
+        orderBy: { rowNumber: "asc" },
+      })
+    : [];
+
+  return buildTransformedBatchRows(rows, generatedTransactions);
+};
+
 const syncCourtHourUsageForTransactions = async (transactions, { replaceExisting = false } = {}) => {
   let createdCount = 0;
 
@@ -208,10 +247,40 @@ const syncCanonicalDataForTransactions = async (transactions, options = {}) => {
 // Semua route import wajib login
 router.use(authenticate);
 
+router.post(
+  "/manual-sync",
+  authorize("operational", "it_support"),
+  async (req, res, next) => {
+    try {
+      const activity = await logActivity(req, "DATA_CENTER_DATABASE_REFRESH", {
+        jobName: "MaiinSight Database Sync",
+        status: "completed",
+        completedAt: new Date().toISOString(),
+      });
+      return res.json({
+        success: true,
+        message: "MaiinSight Database refreshed successfully.",
+        data: { activityId: activity?.id || null },
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
 // Admin + IT boleh lihat history jobs
 router.get("/jobs", authorize("operational", "it_support"), async (req, res, next) => {
   try {
-    const jobs = await prisma.importBatch.findMany({
+    const actorSelect = { id: true, name: true, email: true };
+    const [
+      imports,
+      metaSyncs,
+      segmentationRuns,
+      aiStrategies,
+      failedAiJobs,
+      databaseRefreshJobs,
+    ] = await Promise.all([
+      prisma.importBatch.findMany({
       where: {
         fileName: {
           notIn: EXCLUDED_IMPORT_BATCH_FILE_NAMES,
@@ -228,8 +297,143 @@ router.get("/jobs", authorize("operational", "it_support"), async (req, res, nex
         status: true,
         createdAt: true,
         updatedAt: true,
+        errorMessage: true,
+        performedBy: { select: actorSelect },
       },
-    });
+      }),
+      prisma.metaSyncLog.findMany({
+        orderBy: { startedAt: "desc" },
+        take: 20,
+        select: {
+          id: true,
+          status: true,
+          message: true,
+          startedAt: true,
+          finishedAt: true,
+          performedBy: { select: actorSelect },
+        },
+      }),
+      prisma.segmentationRun.findMany({
+        orderBy: { runDate: "desc" },
+        take: 20,
+        select: {
+          id: true,
+          status: true,
+          errorMessage: true,
+          totalCustomers: true,
+          runDate: true,
+          updatedAt: true,
+          performedBy: { select: actorSelect },
+        },
+      }),
+      prisma.aiStrategy.findMany({
+        orderBy: { generatedAt: "desc" },
+        take: 20,
+        select: {
+          id: true,
+          generatedAt: true,
+          performedBy: { select: actorSelect },
+        },
+      }),
+      prisma.activityLog.findMany({
+        where: { action: "AI_STRATEGY_FAILED" },
+        orderBy: { createdAt: "desc" },
+        take: 20,
+        select: {
+          id: true,
+          metadata: true,
+          createdAt: true,
+          user: { select: actorSelect },
+        },
+      }),
+      prisma.activityLog.findMany({
+        where: { action: "DATA_CENTER_DATABASE_REFRESH" },
+        orderBy: { createdAt: "desc" },
+        take: 20,
+        select: {
+          id: true,
+          createdAt: true,
+          user: { select: actorSelect },
+        },
+      }),
+    ]);
+
+    const jobs = [
+      ...imports.map((job) => ({
+        id: `import-${job.id}`,
+        sourceRecordId: job.id,
+        name: job.fileName,
+        type: "file",
+        status: job.status,
+        records: job.rowCount,
+        startedAt: job.createdAt,
+        completedAt: job.status === "completed" ? job.updatedAt : null,
+        error: job.errorMessage,
+        performedBy: job.performedBy,
+      })),
+      ...metaSyncs.map((job) => ({
+        id: `meta-${job.id}`,
+        sourceRecordId: job.id,
+        name: "Meta Graph API Sync",
+        type: "api",
+        status: job.status,
+        records: 0,
+        startedAt: job.startedAt,
+        completedAt: job.finishedAt,
+        error: job.status === "FAILED" ? job.message : null,
+        performedBy: job.performedBy,
+      })),
+      ...segmentationRuns.map((job) => ({
+        id: `segmentation-${job.id}`,
+        sourceRecordId: job.id,
+        name: "K-Means++ Segmentation Run",
+        type: "api",
+        status: job.status,
+        records: job.totalCustomers,
+        startedAt: job.runDate,
+        completedAt: job.status === "running" ? null : job.updatedAt,
+        error: job.errorMessage,
+        performedBy: job.performedBy,
+      })),
+      ...aiStrategies.map((job) => ({
+        id: `ai-${job.id}`,
+        sourceRecordId: job.id,
+        name: "AI Strategy Engine Sync",
+        type: "api",
+        status: "completed",
+        records: 1,
+        startedAt: job.generatedAt,
+        completedAt: job.generatedAt,
+        error: null,
+        performedBy: job.performedBy,
+      })),
+      ...failedAiJobs.map((job) => ({
+        id: `ai-failed-${job.id}`,
+        sourceRecordId: job.id,
+        name: "AI Strategy Engine Sync",
+        type: "api",
+        status: "failed",
+        records: 0,
+        startedAt: job.createdAt,
+        completedAt: null,
+        error: job.metadata?.errorCode || "AI strategy generation failed.",
+        performedBy: job.user,
+      })),
+      ...databaseRefreshJobs.map((job) => ({
+        id: `database-${job.id}`,
+        sourceRecordId: job.id,
+        name: "MaiinSight Database Sync",
+        type: "api",
+        status: "completed",
+        records: 0,
+        startedAt: job.createdAt,
+        completedAt: job.createdAt,
+        error: null,
+        performedBy: job.user,
+      })),
+    ]
+      .sort((left, right) => new Date(right.startedAt) - new Date(left.startedAt))
+      .slice(0, 20);
 
     res.json({
       success: true,
@@ -261,33 +465,42 @@ try {
         });
       }
 
-     parsedRecords = parseUploadedTransactionFile(req.file);
-parsedHeaders = validateTransactionTemplate(parsedRecords);
+      const existingBatch = await findCompletedImportByFileName(req.file.originalname);
 
-validateTransactionRows(parsedRecords);
+      if (existingBatch) {
+        throw createImportError({
+          statusCode: 409,
+          errorCode: "DUPLICATE_IMPORT_FILE",
+          message: "A transaction file with the same name has already been successfully imported.",
+          suggestion:
+            "Rename the file before uploading, or delete the earlier completed import batch if this is a corrected replacement.",
+          technicalMessage: `Existing completed batch ${existingBatch.id} already uses file name ${existingBatch.fileName}.`,
+        });
+      }
 
-const records = parsedRecords;
-const headers = parsedHeaders;
-
-const existingBatch = await findCompletedImportByFileName(req.file.originalname);
-
-if (existingBatch) {
-  throw createImportError({
-    statusCode: 409,
-    errorCode: "DUPLICATE_IMPORT_FILE",
-    message: "A transaction file with the same name has already been successfully imported.",
-    suggestion:
-      "Rename the file before uploading, or delete the earlier completed import batch if this is a corrected replacement.",
-    technicalMessage: `Existing completed batch ${existingBatch.id} already uses file name ${existingBatch.fileName}.`,
-  });
-}
-
-batch = await prisma.importBatch.create({
+      // Persist the authenticated actor before parsing or row validation can fail.
+      batch = await prisma.importBatch.create({
         data: {
           fileName: req.file.originalname,
+          rowCount: 0,
+          headers: [],
+          status: "processing",
+          performedByUserId: req.user.userId,
+        },
+      });
+
+      parsedRecords = parseUploadedTransactionFile(req.file);
+      parsedHeaders = validateTransactionTemplate(parsedRecords);
+      validateTransactionRows(parsedRecords);
+
+      const records = parsedRecords;
+      const headers = parsedHeaders;
+
+      batch = await prisma.importBatch.update({
+        where: { id: batch.id },
+        data: {
           rowCount: records.length,
           headers,
-          status: "processing",
         },
       });
 
@@ -484,24 +697,28 @@ batch = await prisma.importBatch.create({
       const friendlyFailure = buildFriendlyImportFailure(error);
 
       if (batch?.id) {
-  await prisma.importBatch.update({
-    where: {
-      id: batch.id,
-    },
-    data: {
-      status: "failed",
-      errorMessage: friendlyFailure.message,
-    },
-  }).catch(() => null);
-  friendlyFailure.batchId = batch.id;
-} else if (req.file?.originalname) {
-  await createFailedImportHistory({
-    fileName: req.file.originalname,
-    rowCount: parsedRecords.length || 0,
-    headers: parsedHeaders || [],
-    message: friendlyFailure.message,
-  }).catch(() => null);
-}
+        await prisma.importBatch.update({
+          where: {
+            id: batch.id,
+          },
+          data: {
+            rowCount: parsedRecords.length || batch.rowCount,
+            headers: parsedHeaders.length ? parsedHeaders : batch.headers,
+            status: "failed",
+            errorMessage: friendlyFailure.message,
+          },
+        }).catch(() => null);
+        friendlyFailure.batchId = batch.id;
+      } else if (req.file?.originalname) {
+        const failedBatch = await createFailedImportHistory({
+          fileName: req.file.originalname,
+          rowCount: parsedRecords.length || 0,
+          headers: parsedHeaders || [],
+          message: friendlyFailure.message,
+          performedByUserId: req.user.userId,
+        }).catch(() => null);
+        if (failedBatch?.id) friendlyFailure.batchId = failedBatch.id;
+      }
 
       if (
         friendlyFailure.technicalMessage?.includes("customerKeyConfidence") ||
@@ -693,56 +910,10 @@ router.get("/batches/:id/rows", authorize("operational", "it_support"), async (r
       });
     }
 
-    const rows = await prisma.rawTransactionTable.findMany({
-      where: {
-        batchId,
-      },
-      orderBy: {
-        rowNumber: "asc",
-      },
-      take: 100,
-      select: {
-        id: true,
-        batchId: true,
-        rowNumber: true,
-        data: true,
-        status: true,
-        errorMessage: true,
-        createdAt: true,
-      },
+    const rowsWithGeneratedFeatures = await getTransformedBatchRows(batchId, {
+      take: IMPORT_BATCH_PREVIEW_LIMIT,
     });
-    const generatedTransactions = await prisma.facilityTransaction.findMany({
-      where: {
-        batchId,
-        rawRowId: {
-          in: rows.map((row) => row.id),
-        },
-      },
-      select: {
-        rawRowId: true,
-        customerIdentity: true,
-        customerKey: true,
-        bookingEventKey: true,
-      },
-    });
-    const generatedByRawRowId = new Map(
-      generatedTransactions.map((transaction) => [transaction.rawRowId, transaction])
-    );
-    const rowsWithGeneratedFeatures = rows.map((row) => {
-      const generated = generatedByRawRowId.get(row.id);
-
-      return {
-        ...row,
-        data: generated
-          ? {
-              ...row.data,
-              customerIdentity: generated.customerIdentity,
-              customerKey: generated.customerKey,
-              bookingEventKey: generated.bookingEventKey,
-            }
-          : row.data,
-      };
-    });
+    const columns = buildTransformedBatchColumns();
 
     await logItSupportActivity(req, "IT_SUPPORT_RAW_IMPORT_VIEW", {
       batchId,
@@ -754,9 +925,46 @@ router.get("/batches/:id/rows", authorize("operational", "it_support"), async (r
       message: "Raw transaction rows fetched successfully.",
       data: {
         batch,
+        columns,
         rows: rowsWithGeneratedFeatures,
       },
     });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get("/batches/:id/export", authorize("operational", "it_support"), async (req, res, next) => {
+  try {
+    const batchId = parseBatchId(req.params.id);
+    if (!batchId) {
+      return res.status(400).json({ success: false, message: "Invalid import batch ID." });
+    }
+
+    const batch = await prisma.importBatch.findUnique({
+      where: { id: batchId },
+      select: { id: true, fileName: true, headers: true },
+    });
+    if (!batch) {
+      return res.status(404).json({ success: false, message: "Import batch not found." });
+    }
+
+    const rows = await getTransformedBatchRows(batchId);
+    const columns = buildTransformedBatchColumns();
+    const csv = buildTransformedBatchCsv(columns, rows);
+    const baseName = batch.fileName.replace(/\.(?:csv|xlsx|xls)$/i, "").replace(/[^a-z0-9._-]+/gi, "-");
+
+    await logItSupportActivity(req, "IT_SUPPORT_TRANSFORMED_IMPORT_EXPORT", {
+      batchId,
+      rowCount: rows.length,
+    });
+
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="${baseName || `batch-${batchId}`}_transformed.csv"`
+    );
+    return res.send(`\uFEFF${csv}`);
   } catch (error) {
     next(error);
   }
@@ -787,33 +995,13 @@ router.delete("/jobs/:id", authorize("operational", "it_support"), async (req, r
       });
     }
 
-    await prisma.$transaction([
-      prisma.courtHourUsage.deleteMany({
-        where: {
-          batchId,
-        },
-      }),
-      prisma.facilityTransaction.deleteMany({
-        where: {
-          batchId,
-        },
-      }),
-      prisma.rawTransactionTable.deleteMany({
-        where: {
-          batchId,
-        },
-      }),
-      prisma.importBatch.delete({
-        where: {
-          id: batchId,
-        },
-      }),
-    ]);
+    const deletionSummary = await deleteImportBatchData(prisma, batchId);
 
     await logItSupportActivity(req, "IT_SUPPORT_IMPORT_DELETE", {
       batchId,
       fileName: existingBatch.fileName,
       rowCount: existingBatch.rowCount,
+      ...deletionSummary,
     });
 
     return res.json({

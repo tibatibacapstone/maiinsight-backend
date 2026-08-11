@@ -154,6 +154,188 @@ test("invalid play dates and times retain row-numbered validation reasons", () =
   )
 })
 
+test("one invalid field returns exactly one validation error", () => {
+  assert.throws(
+    () => validateTransactionRows([{ ...buildRecord(), "Tanggal Transaksi": "not-a-date" }]),
+    (error) => {
+      assert.equal(error.validationErrors.length, 1)
+      assert.equal(error.validationErrors[0].rowNumber, 2)
+      assert.equal(error.validationErrors[0].column, "Tanggal Transaksi")
+      assert.equal(
+        error.validationErrors[0].message,
+        "Invalid date format. Transaction date must contain a valid date."
+      )
+      return true
+    }
+  )
+})
+
+test("collects invalid fields from different source rows with Excel row numbers", () => {
+  const records = [
+    { ...buildRecord(), "Tanggal Transaksi": "aaaaaaa" },
+    { ...buildRecord(), "Harga Bersih": "bbbbb" },
+    { ...buildRecord(), "Jam Main": "evening" },
+  ]
+
+  assert.throws(
+    () => validateTransactionRows(records),
+    (error) => {
+      assert.equal(error.errorCode, "INVALID_ROW_DATA")
+      assert.deepEqual(
+        error.validationErrors.map(({ rowNumber, column }) => ({ rowNumber, column })),
+        [
+          { rowNumber: 2, column: "Tanggal Transaksi" },
+          { rowNumber: 3, column: "Harga Bersih" },
+          { rowNumber: 4, column: "Jam Main" },
+        ]
+      )
+      return true
+    }
+  )
+})
+
+test("collects multiple field errors from the same row", () => {
+  assert.throws(
+    () =>
+      validateTransactionRows([
+        {
+          ...buildRecord(),
+          "Tanggal Transaksi": "aaaaaaa",
+          "Harga Bersih": "bbbbb",
+        },
+      ]),
+    (error) => {
+      assert.equal(error.validationErrors.length, 2)
+      assert.ok(error.validationErrors.every((item) => item.rowNumber === 2))
+      assert.deepEqual(
+        error.validationErrors.map(({ column, message, value }) => ({ column, message, value })),
+        [
+          {
+            column: "Tanggal Transaksi",
+            message: "Invalid date format. Transaction date must contain a valid date.",
+            value: "aaaaaaa",
+          },
+          {
+            column: "Harga Bersih",
+            message: "Invalid numeric value. Net revenue must be a valid number.",
+            value: "bbbbb",
+          },
+        ]
+      )
+      return true
+    }
+  )
+})
+
+test("collects invalid date and invalid optional numeric value together", () => {
+  assert.throws(
+    () =>
+      validateTransactionRows([
+        {
+          ...buildRecord(),
+          "Tanggal Main": "invalid-date",
+          "Harga Add Ons Bersih": "invalid-amount",
+        },
+      ]),
+    (error) => {
+      assert.deepEqual(
+        error.validationErrors.map((item) => item.column),
+        ["Tanggal Main", "Harga Add Ons Bersih"]
+      )
+      return true
+    }
+  )
+})
+
+test("does not truncate validation errors from large invalid files", () => {
+  const records = Array.from({ length: 60 }, () => ({
+    ...buildRecord(),
+    "Tanggal Transaksi": "invalid-date",
+  }))
+
+  assert.throws(
+    () => validateTransactionRows(records),
+    (error) => {
+      assert.equal(error.validationErrors.length, 60)
+      assert.equal(error.validationErrors.at(-1).rowNumber, 61)
+      return true
+    }
+  )
+})
+
+test("valid rows return no validation errors and continue normally", () => {
+  assert.equal(validateTransactionRows([buildRecord(), buildRecord()]), true)
+})
+
+test("empty transaction date reports only its required-value reason", () => {
+  assert.throws(
+    () => validateTransactionRows([{ ...buildRecord(), "Tanggal Transaksi": "" }]),
+    (error) => {
+      assert.deepEqual(error.validationErrors, [
+        {
+          rowNumber: 2,
+          column: "Tanggal Transaksi",
+          value: null,
+          message: "Transaction date is required and cannot be empty.",
+        },
+      ])
+      return true
+    }
+  )
+})
+
+test("empty customer net revenue reports only its required-value reason", () => {
+  assert.throws(
+    () => validateTransactionRows([{ ...buildRecord(), "Harga Bersih": "" }]),
+    (error) => {
+      assert.deepEqual(error.validationErrors, [
+        {
+          rowNumber: 2,
+          column: "Harga Bersih",
+          value: null,
+          message: "Net revenue is required and cannot be empty.",
+        },
+      ])
+      return true
+    }
+  )
+})
+
+test("present malformed values retain their raw values and exact format reasons", () => {
+  assert.throws(
+    () =>
+      validateTransactionRows([
+        { ...buildRecord(), "Tanggal Transaksi": "aaaaaaa" },
+        { ...buildRecord(), "Harga Bersih": "bbbbb" },
+      ]),
+    (error) => {
+      assert.deepEqual(
+        error.validationErrors.map(({ rowNumber, column, value, message }) => ({
+          rowNumber,
+          column,
+          value,
+          message,
+        })),
+        [
+          {
+            rowNumber: 2,
+            column: "Tanggal Transaksi",
+            value: "aaaaaaa",
+            message: "Invalid date format. Transaction date must contain a valid date.",
+          },
+          {
+            rowNumber: 3,
+            column: "Harga Bersih",
+            value: "bbbbb",
+            message: "Invalid numeric value. Net revenue must be a valid number.",
+          },
+        ]
+      )
+      return true
+    }
+  )
+})
+
 test("zero-revenue customer rows do not require identity during validation", () => {
   assert.equal(
     validateTransactionRows([

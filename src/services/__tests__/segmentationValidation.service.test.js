@@ -43,6 +43,18 @@ test("validateSegmentationLookupInput rejects invalid month", () => {
   )
 })
 
+test("validateSegmentationLookupInput accepts canonical numeric month", () => {
+  const input = validateSegmentationLookupInput({
+    month: "9",
+    year: "2026",
+    periodType: "mtd",
+  })
+
+  assert.equal(input.month, "Sept")
+  assert.equal(input.year, 2026)
+  assert.equal(input.periodType, "MTD")
+})
+
 test("validateSegmentationCustomerInput applies safe pagination defaults", () => {
   const input = validateSegmentationCustomerInput({
     includeCustomers: "true",
