@@ -44,10 +44,17 @@ test("customer and operational slots reduce empty capacity separately", () => {
   assert.equal(cell.session_count, cell.emptySessions)
 })
 
-test("Internal, Tutup, Maintenance, and combined status are operational", () => {
-  for (const status of ["Internal", "Tutup", "Maintenance", "Tutup/Maintenance"]) {
+test("Internal goes to internalSessions; Tutup/Maintenance goes to tutupSessions", () => {
+  const internalCell = getMondaySix(build([usage({ key: "internal", status: "Internal" })]))
+  assert.equal(internalCell.internalSessions, 1)
+  assert.equal(internalCell.tutupSessions, 0)
+  assert.equal(internalCell.occupiedCustomerSessions, 0)
+  assert.equal(internalCell.emptySessions, 1)
+
+  for (const status of ["Tutup", "Maintenance", "Tutup/Maintenance"]) {
     const cell = getMondaySix(build([usage({ key: status, status })]))
-    assert.equal(cell.internalSessions, 1, status)
+    assert.equal(cell.tutupSessions, 1, status)
+    assert.equal(cell.internalSessions, 0, status)
     assert.equal(cell.occupiedCustomerSessions, 0, status)
     assert.equal(cell.emptySessions, 1, status)
   }
@@ -61,7 +68,9 @@ test("a repeated physical court-hour is counted only once", () => {
     ])
   )
 
+  // Only the first entry (Internal) counts; Maintenance is deduplicated
   assert.equal(cell.internalSessions, 1)
+  assert.equal(cell.tutupSessions, 0)
   assert.equal(cell.emptySessions, 1)
 })
 
@@ -70,6 +79,7 @@ test("zero-capacity rates are safe", () => {
   assert.equal(cell.totalCapacity, 0)
   assert.equal(cell.emptyRate, 0)
   assert.equal(cell.internalRate, 0)
+  assert.equal(cell.tutupRate, 0)
 })
 
 test("session boundaries remain Morning 06-10, Afternoon 11-14, Evening 15-18, Night 19-23", () => {

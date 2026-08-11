@@ -239,7 +239,7 @@ export const buildDashboardTransactionGroupCondition = ({
   const customerCondition = {
     status: { in: CUSTOMER_STATUSES },
     customerKey: { not: { startsWith: "SYS-" } },
-    netRevenue: { gt: 0 },
+    netRevenue: { gte: 0 },
   }
   const operationalCondition = {
     status: { in: OPERATIONAL_STATUSES },

@@ -1148,7 +1148,7 @@ const buildPaginationPayload = ({ totalCustomers, limit, offset, returned }) => 
   hasMore: offset + returned < totalCustomers,
 })
 
-const buildCustomerScoreWhere = ({ runId, segmentName }) => {
+const buildCustomerScoreWhere = ({ runId, segmentName, search }) => {
   const where = {
     runId,
   }
@@ -1157,13 +1157,22 @@ const buildCustomerScoreWhere = ({ runId, segmentName }) => {
     where.segmentName = segmentName
   }
 
+  if (hasValue(search)) {
+    const keyword = String(search).trim()
+    where.OR = [
+      { customerName: { contains: keyword } },
+      { customerKey: { contains: keyword } },
+    ]
+  }
+
   return where
 }
 
-const fetchCustomerScoresPage = async ({ runId, segmentName = null, limit, offset }) => {
+const fetchCustomerScoresPage = async ({ runId, segmentName = null, search, limit, offset }) => {
   const where = buildCustomerScoreWhere({
     runId,
     segmentName,
+    search,
   })
 
   const [totalCustomers, customerScores] = await prisma.$transaction([
@@ -1523,6 +1532,7 @@ export const getLatestSegmentationResult = async (input = {}) => {
     ? await fetchCustomerScoresPage({
         runId: latestRun.id,
         segmentName: input.segmentName,
+        search: input.search,
         limit: input.limit,
         offset: input.offset || 0,
       })
@@ -1574,6 +1584,7 @@ export const getSegmentationCustomers = async (input = {}) => {
   const customerResult = await fetchCustomerScoresPage({
     runId: latestResult.run.id,
     segmentName: input.segmentName,
+    search: input.search,
     limit: input.limit,
     offset: input.offset || 0,
   })

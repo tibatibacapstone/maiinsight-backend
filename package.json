@@ -6,7 +6,7 @@
   "main": "src/server.js",
   "packageManager": "pnpm@10.34.5",
   "scripts": {
-    "dev": "nodemon src/server.js",
+    "dev": "nodemon --delay 1500ms src/server.js",
     "start": "node src/server.js",
     "postinstall": "prisma generate",
     "lint": "eslint src",
@@ -47,6 +47,7 @@
     "mysql2": "^3.22.5",
     "node-cron": "^4.2.1",
     "nodemailer": "^9.0.3",
+    "pptxgenjs": "^4.0.1",
     "xlsx": "^0.18.5"
   },
   "devDependencies": {

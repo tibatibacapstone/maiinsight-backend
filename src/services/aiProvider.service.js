@@ -1,5 +1,6 @@
 import { GoogleGenAI } from "@google/genai";
 
+import { prisma } from "../config/prisma.js";
 import { buildConfigSnapshot } from "./appConfig.service.js";
 
 const REDACTED_KEYS = new Set([
@@ -280,6 +281,24 @@ const generateWithGemini = async (strategyContext) => {
       suggestion: "Please try again or contact IT Support if the issue continues.",
       technicalMessage: error instanceof Error ? error.message : "Gemini request failed.",
     });
+  }
+
+  try {
+    const usage = response?.usageMetadata;
+    if (usage) {
+      await prisma.geminiUsageLog.create({
+        data: {
+          userId: strategyContext?.userId || null,
+          model: geminiModel,
+          feature: "generate_strategy",
+          promptTokens: usage.promptTokenCount ?? 0,
+          candidatesTokens: usage.candidatesTokenCount ?? 0,
+          totalTokens: usage.totalTokenCount ?? 0,
+        },
+      });
+    }
+  } catch (_) {
+    /* non-critical */
   }
 
   const parsed = (() => {

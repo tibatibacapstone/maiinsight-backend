@@ -9,7 +9,7 @@ import { logActivity } from "../services/activityLog.service.js"
 import { getAiProviderStatus } from "../services/aiProvider.service.js"
 import { APP_SETTING_KEYS, buildConfigSnapshot, parseDatabaseName, writeAppSettings } from "../services/appConfig.service.js"
 import { sendActivationEmail } from "../services/email.service.js"
-import { createNotificationsForRoles } from "../services/notification.service.js"
+import { checkTokens } from "../services/tokenMonitor.service.js"
 
 const router = Router()
 
@@ -230,10 +230,6 @@ router.post("/users", authorize("it_support"), async (req, res, next) => {
       targetUserId: user.id,
       targetUserEmail: user.email,
       status: "success",
-    })
-    await createNotificationsForRoles(prisma, ["it_support"], {
-      title: "User Account Created",
-      message: `${user.name} (${user.email}) was added to MaiinSight.`,
     })
 
     return res.status(201).json({
@@ -493,6 +489,81 @@ router.post("/service-token", authorize("it_support"), async (req, res, next) =>
         token,
         label,
       },
+    })
+  } catch (error) {
+    next(error)
+  }
+})
+
+router.get("/gemini-usage", async (req, res, next) => {
+  try {
+    const { days, limit } = req.query
+    const since = days
+      ? new Date(Date.now() - parseInt(days, 10) * 86400000)
+      : new Date(Date.now() - 7 * 86400000)
+
+    const logs = await prisma.geminiUsageLog.findMany({
+      where: { createdAt: { gte: since } },
+      orderBy: { createdAt: "desc" },
+      take: Math.min(parseInt(limit, 10) || 100, 500),
+      include: { user: { select: { name: true, email: true } } },
+    })
+
+    const todayStart = new Date()
+    todayStart.setHours(0, 0, 0, 0)
+    const todayAgg = await prisma.geminiUsageLog.aggregate({
+      where: { createdAt: { gte: todayStart } },
+      _sum: { totalTokens: true, promptTokens: true, candidatesTokens: true },
+      _count: true,
+    })
+
+    const monthStart = new Date()
+    monthStart.setDate(1)
+    monthStart.setHours(0, 0, 0, 0)
+    const monthAgg = await prisma.geminiUsageLog.aggregate({
+      where: { createdAt: { gte: monthStart } },
+      _sum: { totalTokens: true, promptTokens: true, candidatesTokens: true },
+      _count: true,
+    })
+
+    const allTimeAgg = await prisma.geminiUsageLog.aggregate({
+      _sum: { totalTokens: true },
+      _count: true,
+    })
+
+    return res.json({
+      success: true,
+      data: {
+        logs,
+        today: {
+          totalTokens: todayAgg._sum.totalTokens || 0,
+          promptTokens: todayAgg._sum.promptTokens || 0,
+          candidatesTokens: todayAgg._sum.candidatesTokens || 0,
+          count: todayAgg._count,
+        },
+        month: {
+          totalTokens: monthAgg._sum.totalTokens || 0,
+          promptTokens: monthAgg._sum.promptTokens || 0,
+          candidatesTokens: monthAgg._sum.candidatesTokens || 0,
+          count: monthAgg._count,
+        },
+        allTime: {
+          totalTokens: allTimeAgg._sum.totalTokens || 0,
+          count: allTimeAgg._count,
+        },
+      },
+    })
+  } catch (error) {
+    next(error)
+  }
+})
+
+router.post("/check-tokens", authorize("it_support"), async (req, res, next) => {
+  try {
+    const result = await checkTokens()
+    return res.json({
+      success: true,
+      data: result,
     })
   } catch (error) {
     next(error)

@@ -30,6 +30,8 @@ async function main() {
     GEMINI_API_KEY: process.env.GEMINI_API_KEY || "",
     GEMINI_MODEL: process.env.GEMINI_MODEL || "gemini-2.5-flash",
     GEMINI_ENABLED: process.env.GEMINI_API_KEY ? "true" : "false",
+    GEMINI_DAILY_LIMIT: process.env.GEMINI_DAILY_LIMIT || "1000000",
+    GEMINI_MONTHLY_LIMIT: process.env.GEMINI_MONTHLY_LIMIT || "30000000",
     META_IG_USER_ID: process.env.META_IG_USER_ID || "",
     META_ACCESS_TOKEN: process.env.META_ACCESS_TOKEN || "",
     META_GRAPH_VERSION: process.env.META_GRAPH_VERSION || "v25.0",

@@ -3,6 +3,7 @@ import multer from "multer";
 import { prisma } from "../config/prisma.js";
 import { authenticate, authorize } from "../middleware/auth.js";
 import { logItSupportActivity } from "../services/activityLog.service.js";
+import { saveDownloadRecordAndNotifyManagement } from "../services/download.service.js";
 import {
   buildCourtHourUsageEntries,
   mapFacilityTransactionToCanonicalUpdate,
@@ -733,14 +734,12 @@ router.get("/batches/:id/rows", authorize("operational", "it_support"), async (r
 
       return {
         ...row,
-        data: generated
-          ? {
-              ...row.data,
-              customerIdentity: generated.customerIdentity,
-              customerKey: generated.customerKey,
-              bookingEventKey: generated.bookingEventKey,
-            }
-          : row.data,
+        data: {
+          ...row.data,
+          customerKey: generated?.customerKey ?? null,
+          customerIdentity: generated?.customerIdentity ?? null,
+          bookingEventKey: generated?.bookingEventKey ?? null,
+        },
       };
     });
 
@@ -757,6 +756,124 @@ router.get("/batches/:id/rows", authorize("operational", "it_support"), async (r
         rows: rowsWithGeneratedFeatures,
       },
     });
+  } catch (error) {
+    next(error);
+  }
+});
+
+const escapeCsvCell = (value) => {
+  if (value === null || value === undefined || value === "") return '""'
+  const text = typeof value === "object" ? JSON.stringify(value) : String(value)
+  return `"${text.replace(/"/g, '""')}"`
+}
+
+router.get("/batches/:id/export", authorize("operational", "it_support"), async (req, res, next) => {
+  try {
+    const batchId = Number(req.params.id);
+
+    if (!batchId || Number.isNaN(batchId)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid import batch ID.",
+      });
+    }
+
+    const batch = await prisma.importBatch.findUnique({
+      where: { id: batchId },
+      select: { id: true, fileName: true, status: true },
+    });
+
+    if (!batch) {
+      return res.status(404).json({
+        success: false,
+        message: "Import batch not found.",
+      });
+    }
+
+    const rows = await prisma.rawTransactionTable.findMany({
+      where: { batchId },
+      orderBy: { rowNumber: "asc" },
+      select: {
+        id: true,
+        rowNumber: true,
+        data: true,
+      },
+    });
+
+    const headers = Array.from(
+      rows.reduce((accumulator, row) => {
+        Object.keys(row.data || {}).forEach((key) => accumulator.add(key))
+        return accumulator
+      }, new Set())
+    )
+
+    const csvLines = [
+      ["Row", ...headers].map(escapeCsvCell).join(","),
+      ...rows.map((row) =>
+        [row.rowNumber, ...headers.map((header) => escapeCsvCell(row.data?.[header]))].join(",")
+      ),
+    ]
+    const csv = csvLines.join("\n")
+    const fileName = `${batch.fileName.replace(/\.csv$/i, "")}_raw_export.csv`
+
+    await saveDownloadRecordAndNotifyManagement({
+      fileName,
+      fileData: csv,
+      req,
+    })
+
+    res.setHeader("Content-Type", "text/csv; charset=utf-8")
+    res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`)
+    return res.send(csv)
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get("/batches/:id/transactions", authorize("operational", "it_support"), async (req, res, next) => {
+  try {
+    const batchId = Number(req.params.id);
+    if (!batchId || Number.isNaN(batchId)) {
+      return res.status(400).json({ success: false, message: "Invalid import batch ID." });
+    }
+
+    const transactions = await prisma.facilityTransaction.findMany({
+      where: { batchId },
+      orderBy: { rowNumber: "asc" },
+      select: {
+        id: true,
+        rowNumber: true,
+        customerKey: true,
+        rawData: true,
+      },
+    });
+
+    const excludeColumns = [
+      "Venue", "Add Ons", "Order ID", "Deskripsi", "Reschedule",
+      "No. Telepon", "Tipe Voucher", "Harga Voucher", "Customer Profile",
+      "Keperluan Olahraga", "Harga Add Ons Bersih",
+    ];
+
+    const rows = transactions.map((t) => {
+      const raw = t.rawData || {};
+      const data = {};
+      for (const key of Object.keys(raw)) {
+        if (!excludeColumns.includes(key)) {
+          data[key] = raw[key];
+        }
+      }
+      data["Customer ID"] = t.customerKey;
+      return { id: t.id, rowNumber: t.rowNumber, data };
+    });
+
+    const columnHeaders = transactions[0]?.rawData
+      ? Object.keys(transactions[0].rawData).filter((h) => !excludeColumns.includes(h))
+      : [];
+    if (!columnHeaders.includes("Customer ID")) {
+      columnHeaders.unshift("Customer ID");
+    }
+
+    return res.json({ success: true, data: { rows, columnHeaders } });
   } catch (error) {
     next(error);
   }

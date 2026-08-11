@@ -165,6 +165,9 @@ export const validateSegmentationLookupInput = (input = {}) => ({
 export const validateSegmentationCustomerInput = (input = {}) => ({
   ...validateSegmentationLookupInput(input),
   segmentName: normalizeSegmentName(input.segmentName),
+  search: hasValue(input.search)
+    ? String(input.search).trim().slice(0, 100)
+    : undefined,
   limit:
     normalizePositiveInteger(input.limit, "limit", {
       minimum: 1,

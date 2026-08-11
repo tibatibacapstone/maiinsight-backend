@@ -11,7 +11,7 @@ import {
 const customerStatusCondition = {
   status: { in: ["Payment Completed", "Manual/Walk-in"] },
   customerKey: { not: { startsWith: "SYS-" } },
-  netRevenue: { gt: 0 },
+  netRevenue: { gte: 0 },
 }
 
 const operationalStatusCondition = {
@@ -62,7 +62,7 @@ test("Court-hour occupancy applies the same group on the related transaction", (
   assert.deepEqual(where.transaction.AND, [operationalStatusCondition])
 })
 
-test("Facility transaction All includes operational and positive customer revenue", () => {
+test("Facility transaction All includes operational and non-negative customer revenue", () => {
   const where = buildFacilityTransactionWhere({
     customerType: "all",
     includeOperational: true,

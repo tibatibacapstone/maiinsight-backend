@@ -219,6 +219,17 @@ const parseJamMain = (value) => {
   };
 };
 
+const EVENT_KEYWORDS = [
+  "champion", "runner up", "runner-up", "3rd place", "juara",
+  "trial", "grand opening", "grandopening", "event",
+]
+
+const isEventName = (name) => {
+  if (!name) return false
+  const lower = name.toLowerCase()
+  return EVENT_KEYWORDS.some((kw) => lower.includes(kw))
+}
+
 const classifyPlayTime = (hourNumber) => {
   if (hourNumber === null || hourNumber === undefined) return null;
   if (hourNumber >= 6 && hourNumber < 12) return "Pagi";
@@ -377,10 +388,7 @@ const buildFacilityTransactionPayload = (
     category: statusClassification.category,
   });
 
-  if (
-    statusClassification.category === TRANSACTION_ROW_CATEGORIES.CUSTOMER &&
-    revenue.shouldSkip
-  ) {
+  if (revenue.shouldSkip) {
     return skipped("non_positive_or_invalid_customer_revenue");
   }
 
@@ -404,14 +412,25 @@ const buildFacilityTransactionPayload = (
     throw new Error("Customer email, name, or phone must contain a usable identity value.");
   }
 
+  let { customerIdentity } = identity;
+  let { customerKeyType } = identity;
+  let { customerKeyConfidence } = identity;
   const {
-    customerIdentity,
-    customerKeyType,
-    customerKeyConfidence,
     normalizedEmail: normalizedEmailValue,
     normalizedName: normalizedNameValue,
     normalizedPhone: normalizedPhoneValue,
   } = identity;
+
+  if (
+    statusClassification.category !== TRANSACTION_ROW_CATEGORIES.OPERATIONAL &&
+    customerIdentity.startsWith("NAME|") &&
+    isEventName(customerName)
+  ) {
+    customerIdentity = `EVENT|${normalizedNameValue || normalizedNameValue || customerName}`;
+    customerKeyType = "event";
+    customerKeyConfidence = "system";
+  }
+
   const customerKey =
     statusClassification.category === TRANSACTION_ROW_CATEGORIES.OPERATIONAL
       ? statusClassification.customerKey

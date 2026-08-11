@@ -562,6 +562,7 @@ dashboardRouter.get(
         aiStrategySuggestionCount,
         metaMediaCount,
         latestBatch,
+        lastTransactionDate,
 
         totalInstagramMedia,
         totalInstagramMediaInsights,
@@ -652,6 +653,23 @@ dashboardRouter.get(
           },
         }),
 
+        prisma.facilityTransaction.findFirst({
+          where: {
+            batch: {
+              fileName: {
+                notIn: EXCLUDED_IMPORT_BATCH_FILE_NAMES,
+              },
+            },
+            playDate: { not: null },
+          },
+          orderBy: {
+            playDate: "desc",
+          },
+          select: {
+            playDate: true,
+          },
+        }),
+
         // Meta Graph API records
         prisma.instagramMedia.count(),
         prisma.instagramMediaInsight.count(),
@@ -691,6 +709,7 @@ dashboardRouter.get(
           aiStrategySuggestionCount,
           metaMediaCount,
           latestBatch,
+          lastTransactionDate: lastTransactionDate?.playDate ?? null,
 
           totalInstagramMedia,
           totalInstagramMediaInsights,
@@ -1015,6 +1034,9 @@ dashboardRouter.get(
           errorMessage: true,
           createdAt: true,
           updatedAt: true,
+          _count: {
+            select: { facilityTransactions: true },
+          },
         },
       })
 
@@ -1126,7 +1148,7 @@ console.log("SYNC JOBS ACTIVITY LOGS:", activityLogs.map((log) => ({
               : status === "failed"
                 ? 0
                 : 60,
-          records: job.rowCount || 0,
+          records: job._count.facilityTransactions || 0,
           startedAt: job.createdAt,
           completedAt: status === "completed" ? job.updatedAt : null,
           error: job.errorMessage || null,

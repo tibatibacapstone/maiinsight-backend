@@ -2,6 +2,11 @@ import { Router } from "express"
 
 import { prisma } from "../config/prisma.js"
 import { authenticate, authorize } from "../middleware/auth.js"
+import { saveDownloadRecordAndNotifyManagement } from "../services/download.service.js"
+import {
+  generateManagementPresentation,
+  isValidPresentationTheme,
+} from "../services/presentation.service.js"
 import {
   buildCourtHourUsageWhere,
   buildFacilityTransactionWhere,
@@ -101,6 +106,17 @@ const getActivityType = (action = "") => {
   }
 
   return "config"
+}
+
+const getTargetPage = (title = "") => {
+  const normalized = String(title).toLowerCase()
+
+  if (normalized.includes("instasight") || normalized.includes("meta")) return "instasight"
+  if (normalized.includes("ai strategy")) return "genai"
+  if (normalized.includes("import")) return "data"
+  if (normalized.includes("segmentation")) return "segments"
+
+  return null
 }
 
 const buildStatus = (action = "", metadata = {}) => {
@@ -525,9 +541,16 @@ router.get(
 
 router.get(
   "/notifications",
-  authorize("operational", "it_support"),
+  authorize("operational", "management", "it_support"),
   async (req, res, next) => {
     try {
+      await prisma.notification.deleteMany({
+        where: {
+          role: req.user.role,
+          createdAt: { lt: new Date(Date.now() - 5 * 24 * 60 * 60 * 1000) },
+        },
+      })
+
       const storedNotifications = await prisma.notification.findMany({
         where: { role: req.user.role },
         orderBy: { createdAt: "desc" },
@@ -545,11 +568,15 @@ router.get(
           createdAt: item.createdAt,
           relativeTime: formatRelativeTime(item.createdAt),
           category: getActivityType(item.title),
+          targetPage: getTargetPage(item.title),
+          downloadRecordId: item.downloadRecordId ?? null,
           derived: false,
         })),
         ...derivedNotifications.map((item) => ({
           ...item,
           relativeTime: formatRelativeTime(item.createdAt),
+          targetPage: getTargetPage(item.title),
+          downloadRecordId: null,
         })),
       ]
         .sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime())
@@ -567,9 +594,16 @@ router.get(
 
 router.get(
   "/notifications/unread-count",
-  authorize("operational", "it_support"),
+  authorize("operational", "management", "it_support"),
   async (req, res, next) => {
     try {
+      await prisma.notification.deleteMany({
+        where: {
+          role: req.user.role,
+          createdAt: { lt: new Date(Date.now() - 5 * 24 * 60 * 60 * 1000) },
+        },
+      })
+
       const unreadCount = await prisma.notification.count({
         where: {
           role: req.user.role,
@@ -591,7 +625,7 @@ router.get(
 
 router.patch(
   "/notifications/:id/read",
-  authorize("operational", "it_support"),
+  authorize("operational", "management", "it_support"),
   async (req, res, next) => {
     try {
       const id = Number(req.params.id)
@@ -632,9 +666,51 @@ router.patch(
   }
 )
 
+router.delete(
+  "/notifications/:id",
+  authorize("operational", "management", "it_support"),
+  async (req, res, next) => {
+    try {
+      const id = Number(req.params.id)
+
+      if (!Number.isFinite(id)) {
+        return res.status(400).json({
+          success: false,
+          message: "This notification could not be removed.",
+        })
+      }
+
+      const notification = await prisma.notification.findFirst({
+        where: {
+          id,
+          role: req.user.role,
+        },
+      })
+
+      if (!notification) {
+        return res.status(404).json({
+          success: false,
+          message: "Notification not found.",
+        })
+      }
+
+      await prisma.notification.delete({
+        where: { id },
+      })
+
+      return res.json({
+        success: true,
+        message: "Notification removed.",
+      })
+    } catch (error) {
+      next(error)
+    }
+  }
+)
+
 router.post(
   "/notifications/read-all",
-  authorize("operational", "it_support"),
+  authorize("operational", "management", "it_support"),
   async (req, res, next) => {
     try {
       await prisma.notification.updateMany({
@@ -648,6 +724,58 @@ router.post(
       return res.json({
         success: true,
         message: "Notifications marked as read.",
+      })
+    } catch (error) {
+      next(error)
+    }
+  }
+)
+
+router.get(
+  "/downloads/:id",
+  authorize("operational", "management", "it_support"),
+  async (req, res, next) => {
+    try {
+      const id = Number(req.params.id)
+
+      if (!Number.isFinite(id)) {
+        return res.status(400).json({
+          success: false,
+          message: "This download could not be found.",
+        })
+      }
+
+      const record = await prisma.downloadRecord.findUnique({
+        where: { id },
+        select: {
+          id: true,
+          fileName: true,
+          contentType: true,
+          fileData: true,
+          fileSizeBytes: true,
+          downloadedByName: true,
+          createdAt: true,
+        },
+      })
+
+      if (!record) {
+        return res.status(404).json({
+          success: false,
+          message: "Download not found.",
+        })
+      }
+
+      return res.json({
+        success: true,
+        data: {
+          id: record.id,
+          fileName: record.fileName,
+          contentType: record.contentType,
+          fileData: record.fileData,
+          fileSizeBytes: record.fileSizeBytes,
+          downloadedByName: record.downloadedByName,
+          createdAt: record.createdAt,
+        },
       })
     } catch (error) {
       next(error)
@@ -681,11 +809,18 @@ router.get(
       const items = await buildActivityItems()
       const filteredItems = filterActivityItems(items, req.query || {})
       const csv = toCsv(filteredItems)
+      const fileName = `maiinsight-history-${new Date().toISOString().slice(0, 10)}.csv`
+
+      await saveDownloadRecordAndNotifyManagement({
+        fileName,
+        fileData: csv,
+        req,
+      })
 
       res.setHeader("Content-Type", "text/csv; charset=utf-8")
       res.setHeader(
         "Content-Disposition",
-        `attachment; filename="maiinsight-history-${new Date().toISOString().slice(0, 10)}.csv"`
+        `attachment; filename="${fileName}"`
       )
 
       return res.send(csv)
@@ -695,23 +830,10 @@ router.get(
   }
 )
 
-router.get(
-  "/management-report",
-  authorize("operational", "management", "it_support"),
-  async (req, res, next) => {
-    try {
-      const startDate = req.query.startDate ? new Date(String(req.query.startDate)) : null
-      const endDate = req.query.endDate ? new Date(String(req.query.endDate)) : null
-      const courtType = normalizeCourtTypeFilter(req.query.courtType)
-      const bookingType = req.query.bookingType ? String(req.query.bookingType) : "all"
-      const customerType = req.query.customerType ? String(req.query.customerType) : "All Type"
-
-      if (!startDate || !endDate || Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime()) || startDate > endDate) {
-        return res.status(400).json({
-          success: false,
-          message: "Please choose a valid reporting date range.",
-        })
-      }
+const buildManagementReportData = async ({ startDate, endDate, courtType, bookingType, customerType }) => {
+    if (!startDate || !endDate || Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime()) || startDate > endDate) {
+      return { error: { statusCode: 400, message: "Please choose a valid reporting date range." } }
+    }
 
       const transactionWhere = buildFacilityTransactionWhere({
         startDate,
@@ -1027,8 +1149,7 @@ router.get(
 
       const recommendations = [occupancyInsight, revenueInsight]
 
-      return res.json({
-        success: true,
+      return {
         data: {
           filters: {
             startDate: startDate.toISOString(),
@@ -1086,7 +1207,202 @@ router.get(
             recommendations,
           },
         },
+      }
+}
+
+const escapeCsvCell = (value) => {
+  const text = value == null ? "" : String(value)
+  if (/[",\n\r]/.test(text)) return `"${text.replace(/"/g, '""')}"`
+  return text
+}
+
+const buildManagementReportCsv = (data) => {
+  const lines = []
+  const pushRow = (values) => lines.push(values.map(escapeCsvCell).join(","))
+
+  pushRow(["MaiinSight Management Report"])
+  pushRow(["Generated At", data.generatedAt])
+  pushRow(["Period", data.period.label])
+  pushRow(["Comparison Period", data.comparisonPeriod.label])
+  pushRow([])
+
+  pushRow(["Summary"])
+  pushRow(["Total Revenue", data.summary.totalRevenue])
+  pushRow(["Total Bookings", data.summary.totalBookings])
+  pushRow(["Occupancy Rate (%)", data.summary.occupancyRate])
+  pushRow(["Avg Revenue per Booking", data.summary.avgRevenuePerBooking])
+  pushRow([])
+
+  pushRow(["Booking Type Breakdown"])
+  pushRow(["Booking Type", "Bookings"])
+  for (const [key, value] of Object.entries(data.bookingTypeBreakdown || {})) {
+    pushRow([key, value])
+  }
+  pushRow([])
+
+  pushRow(["Court Type Performance"])
+  pushRow(["Court", "Revenue", "Bookings", "Booked Hours", "Available Hours", "Occupancy (%)"])
+  for (const row of data.courtTypePerformance || []) {
+    pushRow([row.courtLabel, row.revenue, row.bookings, row.bookedHours, row.availableHours, row.occupancyRate])
+  }
+  pushRow([])
+
+  pushRow(["Session Occupancy"])
+  pushRow(["Session", "Booked Hours", "Available Hours", "Occupancy (%)", "Revenue"])
+  for (const row of data.sessionOccupancy || []) {
+    pushRow([row.sessionName, row.bookedHours, row.availableHours, row.occupancyRate, row.revenue])
+  }
+  pushRow([])
+
+  pushRow(["Segment Contribution"])
+  pushRow(["Segment", "Revenue", "Bookings", "Revenue Share (%)", "Booking Share (%)"])
+  for (const row of data.segmentContribution || []) {
+    pushRow([row.segmentName, row.revenue, row.bookings, row.revenueShare, row.bookingShare])
+  }
+  pushRow([])
+
+  pushRow(["Comparison vs Previous Period"])
+  pushRow(["Metric", "Current", "Previous", "Change (%)"])
+  for (const [label, item] of Object.entries(data.comparison || {})) {
+    pushRow([label, item.current, item.previous, item.changePct ?? ""])
+  }
+  pushRow([])
+
+  pushRow(["Key Findings"])
+  for (const finding of (data.insights?.keyFindings || [])) pushRow([finding])
+  pushRow([])
+
+  pushRow(["Action Plan"])
+  for (const action of (data.insights?.actionPlan || [])) pushRow([action])
+
+  return lines.join("\n")
+}
+
+router.get(
+  "/management-report",
+  authorize("operational", "management", "it_support"),
+  async (req, res, next) => {
+    try {
+      const result = await buildManagementReportData({
+        startDate: req.query.startDate ? new Date(String(req.query.startDate)) : null,
+        endDate: req.query.endDate ? new Date(String(req.query.endDate)) : null,
+        courtType: normalizeCourtTypeFilter(req.query.courtType),
+        bookingType: req.query.bookingType ? String(req.query.bookingType) : "all",
+        customerType: req.query.customerType ? String(req.query.customerType) : "All Type",
       })
+
+      if (result.error) {
+        return res.status(result.error.statusCode).json({
+          success: false,
+          message: result.error.message,
+        })
+      }
+
+      return res.json({ success: true, data: result.data })
+    } catch (error) {
+      next(error)
+    }
+  }
+)
+
+router.get(
+  "/management-report/export",
+  authorize("operational", "management", "it_support"),
+  async (req, res, next) => {
+    try {
+      const result = await buildManagementReportData({
+        startDate: req.query.startDate ? new Date(String(req.query.startDate)) : null,
+        endDate: req.query.endDate ? new Date(String(req.query.endDate)) : null,
+        courtType: normalizeCourtTypeFilter(req.query.courtType),
+        bookingType: req.query.bookingType ? String(req.query.bookingType) : "all",
+        customerType: req.query.customerType ? String(req.query.customerType) : "All Type",
+      })
+
+      if (result.error) {
+        return res.status(result.error.statusCode).json({
+          success: false,
+          message: result.error.message,
+        })
+      }
+
+      const csv = buildManagementReportCsv(result.data)
+      const fileName = `maiinsight-management-report-${new Date().toISOString().slice(0, 10)}.csv`
+
+      await saveDownloadRecordAndNotifyManagement({
+        fileName,
+        fileData: csv,
+        req,
+      })
+
+      res.setHeader("Content-Type", "text/csv; charset=utf-8")
+      res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`)
+      return res.send(csv)
+    } catch (error) {
+      next(error)
+    }
+  }
+)
+
+router.post(
+  "/management-report/presentation",
+  authorize("operational", "management", "it_support"),
+  async (req, res, next) => {
+    try {
+      const body = req.body || {}
+      const theme = body.theme
+
+      const startDate = body.startDate ? new Date(String(body.startDate)) : null
+      const endDate = body.endDate ? new Date(String(body.endDate)) : null
+      const courtType = normalizeCourtTypeFilter(body.courtType)
+      const bookingType = body.bookingType ? String(body.bookingType) : "all"
+      const customerType = body.customerType ? String(body.customerType) : "All Type"
+
+      if (!isValidPresentationTheme(theme)) {
+        return res.status(400).json({
+          success: false,
+          message: "Please choose a valid presentation theme.",
+        })
+      }
+
+      const result = await buildManagementReportData({
+        startDate,
+        endDate,
+        courtType,
+        bookingType,
+        customerType,
+      })
+
+      if (result.error) {
+        return res.status(result.error.statusCode).json({
+          success: false,
+          message: result.error.message,
+        })
+      }
+
+      if (!result.data.hasData) {
+        return res.status(400).json({
+          success: false,
+          message: "No transaction data is available for the selected period.",
+        })
+      }
+
+      const presentation = await generateManagementPresentation({
+        data: result.data,
+        themeId: theme,
+        userId: req.user?.userId,
+      })
+
+      await saveDownloadRecordAndNotifyManagement({
+        fileName: presentation.fileName,
+        fileData: presentation.fileData,
+        contentType: presentation.contentType,
+        fileSizeBytes: presentation.fileSizeBytes,
+        req,
+      })
+
+      res.setHeader("Content-Type", presentation.contentType)
+      res.setHeader("Content-Disposition", `attachment; filename="${presentation.fileName}"`)
+      return res.send(Buffer.from(presentation.fileData, "base64"))
     } catch (error) {
       next(error)
     }

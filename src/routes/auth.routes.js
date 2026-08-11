@@ -1,13 +1,25 @@
 import bcrypt from "bcryptjs"
 import jwt from "jsonwebtoken"
+import crypto from "crypto"
 import { Router } from "express"
 
 import { env } from "../config/env.js"
 import { prisma } from "../config/prisma.js"
 import { authenticate } from "../middleware/auth.js"
-import { sendPasswordResetEmail } from "../services/email.service.js"
+import { sendConfirmationCodeEmail, sendPasswordResetEmail } from "../services/email.service.js"
 
 const router = Router()
+
+const PUBLIC_USER_FIELDS = { id: true, email: true, name: true, role: true, avatar: true }
+
+const CODE_TTL_MS = 10 * 60 * 1000
+const RESEND_COOLDOWN_MS = 60 * 1000
+const MAX_ATTEMPTS = 5
+
+const generateConfirmationCode = () => {
+  const buffer = crypto.randomBytes(3)
+  return String(buffer.readUIntBE(0, 3) % 1000000).padStart(6, "0")
+}
 
 const createToken = (user) => {
   return jwt.sign(
@@ -78,7 +90,7 @@ router.post("/register", async (req, res, next) => {
 
     res.status(201).json({
       token,
-      user: { id: user.id, email: user.email, name: user.name, role: user.role },
+      user: { id: user.id, email: user.email, name: user.name, role: user.role, avatar: user.avatar },
     })
   } catch (error) {
     next(error)
@@ -111,7 +123,7 @@ router.post("/login", async (req, res, next) => {
 
     const token = createToken(user)
 
-    res.json({ token, user: { id: user.id, email: user.email, name: user.name, role: user.role } })
+    res.json({ token, user: { id: user.id, email: user.email, name: user.name, role: user.role, avatar: user.avatar } })
   } catch (error) {
     next(error)
   }
@@ -170,7 +182,7 @@ router.post("/google", async (req, res, next) => {
 
     const token = createToken(user)
 
-    res.json({ token, user: { id: user.id, email: user.email, name: user.name, role: user.role } })
+    res.json({ token, user: { id: user.id, email: user.email, name: user.name, role: user.role, avatar: user.avatar } })
   } catch (error) {
     next(error)
   }
@@ -246,7 +258,7 @@ router.get("/me", authenticate, async (req, res, next) => {
   try {
     const user = await prisma.user.findUnique({
       where: { id: req.user.userId },
-      select: { id: true, name: true, email: true, role: true },
+      select: PUBLIC_USER_FIELDS,
     })
 
     if (!user) {
@@ -254,6 +266,169 @@ router.get("/me", authenticate, async (req, res, next) => {
     }
 
     return res.json({ success: true, data: user })
+  } catch (error) {
+    next(error)
+  }
+})
+
+router.patch("/me", authenticate, async (req, res, next) => {
+  try {
+    const { name, avatar } = req.body || {}
+    const updateData = {}
+
+    if (name !== undefined && name !== null) {
+      const trimmedName = String(name).trim()
+      if (!trimmedName) {
+        return res.status(400).json({ success: false, error: "Name cannot be empty." })
+      }
+      if (trimmedName.length > 100) {
+        return res.status(400).json({ success: false, error: "Name is too long (max 100 characters)." })
+      }
+      updateData.name = trimmedName
+    }
+
+    if (avatar !== undefined) {
+      if (avatar === null || avatar === "") {
+        updateData.avatar = null
+      } else {
+        const avatarString = String(avatar)
+        if (!avatarString.startsWith("data:image/")) {
+          return res.status(400).json({ success: false, error: "Avatar must be a valid image data URL." })
+        }
+        if (Buffer.byteLength(avatarString, "utf8") > 1024 * 1024) {
+          return res.status(400).json({ success: false, error: "Avatar image is too large (max 1 MB)." })
+        }
+        updateData.avatar = avatarString
+      }
+    }
+
+    if (!Object.keys(updateData).length) {
+      return res.status(400).json({ success: false, error: "Nothing to update." })
+    }
+
+    const user = await prisma.user.update({
+      where: { id: req.user.userId },
+      data: updateData,
+      select: PUBLIC_USER_FIELDS,
+    })
+
+    return res.json({ success: true, data: user })
+  } catch (error) {
+    next(error)
+  }
+})
+
+router.post("/change-password/request", authenticate, async (req, res, next) => {
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id: req.user.userId },
+      select: PUBLIC_USER_FIELDS,
+    })
+
+    if (!user) {
+      return res.status(401).json({ success: false, error: "User not found." })
+    }
+
+    const recentCode = await prisma.passwordResetCode.findFirst({
+      where: { userId: user.id, usedAt: null },
+      orderBy: { createdAt: "desc" },
+    })
+
+    if (recentCode) {
+      const elapsedMs = Date.now() - new Date(recentCode.createdAt).getTime()
+      if (elapsedMs < RESEND_COOLDOWN_MS) {
+        const waitSeconds = Math.ceil((RESEND_COOLDOWN_MS - elapsedMs) / 1000)
+        return res.status(429).json({
+          success: false,
+          error: `Please wait ${waitSeconds}s before requesting a new code.`,
+        })
+      }
+    }
+
+    await prisma.passwordResetCode.updateMany({
+      where: { userId: user.id, usedAt: null },
+      data: { usedAt: new Date() },
+    })
+
+    const code = generateConfirmationCode()
+    const codeHash = await bcrypt.hash(code, 10)
+
+    await prisma.passwordResetCode.create({
+      data: {
+        userId: user.id,
+        codeHash,
+        expiresAt: new Date(Date.now() + CODE_TTL_MS),
+      },
+    })
+
+    const emailResult = await sendConfirmationCodeEmail({
+      to: user.email,
+      name: user.name,
+      code,
+    })
+
+    if (emailResult?.skipped) {
+      return res.status(500).json({
+        success: false,
+        error: "Email service is not configured. Please contact IT Support.",
+      })
+    }
+
+    return res.json({ success: true, message: "Confirmation code sent to your email." })
+  } catch (error) {
+    next(error)
+  }
+})
+
+router.post("/change-password/confirm", authenticate, async (req, res, next) => {
+  try {
+    const { code, newPassword } = req.body || {}
+
+    if (!code || !newPassword) {
+      return res.status(400).json({ success: false, error: "Code and new password are required." })
+    }
+
+    if (typeof newPassword !== "string" || newPassword.length < 6) {
+      return res.status(400).json({ success: false, error: "New password must be at least 6 characters." })
+    }
+
+    const resetCode = await prisma.passwordResetCode.findFirst({
+      where: { userId: req.user.userId, usedAt: null },
+      orderBy: { createdAt: "desc" },
+    })
+
+    if (!resetCode) {
+      return res.status(400).json({ success: false, error: "No active confirmation code. Request a new one." })
+    }
+
+    if (new Date(resetCode.expiresAt).getTime() < Date.now()) {
+      await prisma.passwordResetCode.update({ where: { id: resetCode.id }, data: { usedAt: new Date() } })
+      return res.status(400).json({ success: false, error: "Confirmation code has expired. Request a new one." })
+    }
+
+    if (resetCode.attempts >= MAX_ATTEMPTS) {
+      await prisma.passwordResetCode.update({ where: { id: resetCode.id }, data: { usedAt: new Date() } })
+      return res.status(400).json({ success: false, error: "Too many failed attempts. Request a new code." })
+    }
+
+    const codeMatches = await bcrypt.compare(String(code).trim(), resetCode.codeHash)
+
+    if (!codeMatches) {
+      await prisma.passwordResetCode.update({
+        where: { id: resetCode.id },
+        data: { attempts: { increment: 1 } },
+      })
+      return res.status(400).json({ success: false, error: "Incorrect confirmation code." })
+    }
+
+    const hashedPassword = await bcrypt.hash(newPassword, 10)
+
+    await prisma.$transaction([
+      prisma.passwordResetCode.update({ where: { id: resetCode.id }, data: { usedAt: new Date() } }),
+      prisma.user.update({ where: { id: req.user.userId }, data: { password: hashedPassword } }),
+    ])
+
+    return res.json({ success: true, message: "Password updated successfully." })
   } catch (error) {
     next(error)
   }

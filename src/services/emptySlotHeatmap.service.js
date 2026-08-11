@@ -1,5 +1,6 @@
 import {
   DASHBOARD_TRANSACTION_GROUPS,
+  classifyTransactionStatus,
   getDashboardTransactionGroup,
 } from "./transactionStatus.service.js"
 
@@ -53,6 +54,7 @@ export const buildEmptySlotHeatmap = ({
 
   const occupiedCustomerByCell = new Map()
   const internalByCell = new Map()
+  const tutupByCell = new Map()
   const seenCourtHours = new Set()
 
   usageRows.forEach((row) => {
@@ -72,7 +74,12 @@ export const buildEmptySlotHeatmap = ({
     const group = getDashboardTransactionGroup(row.transaction?.status)
 
     if (group === DASHBOARD_TRANSACTION_GROUPS.INTERNAL) {
-      internalByCell.set(cellKey, (internalByCell.get(cellKey) || 0) + 1)
+      const classification = classifyTransactionStatus(row.transaction?.status)
+      if (classification.operationalCode === "INTERNAL") {
+        internalByCell.set(cellKey, (internalByCell.get(cellKey) || 0) + 1)
+      } else if (["TUTUP", "MAINTENANCE", "TUTUP_MAINTENANCE"].includes(classification.operationalCode)) {
+        tutupByCell.set(cellKey, (tutupByCell.get(cellKey) || 0) + 1)
+      }
     } else if (
       group === DASHBOARD_TRANSACTION_GROUPS.MEMBERSHIP ||
       group === DASHBOARD_TRANSACTION_GROUPS.NON_MEMBERSHIP
@@ -85,9 +92,10 @@ export const buildEmptySlotHeatmap = ({
     const [day_short, startHour] = key.split("|")
     const occupiedCustomerSessions = occupiedCustomerByCell.get(key) || 0
     const internalSessions = internalByCell.get(key) || 0
+    const tutupSessions = tutupByCell.get(key) || 0
     const emptySessions = Math.max(
       0,
-      totalCapacity - occupiedCustomerSessions - internalSessions
+      totalCapacity - occupiedCustomerSessions - internalSessions - tutupSessions
     )
 
     return {
@@ -99,9 +107,11 @@ export const buildEmptySlotHeatmap = ({
       totalPossibleSessions: totalCapacity,
       occupiedCustomerSessions,
       internalSessions,
+      tutupSessions,
       emptySessions,
       emptyRate: totalCapacity > 0 ? emptySessions / totalCapacity : 0,
       internalRate: totalCapacity > 0 ? internalSessions / totalCapacity : 0,
+      tutupRate: totalCapacity > 0 ? tutupSessions / totalCapacity : 0,
     }
   })
 

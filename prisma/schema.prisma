@@ -8,15 +8,18 @@ datasource db {
 }
 
 model User {
-  id             Int           @id @default(autoincrement())
-  email          String        @unique
-  name           String
-  password       String?
-  role           Role          @default(operational)
-  createdAt      DateTime      @default(now())
-  updatedAt      DateTime      @updatedAt
-  logs           ActivityLog[]
-  invitesCreated UserInvite[]  @relation("InvitesCreatedBy")
+  id                Int               @id @default(autoincrement())
+  email             String            @unique
+  name              String
+  password          String?
+  avatar            String?           @db.MediumText
+  role              Role              @default(operational)
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+  logs              ActivityLog[]
+  invitesCreated    UserInvite[]      @relation("InvitesCreatedBy")
+  geminiUsageLogs   GeminiUsageLog[]
+  passwordResetCodes PasswordResetCode[]
 }
 
 model AppSetting {
@@ -45,6 +48,21 @@ model UserInvite {
   @@map("user_invites")
 }
 
+model PasswordResetCode {
+  id        Int       @id @default(autoincrement())
+  userId    Int
+  codeHash  String    @db.VarChar(191)
+  expiresAt DateTime
+  usedAt    DateTime?
+  attempts  Int       @default(0)
+  createdAt DateTime  @default(now())
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("password_reset_codes")
+}
+
 model ActivityLog {
   id        Int      @id @default(autoincrement())
   userId    Int
@@ -57,12 +75,29 @@ model ActivityLog {
 }
 
 model Notification {
-  id        Int      @id @default(autoincrement())
-  title     String
-  message   String
-  role      Role
-  read      Boolean  @default(false)
-  createdAt DateTime @default(now())
+  id               Int             @id @default(autoincrement())
+  title            String
+  message          String
+  role             Role
+  read             Boolean         @default(false)
+  createdAt        DateTime        @default(now())
+  downloadRecordId Int?
+  downloadRecord   DownloadRecord? @relation(fields: [downloadRecordId], references: [id], onDelete: Cascade)
+}
+
+model DownloadRecord {
+  id               Int            @id @default(autoincrement())
+  fileName         String
+  contentType      String         @default("text/csv; charset=utf-8")
+  fileData         String         @db.MediumText
+  fileSizeBytes    Int            @default(0)
+  downloadedById   Int
+  downloadedByName String
+  createdAt        DateTime       @default(now())
+  notifications    Notification[]
+
+  @@index([downloadedById])
+  @@index([createdAt])
 }
 
 model ImportBatch {
@@ -450,6 +485,23 @@ model InstagramMonthlyMediaPerformance {
 
   @@unique([accountId, month, contentType])
   @@map("instagram_monthly_media_performance")
+}
+
+model GeminiUsageLog {
+  id               Int      @id @default(autoincrement())
+  userId           Int?
+  model            String   @db.VarChar(100)
+  feature          String   @db.VarChar(100)
+  promptTokens     Int      @default(0)
+  candidatesTokens Int      @default(0)
+  totalTokens      Int      @default(0)
+  createdAt        DateTime @default(now())
+
+  user User? @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([createdAt])
+  @@map("gemini_usage_log")
 }
 
 model MetaSyncLog {
