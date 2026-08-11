@@ -4,8 +4,20 @@ import { prisma } from "../config/prisma.js";
 import { authenticate, authorize } from "../middleware/auth.js";
 import { logActivity } from "../services/activityLog.service.js";
 import { buildConfigSnapshot } from "../services/appConfig.service.js";
-import { syncMetaRawToAnalytics } from "../services/metaAnalytics.service.js";
+import { syncMetaRawToAnalytics } from "../services/meta.service.js";
 import { createNotificationsForRoles } from "../services/notification.service.js";
+import { resolveMetaConnectionStatus } from "../services/meta.service.js";
+import { metricValueOrNull } from "../services/metaHistorical.service.js";
+import {
+  calculateAvailableChangePct,
+  resolveFollowerSnapshot,
+} from "../services/followerSnapshot.service.js";
+import {
+  aggregateHistoricalAccountMetrics,
+  buildHistoricalAccountTrend,
+  buildHistoricalCoverage,
+  HISTORICAL_DASHBOARD_METRICS,
+} from "../services/metaHistorical.service.js";
 
 export const metaRouter = express.Router();
 
@@ -66,22 +78,6 @@ const buildMetaSetupResponse = () => ({
   suggestion:
     "Please ask IT Support to configure Meta credentials in Settings or environment variables.",
 });
-const calculateChangePct = (current, previous) => {
-  const currentValue = Number(current || 0);
-  const previousValue = Number(previous || 0);
-
-  if (!previousValue) return 0;
-
-  return Number((((currentValue - previousValue) / previousValue) * 100).toFixed(1));
-};
-const calculateRatePct = (numerator, denominator) => {
-  const numeratorValue = Number(numerator || 0);
-  const denominatorValue = Number(denominator || 0);
-
-  if (!denominatorValue) return 0;
-
-  return Number(((numeratorValue / denominatorValue) * 100).toFixed(1));
-};
 
 const isFullMonthRange = (startDate, endDate) => {
   const start = new Date(startDate);
@@ -169,8 +165,12 @@ const getPreviousDateRange = (startDate, endDate) => {
   };
 };
 
-const sumInsightValues = (rows = []) =>
-  rows.reduce((sum, row) => sum + Number(row.metricValue || 0), 0);
+const countCalendarMonths = (startDate, endDate) =>
+  Math.max(
+    0,
+    (endDate.getUTCFullYear() - startDate.getUTCFullYear()) * 12 +
+      endDate.getUTCMonth() - startDate.getUTCMonth() + 1
+  );
 
 metaRouter.use(authenticate);
 
@@ -180,50 +180,30 @@ metaRouter.get(
   async (req, res, next) => {
     try {
       const configured = await hasMetaCredentials();
-      const latestSync = await prisma.metaSyncLog.findFirst({
-        orderBy: { startedAt: "desc" },
-        select: {
-          id: true,
-          status: true,
-          message: true,
-          startedAt: true,
-          finishedAt: true,
-        },
+      const syncSelect = {
+        id: true,
+        status: true,
+        message: true,
+        startedAt: true,
+        finishedAt: true,
+      };
+      const [latestSync, latestSuccessfulSync] = await Promise.all([
+        prisma.metaSyncLog.findFirst({
+          orderBy: { startedAt: "desc" },
+          select: syncSelect,
+        }),
+        prisma.metaSyncLog.findFirst({
+          where: { status: "SUCCESS" },
+          orderBy: { finishedAt: "desc" },
+          select: syncSelect,
+        }),
+      ]);
+
+      const { connectionState, connectionError } = await resolveMetaConnectionStatus({
+        configured,
+        latestSync,
+        testConnection: testMetaConnection,
       });
-
-      let connectionState = !configured
-        ? "not_configured"
-        : !latestSync
-          ? "ready"
-          : latestSync.status?.toLowerCase() === "success"
-            ? "connected"
-            : latestSync.status?.toLowerCase() === "running"
-              ? "syncing"
-              : "error";
-
-      let connectionError = null;
-      let tokenStatus = "unknown";
-
-      if (configured && connectionState !== "syncing") {
-        const testResult = await testMetaConnection();
-
-        if (!testResult.ok) {
-          connectionState = "error";
-          connectionError = testResult.error;
-          tokenStatus = testResult.tokenExpired ? "expired" : "error";
-        } else {
-          connectionState = "connected";
-          tokenStatus = "valid";
-        }
-
-        if (testResult.tokenExpired) {
-          await createNotificationsForRoles(prisma, ["it_support"], {
-            title: "Meta Access Token Expired",
-            message:
-              "The Meta Graph API access token has expired. Instagram data sync will fail until a new token is generated and configured in System Settings or environment variables.",
-          }).catch(() => null);
-        }
-      }
 
       return res.json({
         success: true,
@@ -232,6 +212,7 @@ metaRouter.get(
           connectionState,
           tokenStatus,
           latestSync,
+          latestSuccessfulSync,
           setupMessage: configured ? null : buildMetaSetupResponse().message,
           suggestion: configured
             ? connectionError
@@ -286,9 +267,7 @@ metaRouter.post(
         status: "started",
       }).catch(() => null);
 
-      const since = req.body?.since || req.query?.since;
-      const until = req.body?.until || req.query?.until;
-      const result = await syncMetaRawToAnalytics({ since, until });
+      const result = await syncMetaRawToAnalytics({ performedByUserId: req.user.userId });
 
       await logActivity(req, "INSTASIGHT_SYNC_COMPLETED", {
         status: "success",
@@ -360,7 +339,6 @@ const selectedMonthlyContentType =
   normalizedType === "feed" || normalizedType === "reels"
     ? normalizedType
     : "all";
-
 const normalizedContentLabel = String(contentLabel || "all").toLowerCase();
 
 const contentLabelWhere =
@@ -392,23 +370,13 @@ const mediaTypeWhere =
         orderBy: { startedAt: "desc" },
         select: { startedAt: true, status: true, message: true },
       });
+      const latestSuccessfulSync = await prisma.metaSyncLog.findFirst({
+        where: { status: "SUCCESS" },
+        orderBy: { finishedAt: "desc" },
+        select: { startedAt: true, finishedAt: true },
+      });
 
-  const [
-  latestAccount,
-  media,
-  accountReachInsights,
-  accountInteractionInsights,
-  accountProfileViewInsights,
-  previousAccountProfileViewInsights,
-  currentFollowInsights,
-  previousFollowInsights,
-  currentUnfollowInsights,
-  previousUnfollowInsights,
-  monthlyMediaPerformanceRows,
-  previousMonthlyMediaPerformanceRows,
-  monthlyMediaTrendRows,
-  monthlyProfileViewTrendRows,
-] = await Promise.all([
+  const [latestAccount, media, monthlyMediaPerformanceRows] = await Promise.all([
   prisma.instagramAccount.findFirst({
     orderBy: {
       updatedAt: "desc",
@@ -441,126 +409,6 @@ const mediaTypeWhere =
     take: 1000,
   }),
 
-  prisma.instagramAccountInsight.findMany({
-    where: {
-      metricName: "reach",
-      insightDate: {
-        gte: startDate,
-        lte: endDate,
-      },
-    },
-    orderBy: {
-      insightDate: "asc",
-    },
-  }),
-
-  prisma.instagramAccountInsight.findMany({
-    where: {
-      metricName: {
-        in: ["total_interactions", "accounts_engaged"],
-      },
-      insightDate: {
-        gte: startDate,
-        lte: endDate,
-      },
-    },
-    orderBy: {
-      insightDate: "asc",
-    },
-  }),
-
-  prisma.instagramAccountInsight.findMany({
-    where: {
-      metricName: {
-        in: ["profile_views", "profile_view", "profile_visits"],
-      },
-      period: "month",
-      insightDate: {
-        gte: startDate,
-        lte: endDate,
-      },
-    },
-    orderBy: {
-      insightDate: "asc",
-    },
-  }),
-
-  prisma.instagramAccountInsight.findMany({
-    where: {
-      metricName: {
-        in: ["profile_views", "profile_view", "profile_visits"],
-      },
-      period: "month",
-      insightDate: {
-        gte: previousStartDate,
-        lte: previousEndDate,
-      },
-    },
-    orderBy: {
-      insightDate: "asc",
-    },
-  }),
-
-  prisma.instagramAccountInsight.findMany({
-    where: {
-      metricName: {
-        in: ["follows", "follow_count", "new_follows"],
-      },
-      insightDate: {
-        gte: startDate,
-        lte: endDate,
-      },
-    },
-    orderBy: {
-      insightDate: "asc",
-    },
-  }),
-
-  prisma.instagramAccountInsight.findMany({
-    where: {
-      metricName: {
-        in: ["follows", "follow_count", "new_follows"],
-      },
-      insightDate: {
-        gte: previousStartDate,
-        lte: previousEndDate,
-      },
-    },
-    orderBy: {
-      insightDate: "asc",
-    },
-  }),
-
-  prisma.instagramAccountInsight.findMany({
-    where: {
-      metricName: {
-        in: ["unfollows", "unfollowers", "unfollow_count"],
-      },
-      insightDate: {
-        gte: startDate,
-        lte: endDate,
-      },
-    },
-    orderBy: {
-      insightDate: "asc",
-    },
-  }),
-
-  prisma.instagramAccountInsight.findMany({
-    where: {
-      metricName: {
-        in: ["unfollows", "unfollowers", "unfollow_count"],
-      },
-      insightDate: {
-        gte: previousStartDate,
-        lte: previousEndDate,
-      },
-    },
-    orderBy: {
-      insightDate: "asc",
-    },
-  }),
-
   prisma.instagramMonthlyMediaPerformance.findMany({
     where: {
       month: {
@@ -574,48 +422,95 @@ const mediaTypeWhere =
     },
   }),
 
-  prisma.instagramMonthlyMediaPerformance.findMany({
-    where: {
-      month: {
-        gte: previousStartDate,
-        lte: previousEndDate,
-      },
-      contentType: selectedMonthlyContentType,
-    },
-    orderBy: {
-      month: "asc",
-    },
-  }),
-
-  prisma.instagramMonthlyMediaPerformance.findMany({
-    where: {
-      month: {
-        gte: startDate,
-        lte: endDate,
-      },
-      contentType: selectedMonthlyContentType,
-    },
-    orderBy: {
-      month: "asc",
-    },
-  }),
-
-  prisma.instagramAccountInsight.findMany({
-    where: {
-      metricName: {
-        in: ["profile_views", "profile_view", "profile_visits"],
-      },
-      period: "month",
-      insightDate: {
-        gte: startDate,
-        lte: endDate,
-      },
-    },
-    orderBy: {
-      insightDate: "asc",
-    },
-  }),
 ]);
+
+const [selectedFollowerSnapshot, latestFollowerSnapshot] = latestAccount?.id
+  ? await Promise.all([
+      prisma.instagramAccountSnapshot.findFirst({
+        where: {
+          accountId: latestAccount.id,
+          followersCount: { not: null },
+          snapshotDate: { gte: startDate, lte: endDate },
+        },
+        orderBy: { snapshotDate: "desc" },
+        select: { followersCount: true, snapshotDate: true },
+      }),
+      prisma.instagramAccountSnapshot.findFirst({
+        where: {
+          accountId: latestAccount.id,
+          followersCount: { not: null },
+        },
+        orderBy: { snapshotDate: "desc" },
+        select: { followersCount: true, snapshotDate: true },
+      }),
+    ])
+  : [null, null];
+
+const followerSnapshot = resolveFollowerSnapshot({
+  selectedPeriodSnapshot: selectedFollowerSnapshot,
+  latestSnapshot: latestFollowerSnapshot,
+});
+
+const [historicalAccountRows, previousHistoricalAccountRows] = latestAccount?.id
+  ? await Promise.all([
+      prisma.instagramAccountInsight.findMany({
+        where: {
+          accountId: latestAccount.id,
+          period: "month",
+          metricName: { in: HISTORICAL_DASHBOARD_METRICS },
+          insightDate: { gte: startDate, lte: endDate },
+        },
+        orderBy: { insightDate: "asc" },
+      }),
+      prisma.instagramAccountInsight.findMany({
+        where: {
+          accountId: latestAccount.id,
+          period: "month",
+          metricName: { in: HISTORICAL_DASHBOARD_METRICS },
+          insightDate: { gte: previousStartDate, lte: previousEndDate },
+        },
+        orderBy: { insightDate: "asc" },
+      }),
+    ])
+  : [[], []];
+
+const historicalMetrics = aggregateHistoricalAccountMetrics(historicalAccountRows);
+const previousHistoricalMetrics = aggregateHistoricalAccountMetrics(
+  previousHistoricalAccountRows
+);
+const historicalMonthlyTrend = buildHistoricalAccountTrend(historicalAccountRows);
+const historicalCoverage = buildHistoricalCoverage(
+  historicalAccountRows,
+  countCalendarMonths(startDate, endDate)
+);
+const historicalPercent = (part, total) =>
+  part == null || total == null || total === 0
+    ? null
+    : Number(((part / total) * 100).toFixed(1));
+const historicalViewsChangePct = calculateAvailableChangePct(
+  historicalMetrics.totalViews,
+  previousHistoricalMetrics.totalViews
+);
+const historicalReachChangePct = calculateAvailableChangePct(
+  historicalMetrics.totalReach,
+  previousHistoricalMetrics.totalReach
+);
+const historicalInteractionsChangePct = calculateAvailableChangePct(
+  historicalMetrics.totalInteractions,
+  previousHistoricalMetrics.totalInteractions
+);
+const historicalProfileViewsChangePct = calculateAvailableChangePct(
+  historicalMetrics.totalProfileViews,
+  previousHistoricalMetrics.totalProfileViews
+);
+const historicalEngagementChangePct = calculateAvailableChangePct(
+  historicalMetrics.engagementRate,
+  previousHistoricalMetrics.engagementRate
+);
+const historicalProfileVisitChangePct = calculateAvailableChangePct(
+  historicalMetrics.profileVisitRate,
+  previousHistoricalMetrics.profileVisitRate
+);
 
 const monthlyMediaPerformance = monthlyMediaPerformanceRows.reduce(
   (total, row) => ({
@@ -664,173 +559,8 @@ interactionsFromNonFollowers: 0,
   }
 );
 
-const summarizeMonthlyPerformance = (rows = []) =>
-  rows.reduce(
-    (total, row) => ({
-      views: total.views + Number(row.views || 0),
-      viewsFromFollowers:
-        total.viewsFromFollowers + Number(row.viewsFromFollowers || 0),
-      viewsFromNonFollowers:
-        total.viewsFromNonFollowers + Number(row.viewsFromNonFollowers || 0),
-
-      reach: total.reach + Number(row.reach || 0),
-      reachFromFollowers:
-        total.reachFromFollowers + Number(row.reachFromFollowers || 0),
-      reachFromNonFollowers:
-        total.reachFromNonFollowers + Number(row.reachFromNonFollowers || 0),
-
-      interactions: total.interactions + Number(row.interactions || 0),
-      interactionsFromFollowers:
-        total.interactionsFromFollowers +
-        Number(row.interactionsFromFollowers || 0),
-      interactionsFromNonFollowers:
-        total.interactionsFromNonFollowers +
-        Number(row.interactionsFromNonFollowers || 0),
-    }),
-    {
-      views: 0,
-      viewsFromFollowers: 0,
-      viewsFromNonFollowers: 0,
-
-      reach: 0,
-      reachFromFollowers: 0,
-      reachFromNonFollowers: 0,
-
-      interactions: 0,
-      interactionsFromFollowers: 0,
-      interactionsFromNonFollowers: 0,
-    }
-  );
-
-const previousMonthlyMediaPerformance = summarizeMonthlyPerformance(
-  previousMonthlyMediaPerformanceRows
-);
-const previousBreakdownTotalInteractions =
-  Number(previousMonthlyMediaPerformance.interactionsFromFollowers || 0) +
-  Number(previousMonthlyMediaPerformance.interactionsFromNonFollowers || 0);
-
-const previousTotalInteractions =
-  previousBreakdownTotalInteractions > 0
-    ? previousBreakdownTotalInteractions
-    : Number(previousMonthlyMediaPerformance.interactions || 0);
-
-
-      const preferredAccountInteractionMetric = accountInteractionInsights.some(
-        (insight) => insight.metricName === "total_interactions"
-      )
-        ? "total_interactions"
-        : "accounts_engaged";
-      const selectedAccountInteractionInsights = accountInteractionInsights.filter(
-        (insight) => insight.metricName === preferredAccountInteractionMetric
-      );
-
-      const allInsights = media.flatMap((item) =>
-        item.insights
-          .filter((insight) => {
-            const insightDate = new Date(insight.insightDate);
-            return insightDate >= startDate && insightDate <= endDate;
-          })
-          .map((insight) => ({
-            ...insight,
-            mediaId: item.id,
-          }))
-      );
-
-      const sumMetric = (metricName) =>
-        allInsights
-          .filter((insight) => insight.metricName === metricName)
-          .reduce((sum, insight) => sum + Number(insight.metricValue || 0), 0);
-
-      const breakdownTotalViews =
-  Number(monthlyMediaPerformance.viewsFromFollowers || 0) +
-  Number(monthlyMediaPerformance.viewsFromNonFollowers || 0);
-
-const totalViews =
-  breakdownTotalViews > 0
-    ? breakdownTotalViews
-    : Number(monthlyMediaPerformance.views || 0);
-  
-    const previousBreakdownTotalViews =
-  Number(previousMonthlyMediaPerformance.viewsFromFollowers || 0) +
-  Number(previousMonthlyMediaPerformance.viewsFromNonFollowers || 0);
-
-const previousTotalViews =
-  previousBreakdownTotalViews > 0
-    ? previousBreakdownTotalViews
-    : Number(previousMonthlyMediaPerformance.views || 0);
-
-    const previousBreakdownTotalReach =
-  Number(previousMonthlyMediaPerformance.reachFromFollowers || 0) +
-  Number(previousMonthlyMediaPerformance.reachFromNonFollowers || 0);
-
-const previousTotalReach =
-  previousBreakdownTotalReach > 0
-    ? previousBreakdownTotalReach
-    : Number(previousMonthlyMediaPerformance.reach || 0);
-
-const viewsFromFollowers = Number(
-  monthlyMediaPerformance.viewsFromFollowers || 0
-);
-
-const viewsFromNonFollowers = Number(
-  monthlyMediaPerformance.viewsFromNonFollowers || 0
-);
-
-const hasViewAudienceBreakdown =
-  viewsFromFollowers > 0 || viewsFromNonFollowers > 0;
-
-const viewsFromFollowersPct =
-  hasViewAudienceBreakdown && totalViews > 0
-    ? Number(((viewsFromFollowers / totalViews) * 100).toFixed(1))
-    : 0;
-
-const viewsFromNonFollowersPct =
-  hasViewAudienceBreakdown && totalViews > 0
-    ? Number(((viewsFromNonFollowers / totalViews) * 100).toFixed(1))
-    : 0;
-
-const viewsChangePct = calculateChangePct(totalViews, previousTotalViews);
 const viewsFromFollowersChangePct = 0;
 const viewsFromNonFollowersChangePct = 0;
-
-const breakdownTotalReach =
-  Number(monthlyMediaPerformance.reachFromFollowers || 0) +
-  Number(monthlyMediaPerformance.reachFromNonFollowers || 0);
-
-const mediaReach = Number(monthlyMediaPerformance?.reach || 0);
-
-const accountReach = accountReachInsights.reduce(
-  (sum, insight) => sum + Number(insight.metricValue || 0),
-  0
-);
-
-const totalReach =
-  breakdownTotalReach > 0
-    ? breakdownTotalReach
-    : accountReach || mediaReach;
-
-      const reachFromFollowers = Number(
-  monthlyMediaPerformance.reachFromFollowers || 0
-);
-
-const reachFromNonFollowers = Number(
-  monthlyMediaPerformance.reachFromNonFollowers || 0
-);
-
-const hasReachAudienceBreakdown =
-  reachFromFollowers > 0 || reachFromNonFollowers > 0;
-
-const reachFromFollowersPct =
-  hasReachAudienceBreakdown && totalReach > 0
-    ? Number(((reachFromFollowers / totalReach) * 100).toFixed(1))
-    : 0;
-
-const reachFromNonFollowersPct =
-  hasReachAudienceBreakdown && totalReach > 0
-    ? Number(((reachFromNonFollowers / totalReach) * 100).toFixed(1))
-    : 0;
-
-const reachChangePct = calculateChangePct(totalReach, previousTotalReach);
 const reachFromFollowersChangePct = 0;
 const reachFromNonFollowersChangePct = 0;
 
@@ -838,121 +568,27 @@ const reachFromNonFollowersChangePct = 0;
 const totalComments = Number(monthlyMediaPerformance?.comments || 0);
 const totalShares = Number(monthlyMediaPerformance?.shares || 0);
 const totalSaved = Number(monthlyMediaPerformance?.saved || 0);
-
-      const totalProfileViews = accountProfileViewInsights.reduce(
-  (sum, insight) => sum + Number(insight.metricValue || 0),
-  0
-);
-
-const previousTotalProfileViews = previousAccountProfileViewInsights.reduce(
-  (sum, insight) => sum + Number(insight.metricValue || 0),
-  0
-);
-
-const profileViewsChangePct = calculateChangePct(
-  totalProfileViews,
-  previousTotalProfileViews
-);
-      const mediaInteractions =
-        sumMetric("total_interactions") || totalLikes + totalComments + totalShares + totalSaved;
-      const accountInteractions = selectedAccountInteractionInsights.reduce(
-        (sum, insight) => sum + Number(insight.metricValue || 0),
-        0
-      );
-      const allMediaInsightRows = media.flatMap((item) => item.insights || []);
-      const fallbackMediaTotalInteractions = allMediaInsightRows
-        .filter((insight) => insight.metricName === "total_interactions")
-        .reduce((sum, insight) => sum + Number(insight.metricValue || 0), 0);
-      const fallbackMediaComponentInteractions = allMediaInsightRows
-        .filter((insight) => ["likes", "comments", "shares", "saved"].includes(insight.metricName))
-        .reduce((sum, insight) => sum + Number(insight.metricValue || 0), 0);
-      const fallbackMediaInteractions = fallbackMediaTotalInteractions || fallbackMediaComponentInteractions;
-
-
-      const breakdownTotalInteractions =
-  Number(monthlyMediaPerformance.interactionsFromFollowers || 0) +
-  Number(monthlyMediaPerformance.interactionsFromNonFollowers || 0);
-
-const monthlyInteractions = Number(monthlyMediaPerformance?.interactions || 0);
-
-const totalInteractions =
-  breakdownTotalInteractions > 0
-    ? breakdownTotalInteractions
-    : monthlyInteractions > 0
-      ? monthlyInteractions
-      : accountInteractions || mediaInteractions || fallbackMediaInteractions;
-
-      const interactionsChangePct = calculateChangePct(
-  totalInteractions,
-  previousTotalInteractions
-);
-
-const interactionsFromNonFollowers = Number(
-  monthlyMediaPerformance.interactionsFromNonFollowers || 0
-);
-
-
 const interactionsFromFollowersChangePct = 0;
 const interactionsFromNonFollowersChangePct = 0;
-
-const engagementRate = calculateRatePct(totalInteractions, totalReach);
-
-const previousEngagementRate = calculateRatePct(
-  previousTotalInteractions,
-  previousTotalReach
-);
-
-const engagementRateChangePct = calculateChangePct(
-  engagementRate,
-  previousEngagementRate
-);
-
-const conversionRate = calculateRatePct(totalProfileViews, totalReach);
-
-const previousConversionRate = calculateRatePct(
-  previousTotalProfileViews,
-  previousTotalReach
-);
-
-const profileVisitRate = conversionRate;
-
-const profileVisitRateChangePct = calculateChangePct(
-  profileVisitRate,
-  previousConversionRate
-);
-
+const mediaReachForRates = Number(monthlyMediaPerformance?.reach || 0);
 const shareRate =
-  totalReach > 0
-    ? Number(((totalShares / totalReach) * 100).toFixed(2))
+  mediaReachForRates > 0
+    ? Number(((totalShares / mediaReachForRates) * 100).toFixed(2))
     : 0;
 
 const saveRate =
-  totalReach > 0
-    ? Number(((totalSaved / totalReach) * 100).toFixed(2))
+  mediaReachForRates > 0
+    ? Number(((totalSaved / mediaReachForRates) * 100).toFixed(2))
     : 0;
 
-      const currentFollowersCount = Number(latestAccount?.followersCount || 0);
+      const currentFollowersCount = followerSnapshot.followerCount;
 
 const followersChangePct = 0;
 
 const currentFollowsCount = Number(latestAccount?.followsCount || 0);
 
 const currentInstagramMediaCount = Number(latestAccount?.mediaCount || 0);
-const newFollowsCount = sumInsightValues(currentFollowInsights);
-const previousNewFollowsCount = sumInsightValues(previousFollowInsights);
 
-const newFollowsChangePct = calculateChangePct(
-  newFollowsCount,
-  previousNewFollowsCount
-);
-
-const unfollowsCount = sumInsightValues(currentUnfollowInsights);
-const previousUnfollowsCount = sumInsightValues(previousUnfollowInsights);
-
-const unfollowsChangePct = calculateChangePct(
-  unfollowsCount,
-  previousUnfollowsCount
-);
 
 
 
@@ -1021,107 +657,17 @@ const followerSnapshots = latestAccount?.id
 }
 
 const followersTrend = buildMonthlyFollowersTrend(followerSnapshots)
-const profileViewsTrendMap = new Map();
 
-monthlyProfileViewTrendRows.forEach((row) => {
-  const monthKey = new Date(row.insightDate).toISOString().slice(0, 7);
-  const currentValue = Number(profileViewsTrendMap.get(monthKey) || 0);
-
-  profileViewsTrendMap.set(
-    monthKey,
-    currentValue + Number(row.metricValue || 0)
-  );
-});
-
-const monthlyViewsTrend = monthlyMediaTrendRows.map((row) => {
-  const monthKey = new Date(row.month).toISOString().slice(0, 7);
-
-  return {
-    month: monthKey,
-
-    views: Number(row.views || 0),
-    viewsFromFollowers: Number(row.viewsFromFollowers || 0),
-    viewsFromNonFollowers: Number(row.viewsFromNonFollowers || 0),
-
-    reach: Number(row.reach || 0),
-    reachFromFollowers: Number(row.reachFromFollowers || 0),
-    reachFromNonFollowers: Number(row.reachFromNonFollowers || 0),
-
-    interactions: Number(row.interactions || 0),
-    interactionsFromFollowers: Number(row.interactionsFromFollowers || 0),
-    interactionsFromNonFollowers: Number(row.interactionsFromNonFollowers || 0),
-
-    profileViews: Number(profileViewsTrendMap.get(monthKey) || 0),
-
-    contentCount: Number(row.contentCount || 0),
-  };
-});
-
-      const trendMap = {};
-
-      accountReachInsights.forEach((insight) => {
-        const date = new Date(insight.insightDate).toISOString().slice(0, 10);
-        const value = Number(insight.metricValue || 0);
-
-        if (!trendMap[date]) {
-          trendMap[date] = { date, reach: 0, views: 0, interactions: 0, profileViews: 0 };
-        }
-
-        trendMap[date].reach += value;
-      });
-
-      selectedAccountInteractionInsights.forEach((insight) => {
-        const date = new Date(insight.insightDate).toISOString().slice(0, 10);
-        const value = Number(insight.metricValue || 0);
-
-        if (!trendMap[date]) {
-          trendMap[date] = { date, reach: 0, views: 0, interactions: 0, profileViews: 0 };
-        }
-
-        trendMap[date].interactions += value;
-      });
-
-      accountProfileViewInsights.forEach((insight) => {
-        const date = new Date(insight.insightDate).toISOString().slice(0, 10);
-        const value = Number(insight.metricValue || 0);
-
-        if (!trendMap[date]) {
-          trendMap[date] = { date, reach: 0, views: 0, interactions: 0, profileViews: 0 };
-        }
-
-        trendMap[date].profileViews += value;
-      });
-
-      allInsights.forEach((insight) => {
-        const date = new Date(insight.insightDate).toISOString().slice(0, 10);
-        const value = Number(insight.metricValue || 0);
-
-        if (!trendMap[date]) {
-          trendMap[date] = { date, reach: 0, views: 0, interactions: 0, profileViews: 0 };
-        }
-
-        if (!accountReachInsights.length && insight.metricName === "reach") trendMap[date].reach += value;
-        if (["views", "impressions", "plays"].includes(insight.metricName)) trendMap[date].views += value;
-        if (!selectedAccountInteractionInsights.length && ["total_interactions", "likes", "comments", "shares", "saved"].includes(insight.metricName)) {
-          trendMap[date].interactions += value;
-        }
-      });
-
-      const trend = Object.values(trendMap)
-        .map((item) => {
-          const fallbackInteractions =
-            !selectedAccountInteractionInsights.length && !item.interactions && fallbackMediaInteractions > 0 && totalReach > 0
-              ? (item.reach / totalReach) * fallbackMediaInteractions
-              : 0;
-          const interactions = item.interactions || fallbackInteractions;
-
-          return {
-            ...item,
-            interactions,
-            engagementRate: item.reach > 0 ? Number(((interactions / item.reach) * 100).toFixed(2)) : 0,
-          };
-        })
-        .sort((a, b) => a.date.localeCompare(b.date));
+      const trend = historicalMonthlyTrend.map((item) => ({
+        ...item,
+        date: item.month,
+        engagementRate:
+          item.interactions == null || item.reach == null
+            ? null
+            : item.reach > 0
+              ? Number(((item.interactions / item.reach) * 100).toFixed(2))
+              : 0,
+      }));
 
       const contentPerformance = media
   .map((item) => {
@@ -1131,12 +677,19 @@ const monthlyViewsTrend = monthlyMediaTrendRows.map((row) => {
       const matchedInsights = itemInsights
         .filter((insight) => metricNames.includes(insight.metricName))
         .sort(
-          (a, b) =>
-            new Date(b.insightDate).getTime() -
-            new Date(a.insightDate).getTime()
+          (a, b) => {
+            const dateDifference =
+              new Date(b.insightDate).getTime() -
+              new Date(a.insightDate).getTime();
+            if (dateDifference !== 0) return dateDifference;
+            return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
+          }
         );
 
-      return Number(matchedInsights[0]?.metricValue || 0);
+      if (!matchedInsights.length || matchedInsights[0].metricValue == null) {
+        return null;
+      }
+      return metricValueOrNull(matchedInsights[0].metricValue);
     };
 
     const rawMedia = item.rawJson || {};
@@ -1144,27 +697,27 @@ const monthlyViewsTrend = monthlyMediaTrendRows.map((row) => {
     const views = getLatestMetric(["views", "impressions", "plays"]);
     const reach = getLatestMetric(["reach"]);
 
-    const likes =
-      getLatestMetric(["likes"]) || Number(rawMedia.like_count || 0);
+    const insightLikes = getLatestMetric(["likes"]);
+    const likes = insightLikes ?? metricValueOrNull(rawMedia.like_count);
 
-    const comments =
-      getLatestMetric(["comments"]) || Number(rawMedia.comments_count || 0);
+    const insightComments = getLatestMetric(["comments"]);
+    const comments = insightComments ?? metricValueOrNull(rawMedia.comments_count);
 
     const shares = getLatestMetric(["shares"]);
     const saved = getLatestMetric(["saved"]);
 
     const interactions =
-      getLatestMetric(["total_interactions"]) ||
-      likes + comments + shares + saved;
+      getLatestMetric(["total_interactions"]) ??
+      (likes ?? 0) + (comments ?? 0) + (shares ?? 0) + (saved ?? 0);
 
     const localEngagementRate =
-      reach > 0 ? Number(((interactions / reach) * 100).toFixed(2)) : 0;
+      reach == null ? null : reach > 0 ? Number(((interactions / reach) * 100).toFixed(2)) : 0;
 
     const localShareRate =
-      reach > 0 ? Number(((shares / reach) * 100).toFixed(2)) : 0;
+      reach == null || shares == null ? null : reach > 0 ? Number(((shares / reach) * 100).toFixed(2)) : 0;
 
     const localSaveRate =
-      reach > 0 ? Number(((saved / reach) * 100).toFixed(2)) : 0;
+      reach == null || saved == null ? null : reach > 0 ? Number(((saved / reach) * 100).toFixed(2)) : 0;
 
     return {
       id: item.id,
@@ -1189,7 +742,7 @@ const monthlyViewsTrend = monthlyMediaTrendRows.map((row) => {
       saveRate: localSaveRate,
     };
   })
-  .sort((a, b) => b.views - a.views);
+  .sort((a, b) => (b.views ?? -1) - (a.views ?? -1));
 
       const contentList = [...contentPerformance].sort(
   (a, b) =>
@@ -1198,6 +751,7 @@ const monthlyViewsTrend = monthlyMediaTrendRows.map((row) => {
 );
 
 const topContent = [...contentPerformance]
+  .filter((item) => item.views !== null)
   .sort((a, b) => b.views - a.views)
   .slice(0, 10);
 
@@ -1206,8 +760,8 @@ const topContent = [...contentPerformance]
         const type = item.mediaProductType || item.mediaType || "Unknown";
         const existing = contentMixMap.get(type) || { type, count: 0, views: 0, reach: 0, interactions: 0 };
         existing.count += 1;
-        existing.views += item.views;
-        existing.reach += item.reach;
+        existing.views += item.views ?? 0;
+        existing.reach += item.reach ?? 0;
         existing.interactions += item.interactions;
         contentMixMap.set(type, existing);
       });
@@ -1215,7 +769,7 @@ const topContent = [...contentPerformance]
       const contentMix = Array.from(contentMixMap.values())
         .map((item) => ({
           ...item,
-          engagementRate: item.reach > 0 ? Number(((item.interactions / item.reach) * 100).toFixed(2)) : 0,
+          engagementRate: item.reach == null ? null : item.reach > 0 ? Number(((item.interactions / item.reach) * 100).toFixed(2)) : 0,
         }))
         .sort((a, b) => b.views - a.views);
 
@@ -1246,41 +800,6 @@ const filteredContentTotals = contentPerformance.reduce(
   }
 );
 
-const buildMonthlyTrendFromContent = (items = []) => {
-  const monthMap = new Map();
-
-  items.forEach((item) => {
-    if (!item.postedAt) return;
-
-    const monthKey = new Date(item.postedAt).toISOString().slice(0, 7);
-
-    const existing = monthMap.get(monthKey) || {
-      month: monthKey,
-      views: 0,
-      viewsFromFollowers: 0,
-      viewsFromNonFollowers: 0,
-      reach: 0,
-      reachFromFollowers: 0,
-      reachFromNonFollowers: 0,
-      interactions: 0,
-      interactionsFromFollowers: 0,
-      interactionsFromNonFollowers: 0,
-      profileViews: 0,
-      contentCount: 0,
-    };
-
-    existing.views += Number(item.views || 0);
-    existing.reach += Number(item.reach || 0);
-    existing.interactions += Number(item.interactions || 0);
-    existing.contentCount += 1;
-
-    monthMap.set(monthKey, existing);
-  });
-
-  return Array.from(monthMap.values()).sort((a, b) =>
-    a.month.localeCompare(b.month)
-  );
-};
 
       const topContentType = contentMix[0]?.type || "-";
       const contentInteractionTotal = contentPerformance.reduce((sum, item) => sum + item.interactions, 0);
@@ -1288,55 +807,62 @@ const buildMonthlyTrendFromContent = (items = []) => {
         ? Number((contentInteractionTotal / contentPerformance.length).toFixed(1))
         : 0;
 
+
       return res.json({
         success: true,
         data: {
           configured: await hasMetaCredentials(),
           hasData: Boolean(
-  media.length ||
-    allInsights.length ||
-    accountReachInsights.length ||
-    monthlyMediaPerformanceRows.length
+  media.length || historicalAccountRows.length || monthlyMediaPerformanceRows.length
 ),
-          lastSyncedAt: latestSync?.startedAt || null,
+          lastSyncedAt: latestSuccessfulSync?.finishedAt || latestSuccessfulSync?.startedAt || null,
+          latestSyncStatus: latestSync?.status || null,
          summary: {
-  totalViews: isContentLabelFiltered ? filteredContentTotals.views : totalViews,
-  viewsChangePct,
+  totalViews: historicalMetrics.totalViews,
+  viewsChangePct: historicalViewsChangePct,
 
-  viewsFromFollowers,
-  viewsFromFollowersPct,
+  viewsFromFollowers: historicalMetrics.viewsFromFollowers,
+  viewsFromFollowersPct: historicalPercent(
+    historicalMetrics.viewsFromFollowers,
+    historicalMetrics.totalViews
+  ),
   viewsFromFollowersChangePct,
 
-  viewsFromNonFollowers,
-  viewsFromNonFollowersPct,
+  viewsFromNonFollowers: historicalMetrics.viewsFromNonFollowers,
+  viewsFromNonFollowersPct: historicalPercent(
+    historicalMetrics.viewsFromNonFollowers,
+    historicalMetrics.totalViews
+  ),
   viewsFromNonFollowersChangePct,
 
-  totalReach: isContentLabelFiltered ? filteredContentTotals.reach : totalReach,
-  reachChangePct,
+  totalReach: historicalMetrics.totalReach,
+  reachChangePct: historicalReachChangePct,
 
-  reachFromFollowers,
-  reachFromFollowersPct,
+  reachFromFollowers: historicalMetrics.reachFromFollowers,
+  reachFromFollowersPct: historicalPercent(
+    historicalMetrics.reachFromFollowers,
+    historicalMetrics.totalReach
+  ),
   reachFromFollowersChangePct,
 
-  reachFromNonFollowers,
-  reachFromNonFollowersPct,
+  reachFromNonFollowers: historicalMetrics.reachFromNonFollowers,
+  reachFromNonFollowersPct: historicalPercent(
+    historicalMetrics.reachFromNonFollowers,
+    historicalMetrics.totalReach
+  ),
   reachFromNonFollowersChangePct,
 
-  totalProfileViews,
-  profileViewsChangePct,
-totalInteractions: isContentLabelFiltered
-  ? filteredContentTotals.interactions
-  : totalInteractions,
+  totalProfileViews: historicalMetrics.totalProfileViews,
+  profileViewsChangePct: historicalProfileViewsChangePct,
+totalInteractions: historicalMetrics.totalInteractions,
 totalLikes: isContentLabelFiltered ? filteredContentTotals.likes : totalLikes,
 totalComments: isContentLabelFiltered
   ? filteredContentTotals.comments
   : totalComments,
 totalShares: isContentLabelFiltered ? filteredContentTotals.shares : totalShares,
 totalSaved: isContentLabelFiltered ? filteredContentTotals.saved : totalSaved,
-engagementRate: isContentLabelFiltered
-  ? calculateRatePct(filteredContentTotals.interactions, filteredContentTotals.reach)
-  : engagementRate,
-engagementRateChangePct,
+engagementRate: historicalMetrics.engagementRate,
+engagementRateChangePct: historicalEngagementChangePct,
 
 shareRate: isContentLabelFiltered
   ? filteredContentTotals.reach > 0
@@ -1350,15 +876,15 @@ saveRate: isContentLabelFiltered
     : 0
   : saveRate,
 
-profileVisitRate,
-profileVisitRateChangePct,
+profileVisitRate: historicalMetrics.profileVisitRate,
+profileVisitRateChangePct: historicalProfileVisitChangePct,
 
 averageInteractionsPerContent,
 
-interactionsChangePct,
+interactionsChangePct: historicalInteractionsChangePct,
 interactionsFromFollowersChangePct,
 
-interactionsFromNonFollowers,
+interactionsFromNonFollowers: null,
 interactionsFromNonFollowersChangePct,
 
 contentCount: isContentLabelFiltered
@@ -1368,24 +894,47 @@ topContentType,
 
 followersCount: currentFollowersCount,
 followersChangePct,
+followerSnapshotDate: followerSnapshot.snapshotDate,
+followerSnapshotSource: followerSnapshot.snapshotSource,
+hasSelectedPeriodFollowerSnapshot: followerSnapshot.hasSelectedPeriodSnapshot,
 
-newFollowsCount,
-newFollowsChangePct,
+newFollowsCount: historicalMetrics.newFollowsCount,
+newFollowsChangePct: calculateAvailableChangePct(
+  historicalMetrics.newFollowsCount,
+  previousHistoricalMetrics.newFollowsCount
+),
 
-unfollowsCount,
-unfollowsChangePct,
+unfollowsCount: historicalMetrics.unfollowsCount,
+unfollowsChangePct: calculateAvailableChangePct(
+  historicalMetrics.unfollowsCount,
+  previousHistoricalMetrics.unfollowsCount
+),
 
 followsCount: currentFollowsCount,
 instagramMediaCount: currentInstagramMediaCount,
 instagramUsername: latestAccount?.username || null,
 
+availability: {
+  views: historicalMetrics.totalViews != null,
+  viewsBreakdown:
+    historicalMetrics.viewsFromFollowers != null &&
+    historicalMetrics.viewsFromNonFollowers != null,
+  reach: historicalMetrics.totalReach != null,
+  reachBreakdown:
+    historicalMetrics.reachFromFollowers != null &&
+    historicalMetrics.reachFromNonFollowers != null,
+  profileViews: historicalMetrics.totalProfileViews != null,
+  follows: historicalMetrics.newFollowsCount != null,
+  unfollows: historicalMetrics.unfollowsCount != null,
+  followersSnapshot: followerSnapshot.followerCount != null,
+},
+metricCoverage: historicalCoverage,
+
 },
           trend,
 contentMix,
 followersTrend,
-monthlyViewsTrend: isContentLabelFiltered
-  ? buildMonthlyTrendFromContent(contentPerformance)
-  : monthlyViewsTrend,
+monthlyViewsTrend: historicalMonthlyTrend,
 topContent,
 contentList,
 contentListTotal: contentList.length,

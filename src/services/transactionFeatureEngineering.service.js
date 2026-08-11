@@ -89,22 +89,22 @@ export const buildCustomerIdentity = ({ email, name, phone }) => {
     }
   }
 
-  if (normalizedName) {
+  if (normalizedPhone) {
     return {
-      customerIdentity: `NAME|${normalizedName}`,
-      customerKeyType: "name",
-      customerKeyConfidence: "low",
+      customerIdentity: `PHONE|${normalizedPhone}`,
+      customerKeyType: "phone",
+      customerKeyConfidence: "medium",
       normalizedEmail,
       normalizedName,
       normalizedPhone,
     }
   }
 
-  if (normalizedPhone) {
+  if (normalizedName) {
     return {
-      customerIdentity: `PHONE|${normalizedPhone}`,
-      customerKeyType: "phone",
-      customerKeyConfidence: "medium",
+      customerIdentity: `NAME|${normalizedName}`,
+      customerKeyType: "name",
+      customerKeyConfidence: "low",
       normalizedEmail,
       normalizedName,
       normalizedPhone,

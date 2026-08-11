@@ -63,6 +63,17 @@ const normalizeMonth = (value) => {
   if (!hasValue(value)) return null
 
   const normalized = String(value).trim()
+  const numericMonth = Number(normalized)
+  const canonicalMonthLabels = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+    "Jul", "Aug", "Sept", "Oct", "Nov", "Dec",
+  ]
+
+  if (Number.isInteger(numericMonth) && numericMonth >= 1 && numericMonth <= 12) {
+    return canonicalMonthLabels[numericMonth - 1]
+  }
+
+  if (normalized.toLowerCase() === "all") return "All Month"
   const allowedMonths = new Set([
     "All Month",
     "Jan",
@@ -81,7 +92,9 @@ const normalizeMonth = (value) => {
   ])
 
   if (!allowedMonths.has(normalized)) {
-    throw badRequest("month must be All Month or a valid month label such as Jan, Feb, or Dec.")
+    throw badRequest(
+      "month must be All Month or a valid month label; canonical numeric values from 1 to 12 are also supported."
+    )
   }
 
   return normalized === "Sep" ? "Sept" : normalized

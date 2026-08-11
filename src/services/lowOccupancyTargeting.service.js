@@ -369,7 +369,7 @@ export const getLowOccupancySessions = async ({ date, courtType = "all", thresho
   const usageRows = await prisma.courtHourUsage.findMany({
     where: buildCourtHourUsageWhere({
       startDate,
-      endDate,
+      endDateExclusive: new Date(endDate.getTime() + 1),
       courtType: courtType === "all" ? null : courtType,
     }),
     select: {

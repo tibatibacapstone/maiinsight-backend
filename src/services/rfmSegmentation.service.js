@@ -161,8 +161,10 @@ const normalizeSegmentationScope = (input = {}) => {
     filterCourtType: courtType,
     filterBookingType: bookingType,
     startDate: dateRange?.startDate || null,
-    endDate: dateRange?.endDate || null,
-    analysisDate: dateRange?.endDate ? endOfDay(dateRange.endDate) : endOfDay(new Date()),
+    endDateExclusive: dateRange?.endDateExclusive || null,
+    analysisDate: dateRange?.endDateExclusive
+      ? new Date(dateRange.endDateExclusive.getTime() - 1)
+      : endOfDay(new Date()),
     hasScope: Boolean(hasDateScope || courtType || bookingType),
     isEmptyDateScope: hasDateScope && !dateRange,
   }
@@ -202,7 +204,7 @@ const buildSegmentationRunWhere = (input = {}) => {
 const buildSegmentationTransactionWhere = (scope) => {
   const baseWhere = buildFacilityTransactionWhere({
     startDate: scope.startDate,
-    endDate: scope.endDate,
+    endDateExclusive: scope.endDateExclusive,
     courtType: scope.filterCourtType,
     bookingType: scope.filterBookingType,
   })
@@ -250,6 +252,23 @@ const buildSegmentationTransactionWhere = (scope) => {
   }
 
   return baseWhere
+}
+
+export const countEligibleCanonicalCustomers = async ({ db = prisma, input = {} } = {}) => {
+  const scope = normalizeSegmentationScope(input)
+
+  if (scope.isEmptyDateScope) return 0
+
+  return db.customer.count({
+    where: {
+      customerKey: {
+        startsWith: "CUST-",
+      },
+      facilityTransactions: {
+        some: buildSegmentationTransactionWhere(scope),
+      },
+    },
+  })
 }
 
 const getCustomerDisplayName = (transaction) =>
@@ -1283,7 +1302,10 @@ const buildSelectedClusteringResult = ({ selectedK, evaluation, points }) => {
   }
 }
 
-export const runRfmSegmentation = async (input = {}) => {
+export const runRfmSegmentation = async (
+  input = {},
+  { performedByUserId = null } = {}
+) => {
   const scope = normalizeSegmentationScope(input)
   const selectionOptions = normalizeKSelectionOptions(input)
 
@@ -1299,6 +1321,7 @@ export const runRfmSegmentation = async (input = {}) => {
       filterCourtType: scope.filterCourtType,
       filterBookingType: scope.filterBookingType,
       status: RUNNING_STATUS,
+      performedByUserId,
     },
   })
 

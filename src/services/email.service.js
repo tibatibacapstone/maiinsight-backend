@@ -20,12 +20,14 @@ const createTransporter = () => {
   })
 }
 
-export const sendActivationEmail = async ({ to, name, role, activationUrl }) => {
+export const sendActivationEmail = async (
+  { to, name, role, activationUrl },
+  { transporter = createTransporter(), logger = console } = {},
+) => {
   if (!to || !name || !activationUrl) {
     throw new Error("Activation email requires recipient, name, and activation URL")
   }
 
-  const transporter = createTransporter()
   const subject = "Activate your MaiinSight account"
   const text = [
     `Hi ${name},`,
@@ -47,7 +49,11 @@ export const sendActivationEmail = async ({ to, name, role, activationUrl }) => 
   `
 
   if (!transporter) {
-    console.warn("[mail] SMTP is not configured. Activation email not sent:", { to, activationUrl })
+    logger.warn("[mail] Email delivery skipped.", {
+      type: "activation",
+      delivery: "skipped",
+      reason: "smtp_not_configured",
+    })
     return { skipped: true }
   }
 
@@ -62,12 +68,14 @@ export const sendActivationEmail = async ({ to, name, role, activationUrl }) => 
   return { skipped: false }
 }
 
-export const sendPasswordResetEmail = async ({ to, name, resetUrl }) => {
+export const sendPasswordResetEmail = async (
+  { to, name, resetUrl },
+  { transporter = createTransporter(), logger = console } = {},
+) => {
   if (!to || !name || !resetUrl) {
     throw new Error("Password reset email requires recipient, name, and reset URL")
   }
 
-  const transporter = createTransporter()
   const subject = "Reset your MaiinSight password"
   const text = [
     `Hi ${name},`,
@@ -87,7 +95,11 @@ export const sendPasswordResetEmail = async ({ to, name, resetUrl }) => {
   `
 
   if (!transporter) {
-    console.warn("[mail] SMTP is not configured. Password reset email not sent:", { to, resetUrl })
+    logger.warn("[mail] Email delivery skipped.", {
+      type: "password_reset",
+      delivery: "skipped",
+      reason: "smtp_not_configured",
+    })
     return { skipped: true }
   }
 

@@ -4,14 +4,33 @@ import { prisma } from "../config/prisma.js";
 import { authenticate, authorize } from "../middleware/auth.js";
 import { logActivity, logItSupportActivity } from "../services/activityLog.service.js";
 import { generateStrategy, getAiProviderStatus } from "../services/aiProvider.service.js";
+import { buildAiStrategyContext } from "../services/aiStrategyContext.service.js";
 import { createNotificationsForRoles } from "../services/notification.service.js";
 
 export const aiStrategyRouter = Router();
 
+const normalizeStoredStrategy = (strategy = {}) => ({
+  ...strategy,
+  targetSegmentKey: strategy.targetSegmentKey || null,
+  targetSegmentLabel: strategy.targetSegmentLabel || strategy.targetCustomerGroup || null,
+  targetVenueKey: strategy.targetVenueKey || null,
+  targetSessionKey: strategy.targetSessionKey || null,
+  targetDayKey: strategy.targetDayKey || null,
+  targetDayLabel: strategy.targetDayLabel || null,
+  recommendedOfferType: strategy.recommendedOfferType || null,
+  offerReasoning: strategy.offerReasoning || strategy.customerReasoning || null,
+  evidenceUsed: Array.isArray(strategy.evidenceUsed) ? strategy.evidenceUsed : [],
+  executionPlan: Array.isArray(strategy.executionPlan) ? strategy.executionPlan : [],
+  kpis: Array.isArray(strategy.kpis) ? strategy.kpis : [],
+  followUpPlan: strategy.followUpPlan || null,
+  stopCondition: strategy.stopCondition || null,
+  dataLimitation: strategy.dataLimitation || null,
+})
+
 aiStrategyRouter.get(
   "/status",
   authenticate,
-  authorize("operational", "it_support"),
+  authorize("operational", "management", "it_support"),
   async (req, res) => {
     try {
       const providerStatus = await getAiProviderStatus();
@@ -51,6 +70,54 @@ aiStrategyRouter.get(
   }
 );
 
+aiStrategyRouter.get(
+  "/latest",
+  authenticate,
+  authorize("operational", "management", "it_support"),
+  async (_req, res) => {
+    try {
+      const stored = await prisma.aiStrategy.findFirst({ orderBy: { generatedAt: "desc" } })
+      return res.json({
+        success: true,
+        data: stored
+          ? {
+              id: stored.id,
+              provider: stored.provider,
+              model: stored.model,
+              generatedAt: stored.generatedAt,
+              strategy: normalizeStoredStrategy(stored.strategy),
+            }
+          : null,
+      })
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        errorCode: "AI_STRATEGY_HISTORY_FAILED",
+        message: "AI strategy history could not be loaded.",
+        technicalMessage: error instanceof Error ? error.message : "Strategy history failed.",
+      })
+    }
+  }
+)
+
+aiStrategyRouter.post(
+  "/context",
+  authenticate,
+  authorize("operational", "management", "it_support"),
+  async (req, res) => {
+    try {
+      const context = await buildAiStrategyContext(req.body || {})
+      return res.json({ success: true, data: context })
+    } catch (error) {
+      return res.status(error?.statusCode || 500).json({
+        success: false,
+        errorCode: error?.errorCode || "AI_CONTEXT_FAILED",
+        message: error instanceof Error ? error.message : "Selected segment context could not be loaded.",
+      })
+    }
+  }
+)
+
 aiStrategyRouter.post(
   ["/generate", "/strategy"],
   authenticate,
@@ -60,6 +127,12 @@ aiStrategyRouter.post(
 
     try {
       if (!strategyContext || Object.keys(strategyContext).length === 0) {
+        await logActivity(req, "AI_STRATEGY_FAILED", {
+          jobName: "AI Strategy Engine Sync",
+          errorCode: "INVALID_AI_INPUT",
+          status: "failed",
+          completedAt: new Date().toISOString(),
+        }).catch(() => null);
         return res.status(400).json({
           success: false,
           errorCode: "INVALID_AI_INPUT",
@@ -69,21 +142,50 @@ aiStrategyRouter.post(
         });
       }
 
-      const result = await generateStrategy(strategyContext);
+      const structuredContext = await buildAiStrategyContext(strategyContext);
+      const result = await generateStrategy(structuredContext);
       const generatedAt = new Date().toISOString();
+      const storedStrategy = await prisma.aiStrategy.create({
+        data: {
+          provider: result.provider,
+          model: result.model,
+          targetSegmentKey: structuredContext.selected_scope.segmentKey,
+          targetVenueKey:
+            structuredContext.selected_scope.venueKey === "all"
+              ? null
+              : structuredContext.selected_scope.venueKey,
+          targetSessionKey:
+            structuredContext.selected_scope.sessionKey === "all"
+              ? null
+              : structuredContext.selected_scope.sessionKey,
+          campaignObjectiveKey: structuredContext.selected_scope.campaignObjectiveKey || null,
+          offerFrameworkKey: structuredContext.selected_scope.offerFrameworkKey || null,
+          strategy: result.strategy,
+          generatedAt: new Date(generatedAt),
+          performedByUserId: req.user.userId,
+        },
+      })
+      const safeMetadata = {
+        segmentKey: structuredContext.selected_scope.segmentKey,
+        venueKey: structuredContext.selected_scope.venueKey,
+        sessionKey: structuredContext.selected_scope.sessionKey,
+        campaignObjectiveKey: structuredContext.selected_scope.campaignObjectiveKey,
+        offerFrameworkKey: structuredContext.selected_scope.offerFrameworkKey,
+      }
 
       await logActivity(req, "AI_STRATEGY_GENERATED", {
-  jobName: "AI Strategy Engine Sync",
-  selectedFilters: strategyContext.selected_filters || null,
-  workspaceMode: strategyContext.selected_filters?.mode || "general",
-  status: "success",
-  records: 1,
-  provider: result.provider,
-  model: result.model,
-  completedAt: generatedAt,
-})
+        jobName: "AI Strategy Engine Sync",
+        ...safeMetadata,
+        strategyId: storedStrategy.id,
+        status: "success",
+        records: 1,
+        provider: result.provider,
+        model: result.model,
+        completedAt: generatedAt,
+      })
       await logItSupportActivity(req, "IT_SUPPORT_AI_STRATEGY_GENERATE", {
-        selectedFilters: strategyContext.selected_filters || null,
+        ...safeMetadata,
+        strategyId: storedStrategy.id,
         provider: result.provider,
         model: result.model,
       });
@@ -98,32 +200,36 @@ aiStrategyRouter.post(
         provider: result.provider,
         model: result.model,
         generatedAt,
+        strategyId: storedStrategy.id,
         strategy: result.strategy,
-        rawText: result.rawText || null,
+        context: structuredContext,
         data: {
           provider: result.provider,
           model: result.model,
           generatedAt,
+          strategyId: storedStrategy.id,
           strategy: result.strategy,
-          rawText: result.rawText || null,
+          context: structuredContext,
         },
       });
     } catch (error) {
       const providerStatus = await getAiProviderStatus();
 
       await logActivity(req, "AI_STRATEGY_FAILED", {
-  jobName: "AI Strategy Engine Sync",
-  selectedFilters: strategyContext.selected_filters || null,
-  workspaceMode: strategyContext.selected_filters?.mode || "general",
-  status: "failed",
-  provider: providerStatus.provider,
-  technicalMessage: error instanceof Error ? error.message : "AI strategy failed.",
-  completedAt: new Date().toISOString(),
-}).catch(() => null);
-      await logItSupportActivity(req, "IT_SUPPORT_AI_STRATEGY_FAILED", {
-        selectedFilters: strategyContext.selected_filters || null,
+        jobName: "AI Strategy Engine Sync",
+        segmentKey: strategyContext.selected_scope?.segmentKey || strategyContext.selected_filters?.segmentName || null,
+        venueKey: strategyContext.selected_scope?.venueKey || strategyContext.selected_filters?.venue || null,
+        sessionKey: strategyContext.selected_scope?.sessionKey || strategyContext.selected_filters?.sessionName || null,
+        campaignObjectiveKey: strategyContext.selected_scope?.campaignObjectiveKey || null,
+        offerFrameworkKey: strategyContext.selected_scope?.offerFrameworkKey || null,
+        errorCode: error?.errorCode || "AI_GENERATION_FAILED",
+        status: "failed",
         provider: providerStatus.provider,
-        technicalMessage: error instanceof Error ? error.message : "AI strategy failed.",
+        completedAt: new Date().toISOString(),
+      }).catch(() => null);
+      await logItSupportActivity(req, "IT_SUPPORT_AI_STRATEGY_FAILED", {
+        provider: providerStatus.provider,
+        errorCode: error?.errorCode || "AI_GENERATION_FAILED",
       }).catch(() => null);
       await createNotificationsForRoles(prisma, ["operational", "it_support"], {
         title: "AI Strategy Failed",
