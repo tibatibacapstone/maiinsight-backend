@@ -50,17 +50,23 @@ const testMetaConnection = async () => {
     const data = await response.json();
 
     if (!response.ok || data.error) {
+      const errorCode = data.error?.code;
+      const errorSubcode = data.error?.error_subcode;
+      const isTokenExpired = errorCode === 190 && (errorSubcode === 463 || errorSubcode === 467);
+
       return {
         ok: false,
         error: data.error?.message || `Meta API returned status ${response.status}`,
+        tokenExpired: isTokenExpired,
       };
     }
 
-    return { ok: true, username: data.username };
+    return { ok: true, username: data.username, tokenExpired: false };
   } catch (err) {
     return {
       ok: false,
       error: err instanceof Error ? err.message : "Failed to reach Meta API.",
+      tokenExpired: false,
     };
   }
 };
@@ -204,12 +210,15 @@ metaRouter.get(
         data: {
           configured,
           connectionState,
+          tokenStatus,
           latestSync,
           latestSuccessfulSync,
           setupMessage: configured ? null : buildMetaSetupResponse().message,
           suggestion: configured
             ? connectionError
-              ? "Meta credentials are configured but the API returned an error. Please verify the access token is valid and not expired."
+              ? tokenStatus === "expired"
+                ? "The access token has expired. Please generate a new token from Meta Graph API Explorer and update it in System Settings > Integrations."
+                : "Meta credentials are configured but the API returned an error. Please verify the access token is valid and not expired."
               : null
             : buildMetaSetupResponse().suggestion,
           connectionError,
@@ -275,6 +284,19 @@ metaRouter.post(
         data: result,
       });
     } catch (error) {
+      const isTokenExpired =
+        error instanceof Error &&
+        error.message.includes("190") &&
+        (error.message.includes("463") || error.message.includes("467"));
+
+      if (isTokenExpired) {
+        await createNotificationsForRoles(prisma, ["it_support"], {
+          title: "Meta Access Token Expired",
+          message:
+            "The Meta Graph API access token has expired during sync. Instagram data sync will fail until a new token is generated and configured.",
+        }).catch(() => null);
+      }
+
       await logActivity(req, "INSTASIGHT_SYNC_FAILED", {
         status: "failed",
         technicalMessage: error instanceof Error ? error.message : "Meta sync failed.",
@@ -286,9 +308,13 @@ metaRouter.post(
 
       return res.status(500).json({
         success: false,
-        errorCode: "META_SYNC_FAILED",
-        message: "InstaSight could not sync Meta data.",
-        suggestion: "Please check the Meta connection and try again.",
+        errorCode: isTokenExpired ? "META_TOKEN_EXPIRED" : "META_SYNC_FAILED",
+        message: isTokenExpired
+          ? "Meta access token has expired. Please update the token in System Settings."
+          : "InstaSight could not sync Meta data.",
+        suggestion: isTokenExpired
+          ? "Generate a new access token from Meta Graph API Explorer and update it in System Settings > Integrations."
+          : "Please check the Meta connection and try again.",
         technicalMessage: error instanceof Error ? error.message : "Meta sync failed.",
       });
     }
