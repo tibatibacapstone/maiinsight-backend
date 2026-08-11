@@ -1,4 +1,4 @@
-import { syncMetaRawToAnalytics } from './src/services/metaAnalytics.service.js';
+import { syncMetaRawToAnalytics } from './src/services/meta.service.js';
 import { prisma } from './src/config/prisma.js';
 
 async function run() {

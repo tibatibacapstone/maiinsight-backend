@@ -37,36 +37,66 @@ const MONTH_INDEX_MAP = {
 }
 
 const ALL_MONTH_LABEL = "All Month"
+export const APPLICATION_TIME_ZONE = "Asia/Bangkok"
+const BANGKOK_OFFSET_MS = 7 * 60 * 60 * 1000
 
 export const EXCLUDED_IMPORT_BATCH_FILE_NAMES = ["tmp-upload-sample.csv"]
 
-const cloneDate = (value) => new Date(value.getTime())
-
-const startOfDay = (value) => {
-  const date = cloneDate(value)
-  date.setHours(0, 0, 0, 0)
-  return date
+export const getApplicationCalendarParts = (value) => {
+  const shifted = new Date(value.getTime() + BANGKOK_OFFSET_MS)
+  return {
+    year: shifted.getUTCFullYear(),
+    month: shifted.getUTCMonth() + 1,
+    day: shifted.getUTCDate(),
+  }
 }
 
-const endOfDay = (value) => {
-  const date = cloneDate(value)
-  date.setHours(23, 59, 59, 999)
-  return date
+export const getApplicationWeekday = (value) =>
+  new Date(value.getTime() + BANGKOK_OFFSET_MS).getUTCDay()
+
+export const createApplicationDateStart = (year, month, day) =>
+  new Date(Date.UTC(year, month - 1, day) - BANGKOK_OFFSET_MS)
+
+export const parseCalendarDate = (value) => {
+  const match = String(value ?? "").trim().match(/^(\d{4})-(\d{2})-(\d{2})$/)
+  if (!match) throw badRequest("Date must use YYYY-MM-DD format.")
+
+  const year = Number(match[1])
+  const month = Number(match[2])
+  const day = Number(match[3])
+  const parsed = createApplicationDateStart(year, month, day)
+  const parts = getApplicationCalendarParts(parsed)
+
+  if (parts.year !== year || parts.month !== month || parts.day !== day) {
+    throw badRequest("Date is not a valid calendar date.")
+  }
+
+  return parsed
 }
 
-const addDays = (value, amount) => {
-  const date = cloneDate(value)
-  date.setDate(date.getDate() + amount)
-  return date
+export const resolveCustomDateRange = ({ startDate, endDate }) => {
+  const inclusiveStartDate = parseCalendarDate(startDate)
+  const inclusiveEndDate = parseCalendarDate(endDate)
+  if (inclusiveStartDate > inclusiveEndDate) {
+    throw badRequest("Start date must not be after end date.")
+  }
+
+  return {
+    startDate: inclusiveStartDate,
+    endDateExclusive: new Date(inclusiveEndDate.getTime() + 86400000),
+  }
 }
 
 const isAllMonth = (selectedMonth) =>
-  !selectedMonth || selectedMonth === ALL_MONTH_LABEL
+  !selectedMonth ||
+  selectedMonth === ALL_MONTH_LABEL ||
+  String(selectedMonth).trim().toLowerCase() === "all"
 
 export const formatIsoDate = (date) => {
-  const year = date.getFullYear()
-  const month = String(date.getMonth() + 1).padStart(2, "0")
-  const day = String(date.getDate()).padStart(2, "0")
+  const parts = getApplicationCalendarParts(date)
+  const year = parts.year
+  const month = String(parts.month).padStart(2, "0")
+  const day = String(parts.day).padStart(2, "0")
 
   return `${year}-${month}-${day}`
 }
@@ -77,6 +107,13 @@ export const formatHourLabel = (hourStart) =>
 export const getMonthIndex = (selectedMonth) => {
   if (isAllMonth(selectedMonth)) return null
 
+  if (String(selectedMonth).trim().toLowerCase() === "all") return null
+
+  const numericMonth = Number(selectedMonth)
+  if (Number.isInteger(numericMonth) && numericMonth >= 1 && numericMonth <= 12) {
+    return numericMonth - 1
+  }
+
   const monthIndex = MONTH_INDEX_MAP[selectedMonth]
 
   if (monthIndex === undefined) {
@@ -86,32 +123,30 @@ export const getMonthIndex = (selectedMonth) => {
   return monthIndex
 }
 
-const getSafeMonthEndDate = (year, monthIndex, today) => {
-  const currentYear = today.getFullYear()
-  const currentMonthIndex = today.getMonth()
+const getSafeMonthEndExclusive = (year, monthIndex, today) => {
+  const todayParts = getApplicationCalendarParts(today)
 
-  if (year === currentYear && monthIndex === currentMonthIndex) {
-    return endOfDay(today)
+  if (year === todayParts.year && monthIndex === todayParts.month - 1) {
+    return createApplicationDateStart(todayParts.year, todayParts.month, todayParts.day + 1)
   }
 
-  return new Date(year, monthIndex + 1, 0, 23, 59, 59, 999)
+  return createApplicationDateStart(year, monthIndex + 2, 1)
 }
 
 const getLastVisibleMonthIndex = (selectedYear, today) => {
-  const currentYear = today.getFullYear()
+  const todayParts = getApplicationCalendarParts(today)
 
-  if (selectedYear < currentYear) return 11
-  if (selectedYear === currentYear) return today.getMonth()
+  if (selectedYear < todayParts.year) return 11
+  if (selectedYear === todayParts.year) return todayParts.month - 1
 
   return -1
 }
 
 const getEffectiveSelectedMonthIndex = (selectedYear, requestedMonthIndex, today) => {
-  const currentYear = today.getFullYear()
-  const currentMonthIndex = today.getMonth()
+  const todayParts = getApplicationCalendarParts(today)
 
-  if (selectedYear < currentYear) return requestedMonthIndex
-  if (selectedYear === currentYear) return Math.min(requestedMonthIndex, currentMonthIndex)
+  if (selectedYear < todayParts.year) return requestedMonthIndex
+  if (selectedYear === todayParts.year) return Math.min(requestedMonthIndex, todayParts.month - 1)
 
   return -1
 }
@@ -129,11 +164,15 @@ export const resolveSelectedDateRange = ({
   }
 
   if (isAllMonth(selectedMonth)) {
+    const todayParts = getApplicationCalendarParts(today)
     return {
-      startDate: startOfDay(new Date(year, 0, 1)),
-      endDate: year === today.getFullYear() ? endOfDay(today) : endOfDay(new Date(year, 11, 31)),
+      startDate: createApplicationDateStart(year, 1, 1),
+      endDateExclusive:
+        year === todayParts.year
+          ? createApplicationDateStart(todayParts.year, todayParts.month, todayParts.day + 1)
+          : createApplicationDateStart(year + 1, 1, 1),
       selectedYear: year,
-      selectedMonthIndex: year === today.getFullYear() ? today.getMonth() : 11,
+      selectedMonthIndex: year === todayParts.year ? todayParts.month - 1 : 11,
       isAllMonth: true,
       periodType,
     }
@@ -146,8 +185,8 @@ export const resolveSelectedDateRange = ({
 
   if (periodType === "YTD") {
     return {
-      startDate: startOfDay(new Date(year, 0, 1)),
-      endDate: getSafeMonthEndDate(year, requestedMonthIndex, today),
+      startDate: createApplicationDateStart(year, 1, 1),
+      endDateExclusive: getSafeMonthEndExclusive(year, requestedMonthIndex, today),
       selectedYear: year,
       selectedMonthIndex: requestedMonthIndex,
       isAllMonth: false,
@@ -156,8 +195,8 @@ export const resolveSelectedDateRange = ({
   }
 
   return {
-    startDate: startOfDay(new Date(year, requestedMonthIndex, 1)),
-    endDate: getSafeMonthEndDate(year, requestedMonthIndex, today),
+    startDate: createApplicationDateStart(year, requestedMonthIndex + 1, 1),
+    endDateExclusive: getSafeMonthEndExclusive(year, requestedMonthIndex, today),
     selectedYear: year,
     selectedMonthIndex: requestedMonthIndex,
     isAllMonth: false,
@@ -165,18 +204,17 @@ export const resolveSelectedDateRange = ({
   }
 }
 
-export const getPreviousComparisonRange = ({ startDate, endDate }) => {
-  const safeStartDate = startOfDay(startDate)
-  const safeEndDate = endOfDay(endDate)
-  const durationMs = safeEndDate.getTime() - safeStartDate.getTime()
-  const totalDays = Math.max(1, Math.round(durationMs / 86400000) + 1)
-
-  const previousEndDate = endOfDay(addDays(safeStartDate, -1))
-  const previousStartDate = startOfDay(addDays(safeStartDate, -totalDays))
+export const getPreviousComparisonRange = ({ startDate, endDateExclusive }) => {
+  const totalDays = Math.max(
+    1,
+    Math.round((endDateExclusive.getTime() - startDate.getTime()) / 86400000)
+  )
+  const previousEndDateExclusive = new Date(startDate)
+  const previousStartDate = new Date(startDate.getTime() - totalDays * 86400000)
 
   return {
     startDate: previousStartDate,
-    endDate: previousEndDate,
+    endDateExclusive: previousEndDateExclusive,
   }
 }
 
@@ -271,18 +309,18 @@ export const buildDashboardTransactionGroupCondition = ({
 
 export const getCourtCount = (courtType) => (courtType ? 1 : 2)
 
-export const getAvailableCourtHours = (startDate, endDate, courtCount) => {
-  const safeStartDate = startOfDay(startDate)
-  const safeEndDate = endOfDay(endDate)
-  const totalDays =
-    Math.max(0, Math.round((safeEndDate.getTime() - safeStartDate.getTime()) / 86400000)) + 1
+export const getAvailableCourtHours = (startDate, endDateExclusive, courtCount) => {
+  const totalDays = Math.max(
+    0,
+    Math.round((endDateExclusive.getTime() - startDate.getTime()) / 86400000)
+  )
 
   return totalDays * 18 * courtCount
 }
 
 export const buildFacilityTransactionWhere = ({
   startDate,
-  endDate,
+  endDateExclusive,
   courtType,
   customerType,
   bookingType,
@@ -297,11 +335,11 @@ export const buildFacilityTransactionWhere = ({
     },
   }
 
-  if (startDate || endDate) {
+  if (startDate || endDateExclusive) {
     where.playDate = {}
 
     if (startDate) where.playDate.gte = startDate
-    if (endDate) where.playDate.lte = endDate
+    if (endDateExclusive) where.playDate.lt = endDateExclusive
   }
 
   if (requireValidBooking) {
@@ -325,7 +363,7 @@ export const buildFacilityTransactionWhere = ({
 
 export const buildCourtHourUsageWhere = ({
   startDate,
-  endDate,
+  endDateExclusive,
   courtType,
   customerType,
   bookingType,
@@ -342,11 +380,11 @@ export const buildCourtHourUsageWhere = ({
     },
   }
 
-  if (startDate || endDate) {
+  if (startDate || endDateExclusive) {
     where.playDate = {}
 
     if (startDate) where.playDate.gte = startDate
-    if (endDate) where.playDate.lte = endDate
+    if (endDateExclusive) where.playDate.lt = endDateExclusive
   }
 
   if (courtType && courtType !== "all") {
@@ -368,14 +406,18 @@ export const buildCourtHourUsageWhere = ({
   return where
 }
 export const buildCustomRangeOccupancyPeriods = ({ startDate, endDate, forceDaily = false }) => {
-  const safeStartDate = startOfDay(new Date(startDate))
-  const safeEndDate = endOfDay(new Date(endDate))
-
-  if (Number.isNaN(safeStartDate.getTime()) || Number.isNaN(safeEndDate.getTime()) || safeStartDate > safeEndDate) {
+  let selectedRange
+  try {
+    selectedRange = resolveCustomDateRange({ startDate, endDate })
+  } catch {
     return []
   }
+  const safeStartDate = selectedRange.startDate
+  const safeEndDateExclusive = selectedRange.endDateExclusive
 
-  const totalDays = Math.round((safeEndDate.getTime() - safeStartDate.getTime()) / 86400000) + 1
+  const totalDays = Math.round(
+    (safeEndDateExclusive.getTime() - safeStartDate.getTime()) / 86400000
+  )
 
   // Daily buckets for short ranges (<= 62 days), otherwise monthly buckets.
   // When `forceDaily` is true (e.g. management report wants per-date granularity),
@@ -384,40 +426,52 @@ export const buildCustomRangeOccupancyPeriods = ({ startDate, endDate, forceDail
     const days = []
     const cursor = new Date(safeStartDate)
 
-    while (cursor <= safeEndDate) {
-      const dayStart = startOfDay(cursor)
-      const dayEnd = endOfDay(cursor)
+    while (cursor < safeEndDateExclusive) {
+      const dayStart = new Date(cursor)
+      const dayEndExclusive = new Date(cursor.getTime() + 86400000)
 
       days.push({
-        label: `${cursor.getDate()} ${MONTH_LABELS[cursor.getMonth()]}`,
+        label: `${getApplicationCalendarParts(cursor).day} ${MONTH_LABELS[getApplicationCalendarParts(cursor).month - 1]}`,
         date: formatIsoDate(dayStart),
         startDate: dayStart,
-        endDate: dayEnd,
+        endDateExclusive: dayEndExclusive,
       })
 
-      cursor.setDate(cursor.getDate() + 1)
+      cursor.setTime(cursor.getTime() + 86400000)
     }
 
     return days
   }
 
   const months = []
-  const cursor = new Date(safeStartDate.getFullYear(), safeStartDate.getMonth(), 1)
+  const startParts = getApplicationCalendarParts(safeStartDate)
+  const cursor = createApplicationDateStart(startParts.year, startParts.month, 1)
 
-  while (cursor <= safeEndDate) {
-    const monthStart = startOfDay(new Date(cursor.getFullYear(), cursor.getMonth(), 1))
-    const rawMonthEnd = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 0, 23, 59, 59, 999)
-    const monthEnd = rawMonthEnd > safeEndDate ? safeEndDate : rawMonthEnd
+  while (cursor < safeEndDateExclusive) {
+    const monthStart = new Date(cursor)
+    const monthParts = getApplicationCalendarParts(cursor)
+    const rawMonthEndExclusive = createApplicationDateStart(
+      monthParts.year,
+      monthParts.month + 1,
+      1
+    )
+    const monthEndExclusive =
+      rawMonthEndExclusive > safeEndDateExclusive
+        ? safeEndDateExclusive
+        : rawMonthEndExclusive
     const effectiveStart = monthStart < safeStartDate ? safeStartDate : monthStart
 
     months.push({
-      label: `${MONTH_LABELS[cursor.getMonth()]} ${String(cursor.getFullYear()).slice(2)}`,
-      month: MONTH_LABELS[cursor.getMonth()],
+      label: `${MONTH_LABELS[getApplicationCalendarParts(cursor).month - 1]} ${String(getApplicationCalendarParts(cursor).year).slice(2)}`,
+      month: MONTH_LABELS[getApplicationCalendarParts(cursor).month - 1],
       startDate: effectiveStart,
-      endDate: monthEnd,
+      endDateExclusive: monthEndExclusive,
     })
 
-    cursor.setMonth(cursor.getMonth() + 1)
+    const cursorParts = getApplicationCalendarParts(cursor)
+    cursor.setTime(
+      createApplicationDateStart(cursorParts.year, cursorParts.month + 1, 1).getTime()
+    )
   }
 
   return months
@@ -444,19 +498,22 @@ export const buildOccupancyTrendPeriods = ({
       return []
     }
 
-    const endDate = getSafeMonthEndDate(year, monthIndex, today)
-    const lastDay = endDate.getDate()
+    const endDateExclusive = getSafeMonthEndExclusive(year, monthIndex, today)
+    const endParts = getApplicationCalendarParts(
+      new Date(endDateExclusive.getTime() - 1)
+    )
+    const lastDay = endParts.day
 
     return Array.from({ length: lastDay }, (_, index) => {
       const day = index + 1
-      const startDate = startOfDay(new Date(year, monthIndex, day))
-      const dayEndDate = endOfDay(new Date(year, monthIndex, day))
+      const startDate = createApplicationDateStart(year, monthIndex + 1, day)
+      const dayEndDateExclusive = createApplicationDateStart(year, monthIndex + 1, day + 1)
 
       return {
         label: `${day} ${selectedMonth}`,
         date: formatIsoDate(startDate),
         startDate,
-        endDate: dayEndDate,
+        endDateExclusive: dayEndDateExclusive,
       }
     })
   }
@@ -470,8 +527,8 @@ export const buildOccupancyTrendPeriods = ({
     return MONTH_LABELS.slice(0, maxMonthIndex + 1).map((label, monthIndex) => ({
       label,
       month: label,
-      startDate: startOfDay(new Date(year, 0, 1)),
-      endDate: getSafeMonthEndDate(year, monthIndex, today),
+      startDate: createApplicationDateStart(year, 1, 1),
+      endDateExclusive: getSafeMonthEndExclusive(year, monthIndex, today),
     }))
   }
 
@@ -483,8 +540,8 @@ export const buildOccupancyTrendPeriods = ({
     return MONTH_LABELS.slice(0, lastVisibleMonthIndex + 1).map((label, monthIndex) => ({
       label,
       month: label,
-      startDate: startOfDay(new Date(year, monthIndex, 1)),
-      endDate: getSafeMonthEndDate(year, monthIndex, today),
+      startDate: createApplicationDateStart(year, monthIndex + 1, 1),
+      endDateExclusive: getSafeMonthEndExclusive(year, monthIndex, today),
     }))
   }
 
@@ -495,10 +552,12 @@ export const buildOccupancyTrendPeriods = ({
   return MONTH_LABELS.slice(0, lastVisibleMonthIndex + 1).map((label, monthIndex) => ({
     label,
     month: label,
-    startDate: startOfDay(new Date(year, 0, 1)),
-    endDate: getSafeMonthEndDate(year, monthIndex, today),
+    startDate: createApplicationDateStart(year, 1, 1),
+    endDateExclusive: getSafeMonthEndExclusive(year, monthIndex, today),
   }))
 }
 
 export const getWeekdayLabel = (date) =>
-  ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][date.getDay()]
+  ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][
+    getApplicationWeekday(date)
+  ]

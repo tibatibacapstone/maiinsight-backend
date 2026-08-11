@@ -2,27 +2,43 @@ import bcrypt from "bcryptjs"
 import jwt from "jsonwebtoken"
 import { Router } from "express"
 
-import { env } from "../config/env.js"
+import { env, getRequiredJwtSecret } from "../config/env.js"
 import { prisma } from "../config/prisma.js"
 import { sendPasswordResetEmail } from "../services/email.service.js"
+import {
+  createPasswordResetToken,
+  resetPasswordWithToken,
+} from "../services/passwordReset.service.js"
+import { authenticateGoogleCredential } from "../services/googleAuth.service.js"
+import { registerInvitedUser } from "../services/invitedRegistration.service.js"
+import { validatePassword } from "../services/passwordPolicy.service.js"
+import {
+  googleAuthRateLimit,
+  loginRateLimit,
+  passwordResetAccountRateLimit,
+  passwordResetConfirmationRateLimit,
+  passwordResetIpRateLimit,
+  registrationRateLimit,
+} from "../middleware/auth-rate-limit.js"
 
 const router = Router()
 
-const createToken = (user) => {
+export const createToken = (user) => {
   return jwt.sign(
     {
+      tokenType: "access",
       userId: user.id,
       email: user.email,
       role: user.role,
     },
-    env.jwtSecret,
+    getRequiredJwtSecret(),
     {
       expiresIn: "8h",
     },
   )
 }
 
-router.post("/register", async (req, res, next) => {
+router.post("/register", registrationRateLimit, async (req, res, next) => {
   try {
     const { inviteToken, password } = req.body
 
@@ -30,9 +46,17 @@ router.post("/register", async (req, res, next) => {
       return res.status(400).json({ error: "Invite token is required" })
     }
 
+    const passwordValidation = validatePassword(password)
+    if (!passwordValidation.valid) {
+      return res.status(400).json({
+        errorCode: passwordValidation.errorCode,
+        error: passwordValidation.message,
+      })
+    }
+
     let invitePayload
     try {
-      invitePayload = jwt.verify(inviteToken, env.jwtSecret)
+      invitePayload = jwt.verify(inviteToken, getRequiredJwtSecret())
     } catch {
       return res.status(400).json({ error: "Invalid or expired invite token" })
     }
@@ -41,37 +65,18 @@ router.post("/register", async (req, res, next) => {
       return res.status(400).json({ error: "Invalid invite token" })
     }
 
-    const invite = await prisma.userInvite.findUnique({ where: { token: inviteToken } })
-
-    if (!invite || invite.usedAt) {
-      return res.status(400).json({ error: "Invalid or expired invite token" })
+    let user
+    try {
+      user = await registerInvitedUser({ inviteToken, password })
+    } catch (error) {
+      if (error?.errorCode) {
+        return res.status(error.statusCode || 400).json({
+          errorCode: error.errorCode,
+          error: error.message,
+        })
+      }
+      throw error
     }
-
-    if (invite.expiresAt < new Date()) {
-      return res.status(400).json({ error: "Invite token has expired" })
-    }
-
-    const existingUser = await prisma.user.findUnique({ where: { email: invite.email } })
-
-    if (existingUser) {
-      return res.status(409).json({ error: "User already exists" })
-    }
-
-    const hashedPassword = password ? await bcrypt.hash(password, 10) : null
-
-    const user = await prisma.user.create({
-      data: {
-        email: invite.email,
-        name: invite.name,
-        password: hashedPassword,
-        role: invite.role,
-      },
-    })
-
-    await prisma.userInvite.update({
-      where: { token: inviteToken },
-      data: { usedAt: new Date() },
-    })
 
     const token = createToken(user)
 
@@ -84,7 +89,7 @@ router.post("/register", async (req, res, next) => {
   }
 })
 
-router.post("/login", async (req, res, next) => {
+router.post("/login", loginRateLimit, async (req, res, next) => {
   try {
     const { email, password } = req.body
 
@@ -96,6 +101,13 @@ router.post("/login", async (req, res, next) => {
 
     if (!user) {
       return res.status(401).json({ error: "Invalid email or password" })
+    }
+
+    if (user.isActive === false) {
+      return res.status(401).json({
+        errorCode: "ACCOUNT_INACTIVE",
+        error: "Account is inactive",
+      })
     }
 
     if (!user.password) {
@@ -116,7 +128,7 @@ router.post("/login", async (req, res, next) => {
   }
 })
 
-router.post("/google", async (req, res, next) => {
+router.post("/google", googleAuthRateLimit, async (req, res, next) => {
   try {
     const { credential } = req.body
 
@@ -124,47 +136,20 @@ router.post("/google", async (req, res, next) => {
       return res.status(400).json({ error: "Google credential is required" })
     }
 
-    let email
-
-    if (env.googleClientId) {
-      // Try as ID token first (from GoogleLogin component)
-      try {
-        const { OAuth2Client } = await import("google-auth-library")
-        const client = new OAuth2Client(env.googleClientId)
-        const ticket = await client.verifyIdToken({
-          idToken: credential,
-          audience: env.googleClientId,
+    let user
+    try {
+      user = await authenticateGoogleCredential({
+        idToken: credential,
+        db: prisma,
+      })
+    } catch (error) {
+      if (error?.errorCode) {
+        return res.status(error.statusCode || 401).json({
+          errorCode: error.errorCode,
+          error: error.message,
         })
-        const payload = ticket.getPayload()
-        email = payload?.email
-      } catch {
-        // Not an ID token — try as access token (from useGoogleLogin)
       }
-    }
-
-    // If ID token verification didn't work, try as access token
-    if (!email) {
-      try {
-        const resp = await fetch("https://www.googleapis.com/oauth2/v3/userinfo", {
-          headers: { Authorization: `Bearer ${credential}` },
-        })
-        if (resp.ok) {
-          const userInfo = await resp.json()
-          email = userInfo.email
-        }
-      } catch {
-        // Failed both methods
-      }
-    }
-
-    if (!email) {
-      return res.status(401).json({ error: "Invalid Google credential" })
-    }
-
-    const user = await prisma.user.findUnique({ where: { email } })
-
-    if (!user) {
-      return res.status(401).json({ error: "Account not found. Please contact IT Support to get registered." })
+      throw error
     }
 
     const token = createToken(user)
@@ -175,41 +160,42 @@ router.post("/google", async (req, res, next) => {
   }
 })
 
-router.post("/forgot-password", async (req, res, next) => {
-  try {
-    const { email } = req.body || {}
+router.post(
+  "/forgot-password",
+  passwordResetIpRateLimit,
+  passwordResetAccountRateLimit,
+  async (req, res, next) => {
+    try {
+      const { email } = req.body || {}
 
-    if (!email) {
-      return res.status(400).json({ error: "Email is required." })
-    }
+      if (!email) {
+        return res.status(400).json({ error: "Email is required." })
+      }
 
-    const user = await prisma.user.findUnique({ where: { email } })
+      const user = await prisma.user.findUnique({ where: { email } })
 
-    if (!user || !user.password) {
+      if (!user || !user.password) {
+        return res.json({ success: true, message: "If the email exists, a reset link has been sent." })
+      }
+
+      const resetToken = createPasswordResetToken(user)
+
+      const resetUrl = `${env.appUrl}/reset-password?token=${encodeURIComponent(resetToken)}`
+
+      await sendPasswordResetEmail({
+        to: user.email,
+        name: user.name,
+        resetUrl,
+      })
+
       return res.json({ success: true, message: "If the email exists, a reset link has been sent." })
+    } catch (error) {
+      next(error)
     }
+  },
+)
 
-    const resetToken = jwt.sign(
-      { purpose: "password_reset", userId: user.id, email: user.email },
-      env.jwtSecret,
-      { expiresIn: "1h" }
-    )
-
-    const resetUrl = `${env.appUrl}/reset-password?token=${encodeURIComponent(resetToken)}`
-
-    await sendPasswordResetEmail({
-      to: user.email,
-      name: user.name,
-      resetUrl,
-    })
-
-    return res.json({ success: true, message: "If the email exists, a reset link has been sent." })
-  } catch (error) {
-    next(error)
-  }
-})
-
-router.post("/reset-password", async (req, res, next) => {
+router.post("/reset-password", passwordResetConfirmationRateLimit, async (req, res, next) => {
   try {
     const { token, password } = req.body || {}
 
@@ -217,23 +203,17 @@ router.post("/reset-password", async (req, res, next) => {
       return res.status(400).json({ error: "Token and password are required." })
     }
 
-    let payload
     try {
-      payload = jwt.verify(token, env.jwtSecret)
-    } catch {
-      return res.status(400).json({ error: "Invalid or expired reset token." })
+      await resetPasswordWithToken({ token, password })
+    } catch (error) {
+      if (error?.errorCode) {
+        return res.status(error.statusCode || 400).json({
+          errorCode: error.errorCode,
+          error: error.message,
+        })
+      }
+      throw error
     }
-
-    if (payload?.purpose !== "password_reset") {
-      return res.status(400).json({ error: "Invalid reset token." })
-    }
-
-    const hashedPassword = await bcrypt.hash(password, 10)
-
-    await prisma.user.update({
-      where: { id: payload.userId },
-      data: { password: hashedPassword },
-    })
 
     return res.json({ success: true, message: "Password reset successfully." })
   } catch (error) {

@@ -5,7 +5,10 @@ import {
   buildCourtHourUsageWhere,
   buildDashboardTransactionGroupCondition,
   buildFacilityTransactionWhere,
+  getMonthIndex,
   normalizeBookingTypeFilter,
+  resolveCustomDateRange,
+  resolveSelectedDateRange,
 } from "../dashboardPeriod.service.js"
 
 const customerStatusCondition = {
@@ -70,6 +73,72 @@ test("Facility transaction All includes operational and positive customer revenu
 
   assert.equal(where.validBooking, true)
   assert.deepEqual(where.AND, [{ OR: [customerStatusCondition, operationalStatusCondition] }])
+})
+
+test("MTD uses Bangkok start inclusive and next-day exclusive boundaries", () => {
+  const range = resolveSelectedDateRange({
+    selectedYear: 2026,
+    selectedMonth: 7,
+    periodType: "MTD",
+    today: new Date("2026-07-29T05:00:00.000Z"),
+  })
+
+  assert.equal(range.startDate.toISOString(), "2026-06-30T17:00:00.000Z")
+  assert.equal(range.endDateExclusive.toISOString(), "2026-07-29T17:00:00.000Z")
+})
+
+test("historical MTD covers the complete selected calendar month", () => {
+  const range = resolveSelectedDateRange({
+    selectedYear: 2024,
+    selectedMonth: 2,
+    periodType: "MTD",
+    today: new Date("2026-07-29T05:00:00.000Z"),
+  })
+
+  assert.equal(range.startDate.toISOString(), "2024-01-31T17:00:00.000Z")
+  assert.equal(range.endDateExclusive.toISOString(), "2024-02-29T17:00:00.000Z")
+})
+
+test("YTD starts January 1 and ends after the selected month", () => {
+  const range = resolveSelectedDateRange({
+    selectedYear: 2025,
+    selectedMonth: 5,
+    periodType: "YTD",
+    today: new Date("2026-07-29T05:00:00.000Z"),
+  })
+
+  assert.equal(range.startDate.toISOString(), "2024-12-31T17:00:00.000Z")
+  assert.equal(range.endDateExclusive.toISOString(), "2025-05-31T17:00:00.000Z")
+})
+
+test("custom ranges validate date-only input and make end exclusive", () => {
+  const range = resolveCustomDateRange({
+    startDate: "2026-07-01",
+    endDate: "2026-07-31",
+  })
+
+  assert.equal(range.startDate.toISOString(), "2026-06-30T17:00:00.000Z")
+  assert.equal(range.endDateExclusive.toISOString(), "2026-07-31T17:00:00.000Z")
+})
+
+test("canonical numeric and compatibility label months resolve identically", () => {
+  assert.equal(getMonthIndex(9), 8)
+  assert.equal(getMonthIndex("9"), 8)
+  assert.equal(getMonthIndex("Sept"), 8)
+})
+
+test("Prisma date filters use an exclusive end boundary", () => {
+  const startDate = new Date("2026-06-30T17:00:00.000Z")
+  const endDateExclusive = new Date("2026-07-31T17:00:00.000Z")
+  const where = buildFacilityTransactionWhere({
+    startDate,
+    endDateExclusive,
+  })
+
+  assert.deepEqual(where.playDate, {
+    gte: startDate,
+    lt: endDateExclusive,
+  })
 })
 
 test("unknown dashboard filters are rejected", () => {

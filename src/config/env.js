@@ -7,13 +7,21 @@ const toNumber = (value, fallback) => {
   return Number.isFinite(parsed) ? parsed : fallback;
 };
 
+export const requireEnvironmentSecret = (value, name) => {
+  const secret = String(value || "").trim();
+  if (!secret) {
+    throw new Error(`${name} is required. Configure it before starting the backend.`);
+  }
+  return secret;
+};
+
 export const env = {
   nodeEnv: process.env.NODE_ENV || "development",
   port: toNumber(process.env.PORT, 5000),
   clientUrl: process.env.CLIENT_URL || "http://localhost:3000",
   appUrl: process.env.APP_URL || "http://localhost:3000",
   databaseUrl: process.env.DATABASE_URL || "",
-  jwtSecret: process.env.JWT_SECRET || "3a13f21b177bf8366aae0575e6a6ea3d4114722492f9ac084eb02126691b2aa6ec73d3ce69b972e56742760627e56401bbff8d586c695b3a91cb391e30d52f7c",
+  jwtSecret: String(process.env.JWT_SECRET || "").trim(),
   smtpHost: process.env.SMTP_HOST || "",
   smtpPort: toNumber(process.env.SMTP_PORT, 587),
   smtpUser: process.env.SMTP_USER || "",
@@ -26,5 +34,19 @@ export const env = {
   metaAccessToken: process.env.META_ACCESS_TOKEN || "",
   metaIgUserId: process.env.META_IG_USER_ID || "",
   metaPageId: process.env.META_PAGE_ID || "",
-  googleClientId: process.env.GOOGLE_CLIENT_ID || "670278342389-67io1ot1srnrp4q7eek3nuunvcn55rqr.apps.googleusercontent.com",
+  googleClientId: String(process.env.GOOGLE_CLIENT_ID || "").trim(),
+};
+
+export const getRequiredJwtSecret = (value = env.jwtSecret) =>
+  requireEnvironmentSecret(value, "JWT_SECRET");
+
+export const validateRuntimeEnvironment = (runtimeEnv = env) => {
+  const errors = [];
+  if (!String(runtimeEnv.jwtSecret || "").trim()) {
+    errors.push("JWT_SECRET is required.");
+  }
+  if (errors.length) {
+    throw new Error(`Invalid runtime environment: ${errors.join(" ")}`);
+  }
+  return runtimeEnv;
 };

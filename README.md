@@ -47,6 +47,20 @@ The API runs on `http://localhost:5000` by default.
 
 Copy `.env.example` to `.env` and configure (see [Installation Guide](../docs/INSTALLATION-GUIDE.md)).
 
+`JWT_SECRET` is required and must be a strong, randomly generated secret shared by all
+backend instances. The API intentionally fails during startup when it is missing. Never
+commit the production secret or generate a different value on each restart.
+
+`GOOGLE_CLIENT_ID` must be the MaiinSight Google OAuth web client ID and must match
+the frontend `NEXT_PUBLIC_GOOGLE_CLIENT_ID`. Google login accepts only signed Google
+ID tokens whose audience is this configured client.
+
+Service tokens issued by IT Support are separate from user access tokens. They are
+limited to the `system:read-status` scope and may call `GET /api/system/status`
+only. The creator must still exist, remain active, and retain the IT Support role.
+Legacy `type: "service_token"` tokens receive the same narrow compatibility scope;
+regenerate them to receive explicit service IDs and scope claims.
+
 ## Available Scripts
 
 ```bash
@@ -54,7 +68,7 @@ npm run dev           # Start dev server with nodemon
 npm start             # Start production server
 npm run lint          # Run ESLint
 npm test              # Run tests
-npm run seed          # Seed database with default users
+npm run seed          # Seed users without resetting existing passwords
 npx prisma migrate dev   # Run Prisma migration
 npx prisma studio        # Open Prisma Studio (DB viewer)
 ```
@@ -91,10 +105,11 @@ src/
     ...
 ```
 
-## Default Test Accounts
+## Seeded Accounts
 
-| Email                       | Password       | Role         |
-|-----------------------------|----------------|--------------|
-| `operational@maiin.com`     | `Password123!` | Operational  |
-| `management@maiin.com`      | `Password123!` | Management  |
-| `support@maiin.com`         | `Password123!` | IT Support  |
+The seed creates the Operational, Management, and IT Support accounts when they are
+missing. Configure `SEED_MARKETING_OPERATIONAL_PASSWORD`, `SEED_MANAGEMENT_PASSWORD`,
+and `SEED_IT_SUPPORT_PASSWORD` with strong, unique values before creating them. There
+are no development or production fallback passwords. Known defaults and placeholders
+are rejected. Re-running the seed may normalize seeded names and roles, but it never
+changes an existing user's password.

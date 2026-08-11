@@ -4,6 +4,7 @@ import { buildCustomerIdentity } from "./transactionFeatureEngineering.service.j
 import {
   classifyTransactionRevenue,
   classifyTransactionStatus,
+  parseTransactionAmount,
   TRANSACTION_ROW_CATEGORIES,
 } from "./transactionStatus.service.js"
 
@@ -320,7 +321,6 @@ const isValidTimeRangeFormat = (value) => {
 
 export const validateTransactionRows = (records) => {
   const validationErrors = []
-  const MAX_ERRORS = 50
 
   records.forEach((row, index) => {
     const rowNumber = index + 2
@@ -396,26 +396,54 @@ export const validateTransactionRows = (records) => {
       addOnRevenue,
       category: statusClassification.category,
     })
+    const parsedNetRevenue = parseTransactionAmount(netRevenue, {
+      emptyValue:
+        statusClassification.category === TRANSACTION_ROW_CATEGORIES.OPERATIONAL
+          ? 0
+          : null,
+    })
+    const parsedAddOnRevenue = parseTransactionAmount(addOnRevenue, { emptyValue: 0 })
 
-    if (!isValidDateFormat(transactionDate)) {
+    if (transactionDate === null) {
       validationErrors.push({
         rowNumber,
         column: "Tanggal Transaksi",
         value: transactionDate,
-        message: "Transaction date is empty or has an invalid date format.",
+        message: "Transaction date is required and cannot be empty.",
+      })
+    } else if (!isValidDateFormat(transactionDate)) {
+      validationErrors.push({
+        rowNumber,
+        column: "Tanggal Transaksi",
+        value: transactionDate,
+        message: "Invalid date format. Transaction date must contain a valid date.",
       })
     }
 
-    if (!isValidDateFormat(playDate)) {
+    if (playDate === null) {
       validationErrors.push({
         rowNumber,
         column: "Tanggal Main",
         value: playDate,
-        message: "Play date is empty or has an invalid date format.",
+        message: "Play date is required and cannot be empty.",
+      })
+    } else if (!isValidDateFormat(playDate)) {
+      validationErrors.push({
+        rowNumber,
+        column: "Tanggal Main",
+        value: playDate,
+        message: "Invalid date format. Play date must contain a valid date.",
       })
     }
 
-    if (!isValidTimeRangeFormat(playTime)) {
+    if (playTime === null) {
+      validationErrors.push({
+        rowNumber,
+        column: "Jam Main",
+        value: playTime,
+        message: "Play time is required and cannot be empty.",
+      })
+    } else if (!isValidTimeRangeFormat(playTime)) {
       validationErrors.push({
         rowNumber,
         column: "Jam Main",
@@ -444,6 +472,31 @@ export const validateTransactionRows = (records) => {
         message: "Customer email, name, or phone must contain a usable identity value.",
       })
     }
+
+    if (!parsedNetRevenue.valid && netRevenue === null) {
+      validationErrors.push({
+        rowNumber,
+        column: "Harga Bersih",
+        value: netRevenue,
+        message: "Net revenue is required and cannot be empty.",
+      })
+    } else if (!parsedNetRevenue.valid) {
+      validationErrors.push({
+        rowNumber,
+        column: "Harga Bersih",
+        value: netRevenue,
+        message: "Invalid numeric value. Net revenue must be a valid number.",
+      })
+    }
+
+    if (!parsedAddOnRevenue.valid) {
+      validationErrors.push({
+        rowNumber,
+        column: "Harga Add Ons Bersih",
+        value: addOnRevenue,
+        message: "Invalid numeric value. Net add-on revenue must be a valid number.",
+      })
+    }
   })
   if (validationErrors.length > 0) {
     throw createImportError({
@@ -451,7 +504,7 @@ export const validateTransactionRows = (records) => {
       message: "The uploaded file contains invalid row data.",
       suggestion: "Please fix the listed rows and upload the transaction file again.",
       technicalMessage: `${validationErrors.length} row validation error(s) found.`,
-      validationErrors: validationErrors.slice(0, MAX_ERRORS),
+      validationErrors,
     })
   }
 

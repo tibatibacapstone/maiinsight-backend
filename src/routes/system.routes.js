@@ -1,44 +1,165 @@
 import bcrypt from "bcryptjs"
+import { randomUUID } from "node:crypto"
 import jwt from "jsonwebtoken"
 import { Router } from "express"
 
 import { prisma } from "../config/prisma.js"
-import { env } from "../config/env.js"
-import { authenticate, authorize } from "../middleware/auth.js"
+import { env, getRequiredJwtSecret } from "../config/env.js"
+import {
+  authenticate,
+  authorize,
+  authorizeUserOrService,
+  SERVICE_SCOPES,
+} from "../middleware/auth.js"
 import { logActivity } from "../services/activityLog.service.js"
 import { getAiProviderStatus } from "../services/aiProvider.service.js"
-import { APP_SETTING_KEYS, buildConfigSnapshot, parseDatabaseName, writeAppSettings } from "../services/appConfig.service.js"
+import { buildConfigSnapshot, parseDatabaseName, writeAppSettings } from "../services/appConfig.service.js"
 import { sendActivationEmail } from "../services/email.service.js"
 import { createNotificationsForRoles } from "../services/notification.service.js"
+import { validatePassword } from "../services/passwordPolicy.service.js"
+import { countEligibleCanonicalCustomers } from "../services/rfmSegmentation.service.js"
+import {
+  buildIntegrationSettingsUpdate,
+  buildSafeIntegrationConfig,
+  buildSafeIntegrationStatus,
+} from "../services/systemConfigSecurity.service.js"
 
 const router = Router()
+export const SYSTEM_STATUS_ROLES = ["operational", "it_support"]
+export const SYSTEM_CONFIG_ROLES = ["it_support"]
+export const USER_MANAGEMENT_ROLES = ["it_support"]
+export const ALLOWED_SERVICE_TOKEN_SCOPES = Object.freeze([
+  SERVICE_SCOPES.SYSTEM_READ_STATUS,
+])
+export const SAFE_USER_DIRECTORY_SELECT = Object.freeze({
+  id: true,
+  name: true,
+  email: true,
+  role: true,
+  isActive: true,
+  createdAt: true,
+  updatedAt: true,
+})
+const IT_SUPPORT_ROLE = "it_support"
+
+const userManagementError = (errorCode, message, statusCode = 400) =>
+  Object.assign(new Error(message), { errorCode, statusCode })
+
+const removesActiveItSupportAccess = (targetUser, updateData) =>
+  targetUser.role === IT_SUPPORT_ROLE &&
+  targetUser.isActive === true &&
+  (
+    updateData.isActive === false ||
+    (updateData.role != null && updateData.role !== IT_SUPPORT_ROLE)
+  )
+
+export const assertUserManagementSafety = async ({
+  tx,
+  actorUserId,
+  targetUser,
+  updateData = null,
+  deleting = false,
+}) => {
+  if (targetUser.id === actorUserId) {
+    if (deleting) {
+      throw userManagementError(
+        "SELF_DELETION_NOT_ALLOWED",
+        "You cannot delete your own account."
+      )
+    }
+    if (updateData?.isActive === false) {
+      throw userManagementError(
+        "SELF_DEACTIVATION_NOT_ALLOWED",
+        "You cannot deactivate your own account."
+      )
+    }
+    if (
+      targetUser.role === IT_SUPPORT_ROLE &&
+      updateData?.role != null &&
+      updateData.role !== IT_SUPPORT_ROLE
+    ) {
+      throw userManagementError(
+        "SELF_ROLE_DOWNGRADE_NOT_ALLOWED",
+        "You cannot remove your own IT Support access."
+      )
+    }
+  }
+
+  const removesAccess =
+    deleting
+      ? targetUser.role === IT_SUPPORT_ROLE && targetUser.isActive === true
+      : removesActiveItSupportAccess(targetUser, updateData || {})
+  if (!removesAccess) return
+
+  const activeItSupportCount = await tx.user.count({
+    where: {
+      role: IT_SUPPORT_ROLE,
+      isActive: true,
+    },
+  })
+  if (activeItSupportCount <= 1) {
+    throw userManagementError(
+      "LAST_IT_SUPPORT_REQUIRED",
+      "At least one active IT Support account is required."
+    )
+  }
+}
+
+export const updateManagedUser = ({
+  db = prisma,
+  actorUserId,
+  targetUserId,
+  updateData,
+}) =>
+  db.$transaction(async (tx) => {
+    const targetUser = await tx.user.findUnique({ where: { id: targetUserId } })
+    if (!targetUser) {
+      throw userManagementError("USER_NOT_FOUND", "User not found.", 404)
+    }
+    await assertUserManagementSafety({
+      tx,
+      actorUserId,
+      targetUser,
+      updateData,
+    })
+    return tx.user.update({
+      where: { id: targetUserId },
+      data: updateData,
+      select: SAFE_USER_DIRECTORY_SELECT,
+    })
+  }, { isolationLevel: "Serializable" })
+
+export const deleteManagedUser = ({
+  db = prisma,
+  actorUserId,
+  targetUserId,
+}) =>
+  db.$transaction(async (tx) => {
+    const targetUser = await tx.user.findUnique({ where: { id: targetUserId } })
+    if (!targetUser) {
+      throw userManagementError("USER_NOT_FOUND", "User not found.", 404)
+    }
+    await assertUserManagementSafety({
+      tx,
+      actorUserId,
+      targetUser,
+      deleting: true,
+    })
+    await tx.activityLog.deleteMany({ where: { userId: targetUserId } })
+    await tx.userInvite.deleteMany({ where: { createdById: targetUserId } })
+    await tx.user.delete({ where: { id: targetUserId } })
+    return targetUser
+  }, { isolationLevel: "Serializable" })
 
 router.use(authenticate)
-router.use(authorize("operational", "it_support"))
 
-router.get("/summary", async (req, res, next) => {
+const getSystemSummary = async (req, res, next) => {
   try {
     const [aiProviderStatus, config] = await Promise.all([
       getAiProviderStatus(),
       buildConfigSnapshot(),
     ])
-    const [
-      users,
-      latestImport,
-      latestSegmentationRun,
-      latestMetaSync,
-    ] = await Promise.all([
-      prisma.user.findMany({
-        orderBy: { name: "asc" },
-        select: {
-          id: true,
-          name: true,
-          email: true,
-          role: true,
-          createdAt: true,
-          updatedAt: true,
-        },
-      }),
+    const [latestImport, latestSegmentationRun, latestMetaSync, eligibleCustomerCount] = await Promise.all([
       prisma.importBatch.findFirst({
         orderBy: { updatedAt: "desc" },
         select: {
@@ -67,16 +188,27 @@ router.get("/summary", async (req, res, next) => {
           message: true,
         },
       }),
+      countEligibleCanonicalCustomers(),
     ])
 
     return res.json({
       success: true,
       data: {
-        currentUser: {
-          userId: req.user.userId,
-          email: req.user.email,
-          role: req.user.role,
-        },
+        currentUser:
+          req.user.principalType === "user"
+            ? {
+                userId: req.user.userId,
+                email: req.user.email,
+                role: req.user.role,
+              }
+            : null,
+        currentService:
+          req.user.principalType === "service"
+            ? {
+                serviceId: req.user.serviceId,
+                scopes: req.user.scopes,
+              }
+            : null,
         api: {
           connected: true,
           baseUrl: env.clientUrl,
@@ -87,6 +219,7 @@ router.get("/summary", async (req, res, next) => {
           lastUpdated: latestImport?.updatedAt || null,
         },
         integrations: {
+          ...buildSafeIntegrationStatus({ config, aiProviderStatus }),
           metaConfigured: Boolean(config.metaAccessToken && config.metaIgUserId) && config.metaEnabled,
           metaEnabled: config.metaEnabled,
           aiConfigured: aiProviderStatus.configured,
@@ -94,45 +227,51 @@ router.get("/summary", async (req, res, next) => {
           aiProvider: aiProviderStatus.provider,
           aiProviderLabel: aiProviderStatus.providerLabel,
           aiModel: aiProviderStatus.model,
-          geminiApiKey: config.geminiApiKey,
           geminiModel: config.geminiModel,
-          metaIgUserId: config.metaIgUserId,
-          metaAccessToken: config.metaAccessToken,
           metaGraphVersion: config.metaGraphVersion,
+          geminiApiKeyConfigured: Boolean(config.geminiApiKey),
+          metaAccessTokenConfigured: Boolean(config.metaAccessToken),
         },
         latestImport,
         latestSegmentationRun,
         latestMetaSync,
+        eligibleCustomerCount,
         tokenManagementMode: "database",
-        users,
       },
+    })
+  } catch (error) {
+    next(error)
+  }
+}
+
+router.get("/summary", authorize(...SYSTEM_STATUS_ROLES), getSystemSummary)
+router.get(
+  "/status",
+  authorizeUserOrService({
+    userRoles: SYSTEM_STATUS_ROLES,
+    serviceScopes: [SERVICE_SCOPES.SYSTEM_READ_STATUS],
+  }),
+  getSystemSummary
+)
+
+router.get("/config", authorize(...SYSTEM_CONFIG_ROLES), async (_req, res, next) => {
+  try {
+    const config = await buildConfigSnapshot()
+    return res.json({
+      success: true,
+      data: buildSafeIntegrationConfig(config),
     })
   } catch (error) {
     next(error)
   }
 })
 
-router.put("/integrations", authorize("it_support"), async (req, res, next) => {
+const updateIntegrationConfig = async (req, res, next) => {
   try {
-    const {
-      geminiApiKey,
-      geminiModel,
-      geminiEnabled,
-      metaIgUserId,
-      metaAccessToken,
-      metaGraphVersion,
-      metaEnabled,
-    } = req.body || {}
-
-    await writeAppSettings({
-      [APP_SETTING_KEYS.GEMINI_API_KEY]: geminiApiKey,
-      [APP_SETTING_KEYS.GEMINI_MODEL]: geminiModel,
-      [APP_SETTING_KEYS.GEMINI_ENABLED]: geminiEnabled === true || geminiEnabled === "true" ? "true" : "false",
-      [APP_SETTING_KEYS.META_IG_USER_ID]: metaIgUserId,
-      [APP_SETTING_KEYS.META_ACCESS_TOKEN]: metaAccessToken,
-      [APP_SETTING_KEYS.META_GRAPH_VERSION]: metaGraphVersion,
-      [APP_SETTING_KEYS.META_ENABLED]: metaEnabled === true || metaEnabled === "true" ? "true" : "false",
-    })
+    const currentConfig = await buildConfigSnapshot()
+    await writeAppSettings(
+      buildIntegrationSettingsUpdate(req.body || {}, currentConfig)
+    )
 
     await logActivity(req, "INTEGRATIONS_UPDATED", {
       status: "success",
@@ -141,24 +280,38 @@ router.put("/integrations", authorize("it_support"), async (req, res, next) => {
     return res.json({
       success: true,
       message: "Integration settings updated successfully.",
+      data: buildSafeIntegrationConfig({
+        ...currentConfig,
+        geminiApiKey: String(req.body?.geminiApiKey || "").trim() || currentConfig.geminiApiKey,
+        geminiModel: req.body?.geminiModel ?? currentConfig.geminiModel,
+        geminiEnabled:
+          req.body?.geminiEnabled === undefined
+            ? currentConfig.geminiEnabled
+            : req.body.geminiEnabled === true || req.body.geminiEnabled === "true",
+        metaIgUserId: req.body?.metaIgUserId ?? currentConfig.metaIgUserId,
+        metaAccessToken:
+          String(req.body?.metaAccessToken || "").trim() || currentConfig.metaAccessToken,
+        metaGraphVersion:
+          req.body?.metaGraphVersion ?? currentConfig.metaGraphVersion,
+        metaEnabled:
+          req.body?.metaEnabled === undefined
+            ? currentConfig.metaEnabled
+            : req.body.metaEnabled === true || req.body.metaEnabled === "true",
+      }),
     })
   } catch (error) {
     next(error)
   }
-})
+}
 
-router.get("/users", async (req, res, next) => {
+router.put("/integrations", authorize(...SYSTEM_CONFIG_ROLES), updateIntegrationConfig)
+router.put("/config", authorize(...SYSTEM_CONFIG_ROLES), updateIntegrationConfig)
+
+router.get("/users", authorize(...USER_MANAGEMENT_ROLES), async (req, res, next) => {
   try {
     const users = await prisma.user.findMany({
       orderBy: { createdAt: "desc" },
-      select: {
-        id: true,
-        name: true,
-        email: true,
-        role: true,
-        createdAt: true,
-        updatedAt: true,
-      },
+      select: SAFE_USER_DIRECTORY_SELECT,
     })
 
     return res.json({
@@ -170,7 +323,7 @@ router.get("/users", async (req, res, next) => {
   }
 })
 
-router.post("/users", authorize("it_support"), async (req, res, next) => {
+router.post("/users", authorize(...USER_MANAGEMENT_ROLES), async (req, res, next) => {
   try {
     const { name, email, password, role } = req.body || {}
 
@@ -179,6 +332,15 @@ router.post("/users", authorize("it_support"), async (req, res, next) => {
         success: false,
         message: "Please complete the required user details.",
         suggestion: "Enter a name, email, password, and role before saving.",
+      })
+    }
+
+    const passwordValidation = validatePassword(password)
+    if (!passwordValidation.valid) {
+      return res.status(400).json({
+        success: false,
+        errorCode: passwordValidation.errorCode,
+        message: passwordValidation.message,
       })
     }
 
@@ -230,7 +392,7 @@ router.post("/users", authorize("it_support"), async (req, res, next) => {
   }
 })
 
-router.post("/user-invites", authorize("it_support"), async (req, res, next) => {
+router.post("/user-invites", authorize(...USER_MANAGEMENT_ROLES), async (req, res, next) => {
   try {
     const { name, email, role } = req.body || {}
 
@@ -258,7 +420,7 @@ router.post("/user-invites", authorize("it_support"), async (req, res, next) => 
         role,
         createdBy: req.user.userId,
       },
-      env.jwtSecret,
+      getRequiredJwtSecret(),
       { expiresIn: "7d" }
     )
     const activationUrl = `${env.appUrl}/activate?token=${encodeURIComponent(inviteToken)}`
@@ -303,7 +465,7 @@ router.post("/user-invites", authorize("it_support"), async (req, res, next) => 
   }
 })
 
-router.post("/user-invites/resend", authorize("it_support"), async (req, res, next) => {
+router.post("/user-invites/resend", authorize(...USER_MANAGEMENT_ROLES), async (req, res, next) => {
   try {
     const { activationUrl } = req.body || {}
 
@@ -356,10 +518,10 @@ router.post("/user-invites/resend", authorize("it_support"), async (req, res, ne
   }
 })
 
-router.patch("/users/:id", authorize("it_support"), async (req, res, next) => {
+router.patch("/users/:id", authorize(...USER_MANAGEMENT_ROLES), async (req, res, next) => {
   try {
     const id = Number(req.params.id)
-    const { name, role, password } = req.body || {}
+    const { name, role, password, isActive } = req.body || {}
 
     if (!Number.isFinite(id)) {
       return res.status(400).json({
@@ -371,21 +533,23 @@ router.patch("/users/:id", authorize("it_support"), async (req, res, next) => {
     const updateData = {}
     if (name) updateData.name = name
     if (role) updateData.role = role
+    if (typeof isActive === "boolean") updateData.isActive = isActive
     if (password) {
+      const passwordValidation = validatePassword(password)
+      if (!passwordValidation.valid) {
+        return res.status(400).json({
+          success: false,
+          errorCode: passwordValidation.errorCode,
+          message: passwordValidation.message,
+        })
+      }
       updateData.password = await bcrypt.hash(password, 10)
     }
 
-    const user = await prisma.user.update({
-      where: { id },
-      data: updateData,
-      select: {
-        id: true,
-        name: true,
-        email: true,
-        role: true,
-        createdAt: true,
-        updatedAt: true,
-      },
+    const user = await updateManagedUser({
+      actorUserId: req.user.userId,
+      targetUserId: id,
+      updateData,
     })
 
     await logActivity(req, "USER_UPDATED", {
@@ -404,7 +568,7 @@ router.patch("/users/:id", authorize("it_support"), async (req, res, next) => {
   }
 })
 
-router.delete("/users/:id", authorize("it_support"), async (req, res, next) => {
+router.delete("/users/:id", authorize(...USER_MANAGEMENT_ROLES), async (req, res, next) => {
   try {
     const id = Number(req.params.id)
 
@@ -415,26 +579,10 @@ router.delete("/users/:id", authorize("it_support"), async (req, res, next) => {
       })
     }
 
-    if (id === req.user.userId) {
-      return res.status(400).json({
-        success: false,
-        message: "You cannot delete your own account.",
-      })
-    }
-
-    const user = await prisma.user.findUnique({ where: { id } })
-    if (!user) {
-      return res.status(404).json({
-        success: false,
-        message: "User not found.",
-      })
-    }
-
-    await prisma.$transaction([
-      prisma.activityLog.deleteMany({ where: { userId: id } }),
-      prisma.userInvite.deleteMany({ where: { createdById: id } }),
-      prisma.user.delete({ where: { id } }),
-    ])
+    const user = await deleteManagedUser({
+      actorUserId: req.user.userId,
+      targetUserId: id,
+    })
 
     await logActivity(req, "USER_DELETED", {
       targetUserId: user.id,
@@ -451,19 +599,48 @@ router.delete("/users/:id", authorize("it_support"), async (req, res, next) => {
   }
 })
 
+export const createServiceToken = ({
+  createdByUserId,
+  label,
+  scopes,
+  serviceId = randomUUID(),
+  secret = getRequiredJwtSecret(),
+}) =>
+  jwt.sign(
+    {
+      tokenType: "service",
+      serviceId,
+      createdByUserId,
+      scopes,
+      label,
+    },
+    secret,
+    { expiresIn: "12h" }
+  )
+
 router.post("/service-token", authorize("it_support"), async (req, res, next) => {
   try {
     const label = req.body?.label || "MaiinSight Service Token"
-    const token = jwt.sign(
-      {
-        type: "service_token",
-        label,
-        createdBy: req.user.userId,
-        role: req.user.role,
-      },
-      env.jwtSecret,
-      { expiresIn: "12h" }
-    )
+    const scopes = Array.isArray(req.body?.scopes)
+      ? [...new Set(req.body.scopes.map(String))]
+      : [...ALLOWED_SERVICE_TOKEN_SCOPES]
+    if (
+      !scopes.length ||
+      scopes.some((scope) => !ALLOWED_SERVICE_TOKEN_SCOPES.includes(scope))
+    ) {
+      return res.status(400).json({
+        success: false,
+        errorCode: "INVALID_SERVICE_TOKEN_SCOPE",
+        message: "One or more requested service-token scopes are unsupported.",
+      })
+    }
+    const serviceId = randomUUID()
+    const token = createServiceToken({
+      createdByUserId: req.user.userId,
+      label,
+      scopes,
+      serviceId,
+    })
 
     await logActivity(req, "SERVICE_TOKEN_GENERATED", {
       label,
@@ -476,6 +653,8 @@ router.post("/service-token", authorize("it_support"), async (req, res, next) =>
       data: {
         token,
         label,
+        serviceId,
+        scopes,
       },
     })
   } catch (error) {

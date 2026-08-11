@@ -24,7 +24,9 @@ segmentationRouter.post(
   async (req, res, next) => {
     try {
       const input = validateSegmentationRunInput(req.body || {})
-      const result = await runRfmSegmentation(input)
+      const result = await runRfmSegmentation(input, {
+        performedByUserId: req.user.userId,
+      })
 
       await logActivity(req, "SEGMENTATION_UPDATED", {
         jobName: "Customer Value Segmentation Run",
