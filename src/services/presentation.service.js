@@ -1108,6 +1108,21 @@ const buildPptx = async ({ data, themeId, aiContent, pptxPath }) => {
   await pptx.writeFile({ fileName: pptxPath })
 }
 
+const buildReportFileName = () => {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Jakarta",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(new Date())
+  const part = (type) => parts.find((p) => p.type === type)?.value || "00"
+  return `Maiin Gandaria - MR${part("year")}${part("month")}${part("day")}${part("hour")}${part("minute")}${part("second")}.pdf`
+}
+
 export const generateManagementPresentation = async ({
   data,
   themeId,
@@ -1125,7 +1140,7 @@ export const generateManagementPresentation = async ({
     const pptxPath = path.join(tmpDir, "management-report.pptx")
     await buildPptx({ data, themeId, aiContent, pptxPath })
 
-    let fileName = `MAIIN-Gandaria-Management-Report-${new Date().toISOString().slice(0, 10)}.pdf`
+    let fileName = buildReportFileName()
     let contentType = "application/pdf"
     let buffer
 
