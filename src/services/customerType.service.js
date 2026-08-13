@@ -1,7 +1,7 @@
 const RECOGNIZED_CUSTOMER_BOOKING_TYPES = [
-  "membership",
-  "non_membership",
-  "internal",
+  "Manual/Walk-in",
+  "GeloraApp Booking",
+  "Internal",
 ]
 
 const emptyCounts = () => ({
@@ -27,11 +27,11 @@ export const buildCustomerTypeSummary = (rows = [], { isOperationalIdentity = fa
 
   rows.forEach((row) => {
     const count = Number(row?._count?._all || 0)
-    if (row?.bookingType === "membership") {
+    if (row?.bookingType === "Manual/Walk-in") {
       counts.membershipTransactionCount += count
-    } else if (row?.bookingType === "non_membership") {
+    } else if (row?.bookingType === "GeloraApp Booking") {
       counts.nonMembershipTransactionCount += count
-    } else if (row?.bookingType === "internal") {
+    } else if (row?.bookingType === "Internal") {
       counts.internalTransactionCount += count
     }
   })

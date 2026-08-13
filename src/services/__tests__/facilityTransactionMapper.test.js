@@ -43,7 +43,7 @@ test("mapRawRowToFacilityTransaction builds canonical booking fields", () => {
   )
 
   assert.equal(transaction.customerIdentity, "EMAIL|john.doe@example.com")
-  assert.equal(transaction.bookingType, "membership")
+  assert.equal(transaction.bookingType, "GeloraApp Booking")
   assert.equal(transaction.validBooking, true)
   assert.equal(transaction.courtType, "mini_soccer")
   assert.equal(transaction.netRevenue, 350000)
@@ -56,7 +56,7 @@ test("positive completed payments are accepted as customer transactions", () => 
 
   assert.equal(result.outcome, "customer")
   assert.equal(result.payload.customerIdentity, "EMAIL|john@example.com")
-  assert.equal(result.payload.bookingType, "membership")
+  assert.equal(result.payload.bookingType, "GeloraApp Booking")
 })
 
 for (const [label, status, revenue] of [
@@ -110,7 +110,7 @@ test("Internal without customer details is accepted as an operational row", () =
   )
 })
 
-test("Tutup and Maintenance receive distinct canonical operational identities", () => {
+test("Tutup and Maintenance normalize into the shared operational identity", () => {
   const tutup = mapRawRowToFacilityTransaction(
     buildRow({ Nama: "", Email: "", Status: "Tutup", "Harga Bersih": "0" }),
     5,
@@ -124,10 +124,12 @@ test("Tutup and Maintenance receive distinct canonical operational identities", 
     11
   )
 
-  assert.equal(tutup.customerIdentity, "STATUS|TUTUP")
-  assert.equal(tutup.customerKey, "SYS-TUTUP")
-  assert.equal(maintenance.customerIdentity, "STATUS|MAINTENANCE")
-  assert.equal(maintenance.customerKey, "SYS-MAINTENANCE")
+  assert.equal(tutup.customerIdentity, "STATUS|TUTUP_MAINTENANCE")
+  assert.equal(tutup.customerKey, "SYS-TUTUP-MAINTENANCE")
+  assert.equal(tutup.bookingType, "Tutup/Maintenance")
+  assert.equal(maintenance.customerIdentity, "STATUS|TUTUP_MAINTENANCE")
+  assert.equal(maintenance.customerKey, "SYS-TUTUP-MAINTENANCE")
+  assert.equal(maintenance.bookingType, "Tutup/Maintenance")
 })
 
 test("buildCourtHourUsageEntries expands one transaction into hourly occupancy rows", () => {

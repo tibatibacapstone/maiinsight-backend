@@ -591,6 +591,15 @@ const responseText = async (response) =>
       ? await response.text()
       : response?.candidates?.[0]?.content?.parts?.map((part) => part?.text || "").join("") || ""
 
+const normalizeUsage = (usage) => {
+  if (!usage) return null
+  return {
+    promptTokens: Number(usage.promptTokenCount ?? usage.prompt_tokens ?? 0),
+    candidatesTokens: Number(usage.candidatesTokenCount ?? usage.candidates_tokens ?? 0),
+    totalTokens: Number(usage.totalTokenCount ?? usage.total_tokens ?? 0),
+  }
+}
+
 export const isGeminiConfigured = async () => Boolean((await buildConfigSnapshot()).geminiApiKey)
 
 export const generateValidatedStrategy = async (strategyContext, generateResponse) => {
@@ -625,6 +634,7 @@ const generateWithGemini = async (strategyContext) => {
     })
   }
   const ai = new GoogleGenAI({ apiKey: geminiApiKey })
+  let lastUsage = null
   const strategy = await generateValidatedStrategy(strategyContext, async (prompt) => {
     let response
     try {
@@ -639,6 +649,7 @@ const generateWithGemini = async (strategyContext) => {
           thinkingConfig: { thinkingBudget: 0 },
         },
       })
+      if (response?.usageMetadata) lastUsage = response.usageMetadata
     } catch (error) {
       throw createAiServiceError({
         errorCode: "AI_GENERATION_FAILED",
@@ -652,6 +663,28 @@ const generateWithGemini = async (strategyContext) => {
     provider: "gemini",
     model: geminiModel,
     strategy,
+    usage: normalizeUsage(lastUsage),
+  }
+}
+
+export const checkGeminiHealth = async () => {
+  const config = await buildConfigSnapshot()
+  if (!config.geminiApiKey) {
+    return { status: "not_configured" }
+  }
+  if (!config.geminiEnabled) {
+    return { status: "disabled" }
+  }
+  const model = config.geminiModel || "gemini-2.5-flash"
+  try {
+    const ai = new GoogleGenAI({ apiKey: config.geminiApiKey })
+    await ai.models.get({ model })
+    return { status: "valid" }
+  } catch (error) {
+    return {
+      status: "error",
+      error: error instanceof Error ? error.message : "Gemini API check failed.",
+    }
   }
 }
 

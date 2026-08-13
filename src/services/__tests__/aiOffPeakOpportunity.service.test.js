@@ -59,7 +59,7 @@ test("aggregation uses court-hours, canonical sessions, blocked capacity, and st
     rows: [
       row({ date: [2026, 6, 7], status: "Payment Completed" }),
       row({ date: [2026, 6, 8], status: "Internal" }),
-      row({ date: [2026, 6, 14], status: "Tutup", hour: "07:00" }),
+      row({ date: [2026, 6, 14], status: "Tutup/Maintenance", hour: "07:00" }),
       row({ date: [2026, 6, 15], status: "Payment Completed" }),
     ],
     knownCourts: [{ court: "Court 1", courtType: "mini_soccer" }],
@@ -80,7 +80,7 @@ test("aggregation uses court-hours, canonical sessions, blocked capacity, and st
   const limited = aggregateOffPeakWindows({
     rows: [
       row({ date: [2026, 6, 7], status: "Payment Completed" }),
-      row({ date: [2026, 6, 14], status: "Tutup", hour: "07:00" }),
+      row({ date: [2026, 6, 14], status: "Tutup/Maintenance", hour: "07:00" }),
     ],
     knownCourts: [{ court: "Court 1", courtType: "mini_soccer" }],
     range,

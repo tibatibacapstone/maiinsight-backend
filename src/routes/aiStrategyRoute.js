@@ -165,6 +165,17 @@ aiStrategyRouter.post(
           performedByUserId: req.user.userId,
         },
       })
+      const usage = result.usage || { promptTokens: 0, candidatesTokens: 0, totalTokens: 0 }
+      await prisma.aiUsageLog.create({
+        data: {
+          userId: req.user.userId,
+          model: result.model,
+          feature: "strategy_generation",
+          promptTokens: Number(usage.promptTokens) || 0,
+          candidatesTokens: Number(usage.candidatesTokens) || 0,
+          totalTokens: Number(usage.totalTokens) || 0,
+        },
+      })
       const safeMetadata = {
         segmentKey: structuredContext.selected_scope.segmentKey,
         venueKey: structuredContext.selected_scope.venueKey,

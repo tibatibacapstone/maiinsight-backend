@@ -3,6 +3,7 @@ import assert from "node:assert/strict"
 import * as XLSX from "xlsx"
 
 import {
+  detectOrderIdAnomalies,
   isSupportedImportFile,
   parseUploadedTransactionFile,
   validateTransactionRows,
@@ -387,4 +388,40 @@ test("operational rows allow zero revenue and missing customer details", () => {
     ]),
     true
   )
+})
+
+test("detectOrderIdAnomalies flags Payment Completed without Order ID and Manual/Walk-in with Order ID", () => {
+  const result = detectOrderIdAnomalies([
+    { "Order ID": "ORD-001", Nama: "A", Status: "Payment Completed" },
+    { "Order ID": "", Nama: "B", Status: "Payment Completed" },
+    { "Order ID": "ORD-002", Nama: "C", Status: "Manual/Walk-in" },
+    { "Order ID": "", Nama: "D", Status: "Manual/Walk-in" },
+    { Nama: "E", Status: "Internal" },
+    { Nama: "F", Status: "Tutup" },
+    { Nama: "G", Status: "Maintenance" },
+    { Nama: "H", Status: "Random Unknown" },
+  ])
+
+  assert.equal(result.paymentCompletedWithoutOrderId, 1)
+  assert.equal(result.manualWalkInWithOrderId, 1)
+  assert.equal(result.anomalies.length, 2)
+  assert.equal(result.anomalies[0].type, "payment_completed_without_order_id")
+  assert.equal(result.anomalies[0].rowNumber, 3)
+  assert.equal(result.anomalies[0].customerName, "B")
+  assert.equal(result.anomalies[0].orderId, null)
+  assert.equal(result.anomalies[1].type, "manual_walk_in_with_order_id")
+  assert.equal(result.anomalies[1].rowNumber, 4)
+  assert.equal(result.anomalies[1].customerName, "C")
+  assert.equal(result.anomalies[1].orderId, "ORD-002")
+})
+
+test("detectOrderIdAnomalies returns no anomalies for a clean file", () => {
+  const result = detectOrderIdAnomalies([
+    { "Order ID": "ORD-001", Nama: "A", Status: "Payment Completed" },
+    { "Order ID": "", Nama: "D", Status: "Manual/Walk-in" },
+  ])
+
+  assert.equal(result.paymentCompletedWithoutOrderId, 0)
+  assert.equal(result.manualWalkInWithOrderId, 0)
+  assert.equal(result.anomalies.length, 0)
 })

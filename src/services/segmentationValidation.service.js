@@ -3,7 +3,22 @@ import { badRequest } from "../utils/http-error.js"
 const MAX_PAGE_SIZE = 500
 const DEFAULT_PAGE_SIZE = 100
 const ALLOWED_PERIOD_TYPES = new Set(["MTD", "YTD"])
-const ALLOWED_BOOKING_TYPES = new Set(["regular_booking", "member_internal_booking"])
+const BOOKING_TYPE_TOKENS = new Map([
+  ["geloraapp booking", "GeloraApp Booking"],
+  ["gelora app booking", "GeloraApp Booking"],
+  ["geloraappbooking", "GeloraApp Booking"],
+  ["manual/walk-in", "Manual/Walk-in"],
+  ["manual walk-in", "Manual/Walk-in"],
+  ["manual walkin", "Manual/Walk-in"],
+  ["manual", "Manual/Walk-in"],
+  ["internal", "Internal"],
+  ["tutup/maintenance", "Tutup/Maintenance"],
+  ["tutup maintenance", "Tutup/Maintenance"],
+  ["tutup", "Tutup/Maintenance"],
+  ["maintenance", "Tutup/Maintenance"],
+  ["closed/maintenance", "Tutup/Maintenance"],
+  ["blocked", "Tutup/Maintenance"],
+])
 
 const hasValue = (value) => value !== undefined && value !== null && String(value).trim() !== ""
 
@@ -110,17 +125,19 @@ const normalizeYear = (value) => {
 const normalizeBookingType = (value) => {
   if (!hasValue(value)) return null
 
-  const normalized = String(value).trim().toLowerCase()
+  const normalized = String(value).trim().toLowerCase().replace(/\s+/g, " ")
 
   if (normalized === "all") return null
 
-  if (!ALLOWED_BOOKING_TYPES.has(normalized)) {
+  const canonical = BOOKING_TYPE_TOKENS.get(normalized)
+
+  if (!canonical) {
     throw badRequest(
-      "bookingType must be regular_booking, member_internal_booking, or omitted."
+      "bookingType must be GeloraApp Booking, Manual/Walk-in, Internal, Tutup/Maintenance, or omitted."
     )
   }
 
-  return normalized
+  return canonical
 }
 
 const normalizeSegmentName = (value) => {

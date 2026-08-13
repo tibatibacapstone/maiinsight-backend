@@ -86,9 +86,9 @@ export const resolveSessionNameByHour = (hour) => {
 const mapCourtTypeLabel = (courtType) => COURT_TYPE_LABELS[courtType] || courtType || "Unknown"
 
 const mapCustomerTypeLabel = (bookingTypeDominant) => {
-  if (bookingTypeDominant === "member_internal_booking") return "Membership"
-  if (bookingTypeDominant === "regular_booking") return "Non Membership"
-  return "Mixed/Other"
+  if (bookingTypeDominant === "Manual/Walk-in") return "Membership"
+  if (bookingTypeDominant === "GeloraApp Booking") return "Non-Membership"
+  return bookingTypeDominant || "Mixed/Other"
 }
 
 const buildCustomerDisplayName = (transaction) =>
@@ -120,8 +120,8 @@ const buildDateRange = (inputDate) => {
 }
 
 const buildBookingTypeFilter = (customerType) => {
-  if (customerType === "membership") return "member_internal_booking"
-  if (customerType === "non_membership") return "regular_booking"
+  if (customerType === "membership") return "Manual/Walk-in"
+  if (customerType === "non_membership") return "GeloraApp Booking"
   return null
 }
 

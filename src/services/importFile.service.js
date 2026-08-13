@@ -2,6 +2,7 @@ import { parse as parseCsv } from "csv-parse/sync"
 import * as XLSX from "xlsx"
 import { buildCustomerIdentity } from "./transactionFeatureEngineering.service.js"
 import {
+  CANONICAL_TRANSACTION_STATUSES,
   classifyTransactionRevenue,
   classifyTransactionStatus,
   parseTransactionAmount,
@@ -511,8 +512,69 @@ export const validateTransactionRows = (records) => {
   return true
 }
 
-export const buildFriendlyImportFailure = (error) => {
-  const technicalMessage =
+export const detectOrderIdAnomalies = (records = []) => {
+  const paymentCompletedWithoutOrderId = []
+  const manualWalkInWithOrderId = []
+
+  records.forEach((row, index) => {
+    const rowNumber = index + 2
+    const statusClassification = classifyTransactionStatus(
+      getRowValue(row, ["Status", "status"])
+    )
+    if (statusClassification.category === TRANSACTION_ROW_CATEGORIES.EXCLUDED) {
+      return
+    }
+
+    const orderId = getRowValue(row, [
+      "Order ID",
+      "Order Id",
+      "order_id",
+      "orderId",
+    ])
+    const hasOrderId = orderId !== null && String(orderId).trim() !== ""
+    const customerName = getRowValue(row, [
+      "Nama",
+      "nama",
+      "Customer Name",
+      "customer_name",
+      "customerName",
+      "Team",
+      "team",
+    ])
+
+    if (
+      statusClassification.canonicalStatus ===
+        CANONICAL_TRANSACTION_STATUSES.PAYMENT_COMPLETED &&
+      !hasOrderId
+    ) {
+      paymentCompletedWithoutOrderId.push({
+        rowNumber,
+        type: "payment_completed_without_order_id",
+        customerName,
+        orderId: null,
+      })
+    } else if (
+      statusClassification.canonicalStatus ===
+        CANONICAL_TRANSACTION_STATUSES.MANUAL_WALK_IN &&
+      hasOrderId
+    ) {
+      manualWalkInWithOrderId.push({
+        rowNumber,
+        type: "manual_walk_in_with_order_id",
+        customerName,
+        orderId: String(orderId).trim(),
+      })
+    }
+  })
+
+  return {
+    paymentCompletedWithoutOrderId: paymentCompletedWithoutOrderId.length,
+    manualWalkInWithOrderId: manualWalkInWithOrderId.length,
+    anomalies: [...paymentCompletedWithoutOrderId, ...manualWalkInWithOrderId],
+  }
+}
+
+export const buildFriendlyImportFailure = (error) => {  const technicalMessage =
     error?.technicalMessage ||
     (error instanceof Error ? error.message : "Unknown import error.")
 

@@ -19,7 +19,6 @@ export const TRANSFORMED_EXPORT_SCHEMA = Object.freeze([
   sourceColumn("Jam Main", ["Jam Main", "jam_main", "jamMain", "playTime"]),
   sourceColumn("Venue", ["Venue", "venue"]),
   sourceColumn("Lapangan", ["Lapangan", "lapangan", "Court", "court"]),
-  sourceColumn("Status", ["Status", "status"]),
   sourceColumn("Harga Bersih", ["Harga Bersih", "harga_bersih", "hargaBersih"]),
   sourceColumn("Add Ons", ["Add Ons", "add_ons", "addOns"], "addOns"),
   sourceColumn("Harga Add Ons Bersih", ["Harga Add Ons Bersih", "harga_add_ons_bersih", "hargaAddOnsBersih", "Harga Add Ons", "harga_add_ons", "hargaAddOns"]),

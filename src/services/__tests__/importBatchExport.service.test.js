@@ -47,7 +47,7 @@ const buildGeneratedTransaction = (rowNumber) => ({
   period: "2026-01",
   courtType: "basketball",
   status: "Selesai",
-  bookingType: "non_membership",
+  bookingType: "GeloraApp Booking",
   validBooking: true,
   netRevenue: rowNumber === 1 ? 0 : 100000,
   addOnRevenue: 0,
@@ -77,7 +77,9 @@ test("preview and download share the stable curated schema and transformed value
   const columns = buildTransformedBatchColumns()
 
   assert.deepEqual(columns, TRANSFORMED_EXPORT_COLUMNS)
-  assert.equal(columns.length, 26)
+  assert.equal(columns.length, 25)
+  assert.equal(columns.includes("Status"), false)
+  assert.equal(columns.includes("Booking Type"), true)
   assert.equal(rows[0].data["Customer Identity"], transactions[0].customerIdentity)
   assert.equal(rows[0].data["Customer Key"], transactions[0].customerKey)
   assert.equal(rows[0].data["Customer Key Type"], transactions[0].customerKeyType)
@@ -149,7 +151,6 @@ test("visible column order remains source-first followed by required lineage fie
     "Jam Main",
     "Venue",
     "Lapangan",
-    "Status",
     "Harga Bersih",
     "Add Ons",
     "Harga Add Ons Bersih",

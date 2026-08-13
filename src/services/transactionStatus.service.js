@@ -12,9 +12,10 @@ export const TRANSACTION_ROW_CATEGORIES = {
 
 export const DASHBOARD_TRANSACTION_GROUPS = {
   ALL: "all",
-  MEMBERSHIP: "membership",
-  NON_MEMBERSHIP: "non_membership",
-  INTERNAL: "internal",
+  GELORA_APP_BOOKING: "GeloraApp Booking",
+  MANUAL_WALK_IN: "Manual/Walk-in",
+  INTERNAL: "Internal",
+  TUTUP_MAINTENANCE: "Tutup/Maintenance",
   EXCLUDED: "excluded",
 }
 
@@ -22,8 +23,6 @@ export const CANONICAL_TRANSACTION_STATUSES = {
   PAYMENT_COMPLETED: "Payment Completed",
   MANUAL_WALK_IN: "Manual/Walk-in",
   INTERNAL: "Internal",
-  TUTUP: "Tutup",
-  MAINTENANCE: "Maintenance",
   TUTUP_MAINTENANCE: "Tutup/Maintenance",
 }
 
@@ -38,7 +37,7 @@ const STATUS_DEFINITIONS = new Map([
     {
       canonicalStatus: CANONICAL_TRANSACTION_STATUSES.PAYMENT_COMPLETED,
       category: TRANSACTION_ROW_CATEGORIES.CUSTOMER,
-      bookingType: "membership",
+      bookingType: "GeloraApp Booking",
     },
   ],
   ...["manual/walk/in", "manual/walkin", "manual walk/in", "manual walkin", "manual booking"].map(
@@ -47,7 +46,7 @@ const STATUS_DEFINITIONS = new Map([
       {
         canonicalStatus: CANONICAL_TRANSACTION_STATUSES.MANUAL_WALK_IN,
         category: TRANSACTION_ROW_CATEGORIES.CUSTOMER,
-        bookingType: "non_membership",
+        bookingType: "Manual/Walk-in",
       },
     ]
   ),
@@ -56,34 +55,16 @@ const STATUS_DEFINITIONS = new Map([
     {
       canonicalStatus: CANONICAL_TRANSACTION_STATUSES.INTERNAL,
       category: TRANSACTION_ROW_CATEGORIES.OPERATIONAL,
-      bookingType: "internal",
+      bookingType: "Internal",
       operationalCode: "INTERNAL",
     },
   ],
-  [
-    "tutup",
-    {
-      canonicalStatus: CANONICAL_TRANSACTION_STATUSES.TUTUP,
-      category: TRANSACTION_ROW_CATEGORIES.OPERATIONAL,
-      bookingType: "blocked",
-      operationalCode: "TUTUP",
-    },
-  ],
-  [
-    "maintenance",
-    {
-      canonicalStatus: CANONICAL_TRANSACTION_STATUSES.MAINTENANCE,
-      category: TRANSACTION_ROW_CATEGORIES.OPERATIONAL,
-      bookingType: "blocked",
-      operationalCode: "MAINTENANCE",
-    },
-  ],
-  ...["tutup/maintenance", "closed/maintenance"].map((alias) => [
+  ...["tutup/maintenance", "closed/maintenance", "tutup", "maintenance"].map((alias) => [
     alias,
     {
       canonicalStatus: CANONICAL_TRANSACTION_STATUSES.TUTUP_MAINTENANCE,
       category: TRANSACTION_ROW_CATEGORIES.OPERATIONAL,
-      bookingType: "blocked",
+      bookingType: "Tutup/Maintenance",
       operationalCode: "TUTUP_MAINTENANCE",
     },
   ]),
@@ -125,17 +106,11 @@ export const isEligibleCustomerStatus = (value) =>
 export const getDashboardTransactionGroup = (value) => {
   const classification = classifyTransactionStatus(value)
 
-  if (classification.category === TRANSACTION_ROW_CATEGORIES.OPERATIONAL) {
-    return DASHBOARD_TRANSACTION_GROUPS.INTERNAL
-  }
-
-  if (classification.category !== TRANSACTION_ROW_CATEGORIES.CUSTOMER) {
+  if (classification.category === TRANSACTION_ROW_CATEGORIES.EXCLUDED) {
     return DASHBOARD_TRANSACTION_GROUPS.EXCLUDED
   }
 
-  return classification.bookingType === DASHBOARD_TRANSACTION_GROUPS.MEMBERSHIP
-    ? DASHBOARD_TRANSACTION_GROUPS.MEMBERSHIP
-    : DASHBOARD_TRANSACTION_GROUPS.NON_MEMBERSHIP
+  return classification.bookingType || DASHBOARD_TRANSACTION_GROUPS.EXCLUDED
 }
 
 export const normalizeDashboardTransactionGroup = (value) => {
@@ -146,27 +121,44 @@ export const normalizeDashboardTransactionGroup = (value) => {
   }
 
   if (
-    normalized === DASHBOARD_TRANSACTION_GROUPS.MEMBERSHIP ||
-    normalized === "member" ||
-    normalized === "regular_booking"
+    normalized === "geloraapp_booking" ||
+    normalized === "gelora_app_booking" ||
+    normalized === "geloraappbooking" ||
+    normalized === "gelora" ||
+    normalized === "payment_completed" ||
+    normalized === "non_membership" ||
+    normalized === "non_member"
   ) {
-    return DASHBOARD_TRANSACTION_GROUPS.MEMBERSHIP
+    return DASHBOARD_TRANSACTION_GROUPS.GELORA_APP_BOOKING
   }
 
   if (
-    normalized === DASHBOARD_TRANSACTION_GROUPS.NON_MEMBERSHIP ||
-    normalized === "non_member" ||
-    normalized === "member_internal_booking"
+    normalized === "manual/walk_in" ||
+    normalized === "manual_walk_in" ||
+    normalized === "manual" ||
+    normalized === "walk_in" ||
+    normalized === "walkin" ||
+    normalized === "manual_booking" ||
+    normalized === "membership" ||
+    normalized === "member"
   ) {
-    return DASHBOARD_TRANSACTION_GROUPS.NON_MEMBERSHIP
+    return DASHBOARD_TRANSACTION_GROUPS.MANUAL_WALK_IN
+  }
+
+  if (normalized === "internal" || normalized === "operational") {
+    return DASHBOARD_TRANSACTION_GROUPS.INTERNAL
   }
 
   if (
-    normalized === DASHBOARD_TRANSACTION_GROUPS.INTERNAL ||
-    normalized === "operational" ||
+    normalized === "tutup/maintenance" ||
+    normalized === "tutup_maintenance" ||
+    normalized === "tutup" ||
+    normalized === "maintenance" ||
+    normalized === "closed/maintenance" ||
+    normalized === "closed_maintenance" ||
     normalized === "blocked"
   ) {
-    return DASHBOARD_TRANSACTION_GROUPS.INTERNAL
+    return DASHBOARD_TRANSACTION_GROUPS.TUTUP_MAINTENANCE
   }
 
   return null

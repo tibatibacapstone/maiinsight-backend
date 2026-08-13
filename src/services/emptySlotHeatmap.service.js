@@ -75,11 +75,11 @@ export const buildEmptySlotHeatmap = ({
 
     if (row.transaction?.status === CANONICAL_TRANSACTION_STATUSES.INTERNAL) {
       internalByCell.set(cellKey, (internalByCell.get(cellKey) || 0) + 1)
-    } else if (group === DASHBOARD_TRANSACTION_GROUPS.INTERNAL) {
+    } else if (group === DASHBOARD_TRANSACTION_GROUPS.TUTUP_MAINTENANCE) {
       blockedByCell.set(cellKey, (blockedByCell.get(cellKey) || 0) + 1)
     } else if (
-      group === DASHBOARD_TRANSACTION_GROUPS.MEMBERSHIP ||
-      group === DASHBOARD_TRANSACTION_GROUPS.NON_MEMBERSHIP
+      group === DASHBOARD_TRANSACTION_GROUPS.GELORA_APP_BOOKING ||
+      group === DASHBOARD_TRANSACTION_GROUPS.MANUAL_WALK_IN
     ) {
       occupiedByCell.set(cellKey, (occupiedByCell.get(cellKey) || 0) + 1)
     }

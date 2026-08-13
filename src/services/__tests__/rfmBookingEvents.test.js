@@ -8,7 +8,7 @@ test("one order with three session rows counts three events and sums session rev
     orderId: "ORD-ONE",
     customerKey: "CUST-00001",
     customerName: "Customer",
-    bookingType: "membership",
+    bookingType: "GeloraApp Booking",
     status: "Payment Completed",
     playDate: new Date(2025, 0, 1),
     bookingEventKey: `SES-00001-BB-20250101-${String(hour).padStart(2, "0")}00`,

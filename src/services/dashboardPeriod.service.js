@@ -261,8 +261,6 @@ const CUSTOMER_STATUSES = [
 
 const OPERATIONAL_STATUSES = [
   CANONICAL_TRANSACTION_STATUSES.INTERNAL,
-  CANONICAL_TRANSACTION_STATUSES.TUTUP,
-  CANONICAL_TRANSACTION_STATUSES.MAINTENANCE,
   CANONICAL_TRANSACTION_STATUSES.TUTUP_MAINTENANCE,
 ]
 
@@ -284,22 +282,29 @@ export const buildDashboardTransactionGroupCondition = ({
     customerKey: { startsWith: "SYS-" },
   }
 
-  if (group === DASHBOARD_TRANSACTION_GROUPS.MEMBERSHIP) {
+  if (group === DASHBOARD_TRANSACTION_GROUPS.GELORA_APP_BOOKING) {
     return {
       ...customerCondition,
-      bookingType: DASHBOARD_TRANSACTION_GROUPS.MEMBERSHIP,
+      bookingType: DASHBOARD_TRANSACTION_GROUPS.GELORA_APP_BOOKING,
     }
   }
 
-  if (group === DASHBOARD_TRANSACTION_GROUPS.NON_MEMBERSHIP) {
+  if (group === DASHBOARD_TRANSACTION_GROUPS.MANUAL_WALK_IN) {
     return {
       ...customerCondition,
-      bookingType: DASHBOARD_TRANSACTION_GROUPS.NON_MEMBERSHIP,
+      bookingType: DASHBOARD_TRANSACTION_GROUPS.MANUAL_WALK_IN,
     }
   }
 
   if (group === DASHBOARD_TRANSACTION_GROUPS.INTERNAL) {
     return operationalCondition
+  }
+
+  if (group === DASHBOARD_TRANSACTION_GROUPS.TUTUP_MAINTENANCE) {
+    return {
+      ...operationalCondition,
+      status: { in: [CANONICAL_TRANSACTION_STATUSES.TUTUP_MAINTENANCE] },
+    }
   }
 
   return includeOperational

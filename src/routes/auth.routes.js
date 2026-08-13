@@ -4,6 +4,7 @@ import { Router } from "express"
 
 import { env, getRequiredJwtSecret } from "../config/env.js"
 import { prisma } from "../config/prisma.js"
+import { authenticate, authorize } from "../middleware/auth.js"
 import { sendPasswordResetEmail } from "../services/email.service.js"
 import {
   createPasswordResetToken,
@@ -22,6 +23,8 @@ import {
 } from "../middleware/auth-rate-limit.js"
 
 const router = Router()
+
+const MAX_AVATAR_BYTES = 1024 * 1024
 
 export const createToken = (user) => {
   return jwt.sign(
@@ -216,6 +219,68 @@ router.post("/reset-password", passwordResetConfirmationRateLimit, async (req, r
     }
 
     return res.json({ success: true, message: "Password reset successfully." })
+  } catch (error) {
+    next(error)
+  }
+})
+
+router.get("/me", authenticate, authorize("operational", "management", "it_support"), async (req, res, next) => {
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id: req.user.id },
+      select: { id: true, email: true, name: true, role: true, avatar: true, isActive: true },
+    })
+
+    if (!user) {
+      return res.status(404).json({ error: "Account not found" })
+    }
+
+    return res.json({ success: true, data: user })
+  } catch (error) {
+    next(error)
+  }
+})
+
+router.patch("/me", authenticate, authorize("operational", "management", "it_support"), async (req, res, next) => {
+  try {
+    const { name, avatar } = req.body || {}
+
+    if (name === undefined && avatar === undefined) {
+      return res.status(400).json({ error: "Nothing to update" })
+    }
+
+    const data = {}
+
+    if (name !== undefined) {
+      if (typeof name !== "string" || !name.trim()) {
+        return res.status(400).json({ error: "Name cannot be empty" })
+      }
+      const trimmedName = name.trim()
+      if (trimmedName.length > 100) {
+        return res.status(400).json({ error: "Name must be 100 characters or fewer" })
+      }
+      data.name = trimmedName
+    }
+
+    if (avatar !== undefined) {
+      if (avatar === null) {
+        data.avatar = null
+      } else if (typeof avatar !== "string" || !avatar.startsWith("data:image/") || !avatar.includes(";base64,")) {
+        return res.status(400).json({ error: "Invalid profile photo" })
+      } else if (Buffer.byteLength(avatar, "utf8") > MAX_AVATAR_BYTES) {
+        return res.status(400).json({ error: "Profile photo must be 1 MB or smaller" })
+      } else {
+        data.avatar = avatar
+      }
+    }
+
+    const user = await prisma.user.update({
+      where: { id: req.user.id },
+      data,
+      select: { id: true, email: true, name: true, role: true, avatar: true, isActive: true },
+    })
+
+    return res.json({ success: true, data: user })
   } catch (error) {
     next(error)
   }

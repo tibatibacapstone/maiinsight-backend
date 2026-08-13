@@ -170,7 +170,7 @@ test("all-sessions occupancy uses all configured session hours and excludes bloc
       court: "Court 2",
       hourStart: "19:00",
       hourlyRevenue: 0,
-      transaction: { validBooking: true, status: "Maintenance" },
+      transaction: { validBooking: true, status: "Tutup/Maintenance" },
     },
   ]
   const result = await buildVenueOpportunity({

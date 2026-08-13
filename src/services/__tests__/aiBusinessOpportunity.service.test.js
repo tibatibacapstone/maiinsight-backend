@@ -110,7 +110,7 @@ test("blocked hours reduce capacity and Internal follows dashboard occupied-use 
   const result = calculateCourtHourMetrics({
     rows: [
       usage({ status: "Internal" }),
-      usage({ hour: "09:00", status: "Maintenance" }),
+      usage({ hour: "09:00", status: "Tutup/Maintenance" }),
     ],
     knownCourts: [{ court: "Court 1", courtType: "mini_soccer" }],
     operatingDefinitions: definitions,
@@ -181,7 +181,7 @@ test("future slot opportunity derives remaining hours from inventory, bookings, 
     courtHourUsage: {
       findMany: async () => [
         usage({ hour: "06:00" }),
-        usage({ hour: "07:00", status: "Maintenance" }),
+        usage({ hour: "07:00", status: "Tutup/Maintenance" }),
       ],
     },
   }
@@ -219,7 +219,7 @@ test("promotion usage counts booking events, ignores blanks and invalid rows, an
     { bookingEventKey: "2", validBooking: true, status: "Manual/Walk-in", promosi: "Comeback" },
     { bookingEventKey: "3", validBooking: true, status: "Payment Completed", promoName: " " },
     { bookingEventKey: "4", validBooking: false, status: "Payment Completed", promoName: "Invalid" },
-    { bookingEventKey: "5", validBooking: true, status: "Maintenance", promoName: "Blocked" },
+    { bookingEventKey: "5", validBooking: true, status: "Tutup/Maintenance", promoName: "Blocked" },
   ])
   assert.equal(result.validBookingCount, 3)
   assert.equal(result.promotionUsageCount, 2)

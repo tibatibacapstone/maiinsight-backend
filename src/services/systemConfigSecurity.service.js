@@ -20,6 +20,7 @@ export const buildSafeIntegrationStatus = ({ config, aiProviderStatus }) => ({
 })
 
 export const buildSafeIntegrationConfig = (config) => ({
+  geminiApiKey: config.geminiApiKey,
   geminiApiKeyConfigured: Boolean(config.geminiApiKey),
   geminiModel: config.geminiModel,
   geminiEnabled: config.geminiEnabled,

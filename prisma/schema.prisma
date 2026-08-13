@@ -11,6 +11,7 @@ model User {
   id             Int           @id @default(autoincrement())
   email          String        @unique
   name           String
+  avatar         String?        @db.MediumText
   password       String?
   passwordResetVersion Int           @default(0)
   isActive       Boolean       @default(true)
@@ -24,6 +25,7 @@ model User {
   metaSyncLogs      MetaSyncLog[]       @relation("MetaSyncPerformedBy")
   segmentationRuns SegmentationRun[]   @relation("SegmentationRunPerformedBy")
   aiStrategies      AiStrategy[]        @relation("AiStrategyPerformedBy")
+  aiUsageLogs       AiUsageLog[]
 }
 
 model AppSetting {
@@ -64,13 +66,30 @@ model ActivityLog {
 }
 
 model Notification {
-  id        Int      @id @default(autoincrement())
-  title     String
-  message   String
-  role      Role
-  read      Boolean  @default(false)
-  createdAt DateTime @default(now())
-  reads     NotificationRead[]
+  id               Int             @id @default(autoincrement())
+  title            String
+  message          String
+  role             Role
+  read             Boolean         @default(false)
+  createdAt        DateTime        @default(now())
+  downloadRecordId Int?
+  downloadRecord   DownloadRecord? @relation(fields: [downloadRecordId], references: [id], onDelete: Cascade)
+  reads            NotificationRead[]
+}
+
+model DownloadRecord {
+  id               Int            @id @default(autoincrement())
+  fileName         String
+  contentType      String         @default("text/csv; charset=utf-8")
+  fileData         String         @db.MediumText
+  fileSizeBytes    Int            @default(0)
+  downloadedById   Int
+  downloadedByName String
+  createdAt        DateTime       @default(now())
+  notifications    Notification[]
+
+  @@index([downloadedById])
+  @@index([createdAt])
 }
 
 model NotificationRead {
@@ -103,6 +122,22 @@ model AiStrategy {
   @@index([targetSegmentKey])
   @@index([performedByUserId])
   @@map("ai_strategies")
+}
+
+model AiUsageLog {
+  id               Int      @id @default(autoincrement())
+  userId           Int?
+  model            String   @db.VarChar(100)
+  feature          String   @db.VarChar(100)
+  promptTokens     Int      @default(0)
+  candidatesTokens Int      @default(0)
+  totalTokens      Int      @default(0)
+  createdAt        DateTime @default(now())
+  user             User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([createdAt])
+  @@index([userId])
+  @@map("ai_usage_logs")
 }
 
 model ImportBatch {

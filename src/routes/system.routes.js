@@ -12,9 +12,10 @@ import {
   SERVICE_SCOPES,
 } from "../middleware/auth.js"
 import { logActivity } from "../services/activityLog.service.js"
-import { getAiProviderStatus } from "../services/aiProvider.service.js"
+import { checkGeminiHealth, getAiProviderStatus } from "../services/aiProvider.service.js"
 import { buildConfigSnapshot, parseDatabaseName, writeAppSettings } from "../services/appConfig.service.js"
 import { sendActivationEmail } from "../services/email.service.js"
+import { checkMetaTokenHealth } from "../services/meta.service.js"
 import { createNotificationsForRoles } from "../services/notification.service.js"
 import { validatePassword } from "../services/passwordPolicy.service.js"
 import { countEligibleCanonicalCustomers } from "../services/rfmSegmentation.service.js"
@@ -244,6 +245,36 @@ const getSystemSummary = async (req, res, next) => {
   }
 }
 
+const startOfDay = (date) => {
+  const d = new Date(date)
+  d.setHours(0, 0, 0, 0)
+  return d
+}
+
+const startOfMonth = (date) => {
+  const d = new Date(date)
+  d.setDate(1)
+  d.setHours(0, 0, 0, 0)
+  return d
+}
+
+const aggregateAiUsage = async (from) => {
+  const rows = await prisma.aiUsageLog.findMany({
+    where: from ? { createdAt: { gte: from } } : {},
+    select: { promptTokens: true, candidatesTokens: true, totalTokens: true },
+  })
+  return rows.reduce(
+    (acc, row) => {
+      acc.promptTokens += row.promptTokens
+      acc.candidatesTokens += row.candidatesTokens
+      acc.totalTokens += row.totalTokens
+      acc.count += 1
+      return acc
+    },
+    { promptTokens: 0, candidatesTokens: 0, totalTokens: 0, count: 0 }
+  )
+}
+
 router.get("/summary", authorize(...SYSTEM_STATUS_ROLES), getSystemSummary)
 router.get(
   "/status",
@@ -253,6 +284,50 @@ router.get(
   }),
   getSystemSummary
 )
+
+router.post("/check-tokens", authorize(...SYSTEM_STATUS_ROLES), async (req, res, next) => {
+  try {
+    const [meta, gemini] = await Promise.all([
+      checkMetaTokenHealth(),
+      checkGeminiHealth(),
+    ])
+    await writeAppSettings({ LAST_TOKEN_CHECK: new Date().toISOString() })
+    return res.json({
+      success: true,
+      data: { meta, gemini },
+    })
+  } catch (error) {
+    next(error)
+  }
+})
+
+router.get("/gemini-usage", authorize(...SYSTEM_STATUS_ROLES), async (req, res, next) => {
+  try {
+    const days = Math.min(Number(req.query.days) || 30, 365)
+    const limit = Math.min(Number(req.query.limit) || 50, 200)
+    const since = new Date()
+    since.setDate(since.getDate() - days)
+
+    const [logs, today, month, allTime] = await Promise.all([
+      prisma.aiUsageLog.findMany({
+        where: { createdAt: { gte: since } },
+        orderBy: { createdAt: "desc" },
+        take: limit,
+        include: { user: { select: { name: true, email: true } } },
+      }),
+      aggregateAiUsage(startOfDay(new Date())),
+      aggregateAiUsage(startOfMonth(new Date())),
+      aggregateAiUsage(null),
+    ])
+
+    return res.json({
+      success: true,
+      data: { logs, today, month, allTime },
+    })
+  } catch (error) {
+    next(error)
+  }
+})
 
 router.get("/config", authorize(...SYSTEM_CONFIG_ROLES), async (_req, res, next) => {
   try {

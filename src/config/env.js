@@ -35,6 +35,12 @@ export const env = {
   metaIgUserId: process.env.META_IG_USER_ID || "",
   metaPageId: process.env.META_PAGE_ID || "",
   googleClientId: String(process.env.GOOGLE_CLIENT_ID || "").trim(),
+  healthReminderEnabled: String(process.env.HEALTH_REMINDER_ENABLED ?? "true").trim() !== "false",
+  healthReminderRecipients: (process.env.HEALTH_REMINDER_RECIPIENTS || "")
+    .split(",")
+    .map((email) => email.trim())
+    .filter(Boolean),
+  healthReminderCron: process.env.HEALTH_REMINDER_CRON || "0 9 * * *",
 };
 
 export const getRequiredJwtSecret = (value = env.jwtSecret) =>

@@ -18,7 +18,7 @@ const customerStatusCondition = {
 }
 
 const operationalStatusCondition = {
-  status: { in: ["Internal", "Tutup", "Maintenance", "Tutup/Maintenance"] },
+  status: { in: ["Internal", "Tutup/Maintenance"] },
   customerKey: { startsWith: "SYS-" },
 }
 
@@ -35,11 +35,11 @@ test("All dashboard filter includes customer and operational groups", () => {
 test("Membership and Non-Membership require positive CUST customer transactions", () => {
   assert.deepEqual(
     buildDashboardTransactionGroupCondition({ customerType: "membership" }),
-    { ...customerStatusCondition, bookingType: "membership" }
+    { ...customerStatusCondition, bookingType: "Manual/Walk-in" }
   )
   assert.deepEqual(
     buildDashboardTransactionGroupCondition({ customerType: "non_membership" }),
-    { ...customerStatusCondition, bookingType: "non_membership" }
+    { ...customerStatusCondition, bookingType: "GeloraApp Booking" }
   )
 })
 

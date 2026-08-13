@@ -2,6 +2,11 @@ import { Router } from "express"
 
 import { prisma } from "../config/prisma.js"
 import { authenticate, authorize } from "../middleware/auth.js"
+import { saveDownloadRecordAndNotifyManagement } from "../services/download.service.js"
+import {
+  generateManagementPresentation,
+  isValidPresentationTheme,
+} from "../services/presentation.service.js"
 import {
   buildNotificationReadInclude,
   buildNotificationReceiptKey,
@@ -118,6 +123,17 @@ const buildStatus = (action = "", metadata = {}) => {
   if (normalized.includes("failed") || metadataStatus === "failed") return "error"
   if (normalized.includes("warning")) return "warning"
   return "success"
+}
+
+const getTargetPage = (title = "") => {
+  const normalized = String(title).toLowerCase()
+
+  if (normalized.includes("instasight") || normalized.includes("meta")) return "instasight"
+  if (normalized.includes("ai strategy")) return "genai"
+  if (normalized.includes("import")) return "data"
+  if (normalized.includes("segmentation")) return "segments"
+
+  return null
 }
 
 const formatMonthInputValue = (value) => {
@@ -533,7 +549,7 @@ router.get(
 
 router.get(
   "/notifications",
-  authorize("operational", "it_support"),
+  authorize("operational", "management", "it_support"),
   async (req, res, next) => {
     try {
       const storedNotifications = await prisma.notification.findMany({
@@ -554,11 +570,15 @@ router.get(
           createdAt: item.createdAt,
           relativeTime: formatRelativeTime(item.createdAt),
           category: getActivityType(item.title),
+          targetPage: getTargetPage(item.title),
+          downloadRecordId: item.downloadRecordId ?? null,
           derived: false,
         })),
         ...derivedNotifications.map((item) => ({
           ...item,
           relativeTime: formatRelativeTime(item.createdAt),
+          targetPage: getTargetPage(item.title),
+          downloadRecordId: null,
         })),
       ]
         .sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime())
@@ -576,7 +596,7 @@ router.get(
 
 router.get(
   "/notifications/unread-count",
-  authorize("operational", "it_support"),
+  authorize("operational", "management", "it_support"),
   async (req, res, next) => {
     try {
       const unreadCount = await prisma.notification.count({
@@ -597,7 +617,7 @@ router.get(
 
 router.patch(
   "/notifications/:id/read",
-  authorize("operational", "it_support"),
+  authorize("operational", "management", "it_support"),
   async (req, res, next) => {
     try {
       const id = Number(req.params.id)
@@ -644,7 +664,7 @@ router.patch(
 
 router.post(
   "/notifications/read-all",
-  authorize("operational", "it_support"),
+  authorize("operational", "management", "it_support"),
   async (req, res, next) => {
     try {
       const visibleNotifications = await prisma.notification.findMany({
@@ -709,26 +729,14 @@ router.get(
   }
 )
 
-router.get(
-  "/management-report",
-  authorize("operational", "management", "it_support"),
-  async (req, res, next) => {
-    try {
-      const courtType = normalizeCourtTypeFilter(req.query.courtType)
-      const bookingType = req.query.bookingType ? String(req.query.bookingType) : "all"
-      const customerType = req.query.customerType ? String(req.query.customerType) : "All Type"
-
-      if (!req.query.startDate || !req.query.endDate) {
-        return res.status(400).json({
-          success: false,
-          message: "Please choose a valid reporting date range.",
-        })
-      }
-      const { startDate, endDateExclusive } = resolveCustomDateRange({
-        startDate: String(req.query.startDate),
-        endDate: String(req.query.endDate),
-      })
-      const inclusiveEndDate = new Date(endDateExclusive.getTime() - 1)
+const buildManagementReportData = async ({
+  startDate,
+  endDateExclusive,
+  courtType,
+  bookingType,
+  customerType,
+}) => {
+  const inclusiveEndDate = new Date(endDateExclusive.getTime() - 1)
 
       const transactionWhere = buildFacilityTransactionWhere({
         startDate,
@@ -1059,8 +1067,7 @@ router.get(
 
       const recommendations = [occupancyInsight, revenueInsight]
 
-      return res.json({
-        success: true,
+      return {
         data: {
           filters: {
             startDate: startDate.toISOString(),
@@ -1118,6 +1125,216 @@ router.get(
             recommendations,
           },
         },
+      }
+}
+
+router.get(
+  "/management-report",
+  authorize("operational", "management", "it_support"),
+  async (req, res, next) => {
+    try {
+      const courtType = normalizeCourtTypeFilter(req.query.courtType)
+      const bookingType = req.query.bookingType ? String(req.query.bookingType) : "all"
+      const customerType = req.query.customerType ? String(req.query.customerType) : "All Type"
+
+      if (!req.query.startDate || !req.query.endDate) {
+        return res.status(400).json({
+          success: false,
+          message: "Please choose a valid reporting date range.",
+        })
+      }
+      const { startDate, endDateExclusive } = resolveCustomDateRange({
+        startDate: String(req.query.startDate),
+        endDate: String(req.query.endDate),
+      })
+
+      const result = await buildManagementReportData({
+        startDate,
+        endDateExclusive,
+        courtType,
+        bookingType,
+        customerType,
+      })
+
+      if (result.error) {
+        return res.status(result.error.statusCode).json({
+          success: false,
+          message: result.error.message,
+        })
+      }
+
+      return res.json({
+        success: true,
+        data: result.data,
+      })
+    } catch (error) {
+      next(error)
+    }
+  }
+)
+
+router.get(
+  "/downloads/:id",
+  authorize("operational", "management", "it_support"),
+  async (req, res, next) => {
+    try {
+      const id = Number(req.params.id)
+
+      if (!Number.isFinite(id)) {
+        return res.status(400).json({
+          success: false,
+          message: "This download could not be found.",
+        })
+      }
+
+      const record = await prisma.downloadRecord.findUnique({
+        where: { id },
+        select: {
+          id: true,
+          fileName: true,
+          contentType: true,
+          fileData: true,
+          fileSizeBytes: true,
+          downloadedByName: true,
+          createdAt: true,
+        },
+      })
+
+      if (!record) {
+        return res.status(404).json({
+          success: false,
+          message: "Download not found.",
+        })
+      }
+
+      return res.json({
+        success: true,
+        data: {
+          id: record.id,
+          fileName: record.fileName,
+          contentType: record.contentType,
+          fileData: record.fileData,
+          fileSizeBytes: record.fileSizeBytes,
+          downloadedByName: record.downloadedByName,
+          createdAt: record.createdAt,
+        },
+      })
+    } catch (error) {
+      next(error)
+    }
+  }
+)
+
+router.post(
+  "/management-report/presentation",
+  authorize("operational", "management", "it_support"),
+  async (req, res, next) => {
+    try {
+      const body = req.body || {}
+      const theme = body.theme
+
+      const courtType = normalizeCourtTypeFilter(body.courtType)
+      const bookingType = body.bookingType ? String(body.bookingType) : "all"
+      const customerType = body.customerType ? String(body.customerType) : "All Type"
+
+      if (!isValidPresentationTheme(theme)) {
+        return res.status(400).json({
+          success: false,
+          message: "Please choose a valid presentation theme.",
+        })
+      }
+
+      if (!body.startDate || !body.endDate) {
+        return res.status(400).json({
+          success: false,
+          message: "Please choose a valid reporting date range.",
+        })
+      }
+      const { startDate, endDateExclusive } = resolveCustomDateRange({
+        startDate: String(body.startDate),
+        endDate: String(body.endDate),
+      })
+
+      const result = await buildManagementReportData({
+        startDate,
+        endDateExclusive,
+        courtType,
+        bookingType,
+        customerType,
+      })
+
+      if (result.error) {
+        return res.status(result.error.statusCode).json({
+          success: false,
+          message: result.error.message,
+        })
+      }
+
+      if (!result.data.hasData) {
+        return res.status(400).json({
+          success: false,
+          message: "No transaction data is available for the selected period.",
+        })
+      }
+
+      const presentation = await generateManagementPresentation({
+        data: result.data,
+        themeId: theme,
+        userId: req.user?.userId,
+      })
+
+      await saveDownloadRecordAndNotifyManagement({
+        fileName: presentation.fileName,
+        fileData: presentation.fileData,
+        contentType: presentation.contentType,
+        fileSizeBytes: presentation.fileSizeBytes,
+        req,
+      })
+
+      res.setHeader("Content-Type", presentation.contentType)
+      res.setHeader("Content-Disposition", `attachment; filename="${presentation.fileName}"`)
+      return res.send(Buffer.from(presentation.fileData, "base64"))
+    } catch (error) {
+      next(error)
+    }
+  }
+)
+
+router.delete(
+  "/notifications/:id",
+  authorize("operational", "management", "it_support"),
+  async (req, res, next) => {
+    try {
+      const id = Number(req.params.id)
+
+      if (!Number.isFinite(id)) {
+        return res.status(400).json({
+          success: false,
+          message: "This notification could not be removed.",
+        })
+      }
+
+      const notification = await prisma.notification.findFirst({
+        where: {
+          id,
+          role: req.user.role,
+        },
+      })
+
+      if (!notification) {
+        return res.status(404).json({
+          success: false,
+          message: "Notification not found.",
+        })
+      }
+
+      await prisma.notification.delete({
+        where: { id },
+      })
+
+      return res.json({
+        success: true,
+        message: "Notification removed.",
       })
     } catch (error) {
       next(error)

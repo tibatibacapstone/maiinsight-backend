@@ -2,6 +2,84 @@ import { env } from "../config/env.js";
 import { prisma } from "../config/prisma.js";
 import { buildConfigSnapshot } from "./appConfig.service.js";
 
+export const checkMetaTokenHealth = async () => {
+  const config = await buildConfigSnapshot();
+  if (!config.metaEnabled || !config.metaAccessToken || !config.metaIgUserId) {
+    return { status: "not_configured", expiresAt: null, daysRemaining: null };
+  }
+  const accessToken = config.metaAccessToken;
+  const igUserId = config.metaIgUserId;
+  const graphVersion = config.metaGraphVersion;
+  const baseUrl = (process.env.META_API_BASE_URL || "https://graph.facebook.com").replace(/\/$/, "");
+
+  try {
+    const accountUrl = `${baseUrl}/${graphVersion}/${igUserId}?fields=username,followers_count`;
+    const accountResponse = await fetch(accountUrl, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    const accountData = await accountResponse.json();
+
+    if (!accountResponse.ok || accountData.error) {
+      const errorSubcode = accountData.error?.error_subcode;
+      const isTokenExpired =
+        accountData.error?.code === 190 &&
+        (errorSubcode === 463 || errorSubcode === 467);
+      if (isTokenExpired) {
+        return { status: "expired", expiresAt: null, daysRemaining: null };
+      }
+      return {
+        status: "error",
+        expiresAt: null,
+        daysRemaining: null,
+        error:
+          accountData.error?.message ||
+          `Meta API returned status ${accountResponse.status}`,
+      };
+    }
+
+    let daysRemaining = null;
+    let expiresAt = null;
+    try {
+      const debugUrl = `${baseUrl}/${graphVersion}/debug_token?input_token=${encodeURIComponent(
+        accessToken
+      )}&access_token=${encodeURIComponent(accessToken)}`;
+      const debugResponse = await fetch(debugUrl);
+      const debugData = await debugResponse.json();
+      const tokenExpiresAtSec = Number(debugData?.data?.expires_at);
+      const expirySec =
+        tokenExpiresAtSec > 0
+          ? tokenExpiresAtSec
+          : Number(debugData?.data?.data_access_expires_at);
+      if (expirySec > 0) {
+        const expiresMs = expirySec * 1000;
+        expiresAt = new Date(expiresMs).toISOString();
+        const days = Math.ceil((expiresMs - Date.now()) / 86400000);
+        if (days <= 0) {
+          return { status: "expired", expiresAt, daysRemaining: 0 };
+        }
+        daysRemaining = days;
+        if (days <= 7) {
+          return { status: "critical", expiresAt, daysRemaining };
+        }
+        if (days <= 30) {
+          return { status: "warning", expiresAt, daysRemaining };
+        }
+      }
+    } catch {
+      // debug_token lookup is optional; fall back to a generic valid status
+    }
+
+    return { status: "valid", expiresAt, daysRemaining };
+  } catch (err) {
+    return {
+      status: "error",
+      expiresAt: null,
+      daysRemaining: null,
+      error: err instanceof Error ? err.message : "Failed to reach Meta API.",
+    };
+  }
+};
+
 // Low-level Meta Graph API access
 const MAX_RETRIES = 2;
 const BASE_RETRY_DELAY_MS = 2000;

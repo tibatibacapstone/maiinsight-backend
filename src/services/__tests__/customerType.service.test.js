@@ -41,10 +41,10 @@ test("buildCustomerTypeSummary counts recognized historical booking types", () =
   assert.deepEqual(
     buildCustomerTypeSummary(
       [
-        { bookingType: "membership", _count: { _all: 2 } },
-        { bookingType: "non_membership", _count: { _all: 3 } },
-        { bookingType: "internal", _count: { _all: 1 } },
-        { bookingType: "blocked", _count: { _all: 99 } },
+        { bookingType: "Manual/Walk-in", _count: { _all: 2 } },
+        { bookingType: "GeloraApp Booking", _count: { _all: 3 } },
+        { bookingType: "Internal", _count: { _all: 1 } },
+        { bookingType: "Tutup/Maintenance", _count: { _all: 99 } },
         { bookingType: null, _count: { _all: 99 } },
       ],
       { isOperationalIdentity: true }
@@ -69,12 +69,12 @@ test("recalculateCustomerTypes queries all valid historical linked transactions"
         return [
           {
             customerId: 1,
-            bookingType: "non_membership",
+            bookingType: "GeloraApp Booking",
             _count: { _all: 3 },
           },
           {
             customerId: 1,
-            bookingType: "membership",
+            bookingType: "Manual/Walk-in",
             _count: { _all: 1 },
           },
         ]
@@ -106,7 +106,7 @@ test("recalculateCustomerTypes queries all valid historical linked transactions"
     customerId: { in: [1, 2] },
     validBooking: true,
     bookingType: {
-      in: ["membership", "non_membership", "internal"],
+      in: ["Manual/Walk-in", "GeloraApp Booking", "Internal"],
     },
   })
   assert.equal(updates.length, 2)

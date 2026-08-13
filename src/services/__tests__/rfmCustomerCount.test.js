@@ -9,7 +9,7 @@ import {
 const eligibleTransaction = (customerKey, index = 0) => ({
   customerKey,
   customerName: customerKey,
-  bookingType: "regular_booking",
+  bookingType: "GeloraApp Booking",
   status: "Payment Completed",
   playDate: new Date(2026, 6, 1 + index),
   bookingEventKey: `${customerKey}-EVENT-${index}`,

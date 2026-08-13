@@ -16,6 +16,7 @@ import { deleteImportBatchData } from "../services/importBatchDeletion.service.j
 import {
   buildFriendlyImportFailure,
   createImportError,
+  detectOrderIdAnomalies,
   IMPORT_UPLOAD_LIMIT_MESSAGE,
   isSupportedImportFile,
   parseUploadedTransactionFile,
@@ -492,6 +493,28 @@ try {
       parsedRecords = parseUploadedTransactionFile(req.file);
       parsedHeaders = validateTransactionTemplate(parsedRecords);
       validateTransactionRows(parsedRecords);
+
+      const anomalyScan = detectOrderIdAnomalies(parsedRecords);
+
+      if (anomalyScan.anomalies.length && !req.body?.confirmImport) {
+        await prisma.importBatch.delete({
+          where: { id: batch.id },
+        });
+        return res.status(409).json({
+          success: false,
+          errorCode: "IMPORT_ORDER_ID_ANOMALY",
+          message:
+            "The transaction file contains rows where the booking channel and Order ID do not match.",
+          suggestion:
+            "Review the listed rows. Confirm to import anyway, or correct the file and re-upload.",
+          requiresConfirmation: true,
+          anomalySummary: {
+            paymentCompletedWithoutOrderId: anomalyScan.paymentCompletedWithoutOrderId,
+            manualWalkInWithOrderId: anomalyScan.manualWalkInWithOrderId,
+          },
+          anomalies: anomalyScan.anomalies,
+        });
+      }
 
       const records = parsedRecords;
       const headers = parsedHeaders;

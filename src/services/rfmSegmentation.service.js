@@ -38,8 +38,10 @@ const createSeededRandom = (seed = DEFAULT_SEED) => {
 }
 
 const BOOKING_TYPE_DISPLAY_MAP = {
-  member_internal_booking: "Membership",
-  regular_booking: "Non Membership",
+  "GeloraApp Booking": "GeloraApp Booking",
+  "Manual/Walk-in": "Manual/Walk-in",
+  Internal: "Internal",
+  "Tutup/Maintenance": "Tutup/Maintenance",
   other: "Other",
 }
 

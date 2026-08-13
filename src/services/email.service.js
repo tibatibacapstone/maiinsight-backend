@@ -2,9 +2,9 @@ import nodemailer from "nodemailer"
 
 import { env } from "../config/env.js"
 
-const hasSmtpConfig = Boolean(env.smtpHost && env.smtpPort && env.smtpUser && env.smtpPass)
+export const hasSmtpConfig = Boolean(env.smtpHost && env.smtpPort && env.smtpUser && env.smtpPass)
 
-const createTransporter = () => {
+export const createTransporter = () => {
   if (!hasSmtpConfig) {
     return null
   }

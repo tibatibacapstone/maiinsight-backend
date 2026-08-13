@@ -353,11 +353,7 @@ export const buildVenueOpportunity = async ({
   const blockedRows = rows.filter(
     (row) =>
       isInSelectedOperatingHours(row) &&
-      [
-        CANONICAL_TRANSACTION_STATUSES.TUTUP,
-        CANONICAL_TRANSACTION_STATUSES.MAINTENANCE,
-        CANONICAL_TRANSACTION_STATUSES.TUTUP_MAINTENANCE,
-      ].includes(row.transaction?.status)
+      [CANONICAL_TRANSACTION_STATUSES.TUTUP_MAINTENANCE].includes(row.transaction?.status)
   )
   const knownCourts = await db.facilityTransaction.findMany({
     where: {

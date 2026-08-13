@@ -22,3 +22,17 @@ test("invalid row data uses the existing friendly validation error contract", ()
   assert.match(source, /buildFriendlyImportFailure\(error\)/)
   assert.match(source, /return res\.status\(statusCode\)\.json\(friendlyFailure\)/)
 })
+
+test("the order-ID anomaly gate runs before raw rows are persisted", () => {
+  const scanIndex = source.indexOf("detectOrderIdAnomalies(parsedRecords)")
+  const rawCreateIndex = source.indexOf("await prisma.rawTransactionTable.createMany")
+  const batchDeleteIndex = source.indexOf("await prisma.importBatch.delete")
+  const confirmIndex = source.indexOf("req.body?.confirmImport")
+  const conflictIndex = source.indexOf("IMPORT_ORDER_ID_ANOMALY")
+
+  assert.ok(scanIndex >= 0)
+  assert.ok(scanIndex < rawCreateIndex)
+  assert.ok(confirmIndex >= 0 && confirmIndex < rawCreateIndex)
+  assert.ok(batchDeleteIndex >= 0 && batchDeleteIndex < rawCreateIndex)
+  assert.ok(conflictIndex >= 0 && conflictIndex > batchDeleteIndex)
+})
