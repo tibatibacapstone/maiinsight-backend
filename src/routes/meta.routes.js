@@ -179,31 +179,53 @@ metaRouter.get(
   authorize("operational", "management", "it_support"),
   async (req, res, next) => {
     try {
-      const configured = await hasMetaCredentials();
+      const configured = await hasMetaCredentials()
+
       const syncSelect = {
         id: true,
         status: true,
         message: true,
         startedAt: true,
         finishedAt: true,
-      };
+      }
+
       const [latestSync, latestSuccessfulSync] = await Promise.all([
         prisma.metaSyncLog.findFirst({
           orderBy: { startedAt: "desc" },
           select: syncSelect,
         }),
+
         prisma.metaSyncLog.findFirst({
           where: { status: "SUCCESS" },
           orderBy: { finishedAt: "desc" },
           select: syncSelect,
         }),
-      ]);
+      ])
 
-      const { connectionState, connectionError } = await resolveMetaConnectionStatus({
+      const {
+        connectionState,
+        connectionError,
+      } = await resolveMetaConnectionStatus({
         configured,
         latestSync,
         testConnection: testMetaConnection,
-      });
+      })
+
+      let tokenStatus = "unknown"
+
+      if (!configured) {
+        tokenStatus = "unknown"
+      } else {
+        const connectionTest = await testMetaConnection()
+
+        if (connectionTest.ok) {
+          tokenStatus = "valid"
+        } else if (connectionTest.tokenExpired) {
+          tokenStatus = "expired"
+        } else {
+          tokenStatus = "error"
+        }
+      }
 
       return res.json({
         success: true,
@@ -213,7 +235,11 @@ metaRouter.get(
           tokenStatus,
           latestSync,
           latestSuccessfulSync,
-          setupMessage: configured ? null : buildMetaSetupResponse().message,
+
+          setupMessage: configured
+            ? null
+            : buildMetaSetupResponse().message,
+
           suggestion: configured
             ? connectionError
               ? tokenStatus === "expired"
@@ -221,14 +247,15 @@ metaRouter.get(
                 : "Meta credentials are configured but the API returned an error. Please verify the access token is valid and not expired."
               : null
             : buildMetaSetupResponse().suggestion,
+
           connectionError,
         },
-      });
+      })
     } catch (error) {
-      next(error);
+      next(error)
     }
   }
-);
+)
 
 metaRouter.get(
   "/test-connection",

@@ -17,22 +17,22 @@ test("validateLowOccupancySessionInput applies defaults", () => {
 test("validateRecommendedCustomersInput normalizes valid query params", () => {
   assert.deepEqual(
     validateRecommendedCustomersInput({
-      date: "2026-07-10",
+      campaignDay: "Friday",
+      analysisPeriodMonths: "4",
       courtType: "mini_soccer",
       sessionName: "Morning",
       customerType: "non_membership",
       segmentName: "Growth Players",
-      minSessionBookingCount: "2",
       limit: "25",
       offset: "5",
     }),
     {
-      date: "2026-07-10",
+      campaignDay: "Friday",
+      analysisPeriodMonths: 4,
       courtType: "mini_soccer",
       sessionName: "Morning",
       customerType: "non_membership",
       segmentName: "Growth Players",
-      minSessionBookingCount: 2,
       limit: 25,
       offset: 5,
     }

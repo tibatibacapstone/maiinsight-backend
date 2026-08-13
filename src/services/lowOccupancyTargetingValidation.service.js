@@ -11,6 +11,8 @@ const ALLOWED_SEGMENT_NAMES = new Set([
   "Growth Players",
   "Re-Engagement Players",
 ])
+const ALLOWED_CAMPAIGN_DAYS = new Set(["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"])
+const ALLOWED_ANALYSIS_MONTHS = new Set([1, 2, 3, 4, 6, 12])
 
 const hasValue = (value) => value !== undefined && value !== null && String(value).trim() !== ""
 
@@ -108,15 +110,18 @@ export const validateLowOccupancySessionInput = (input = {}) => ({
 })
 
 export const validateRecommendedCustomersInput = (input = {}) => ({
-  date: normalizeIsoDate(input.date),
+  campaignDay: ALLOWED_CAMPAIGN_DAYS.has(String(input.campaignDay || "Monday"))
+    ? String(input.campaignDay || "Monday")
+    : (() => { throw badRequest("campaignDay must be a weekday name.") })(),
+  analysisPeriodMonths: (() => {
+    const months = normalizeNumber(input.analysisPeriodMonths, "analysisPeriodMonths", { minimum: 1, fallback: 3 })
+    if (!ALLOWED_ANALYSIS_MONTHS.has(months)) throw badRequest("analysisPeriodMonths must be 1, 2, 3, 4, 6, or 12.")
+    return months
+  })(),
   courtType: normalizeCourtType(input.courtType),
   sessionName: normalizeSessionName(input.sessionName),
   customerType: normalizeCustomerType(input.customerType),
   segmentName: normalizeSegmentName(input.segmentName),
-  minSessionBookingCount: normalizeNumber(input.minSessionBookingCount, "minSessionBookingCount", {
-    minimum: 1,
-    fallback: 1,
-  }),
   limit: normalizeNumber(input.limit, "limit", {
     minimum: 1,
     maximum: MAX_PAGE_SIZE,

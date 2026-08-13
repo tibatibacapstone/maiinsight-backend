@@ -40,6 +40,20 @@ const ALL_MONTH_LABEL = "All Month"
 export const APPLICATION_TIME_ZONE = "Asia/Bangkok"
 const BANGKOK_OFFSET_MS = 7 * 60 * 60 * 1000
 
+// Same label style as the Revenue Trend grouping on the management report
+// (operations.routes.js): "May 5" for daily buckets, "May 26" for monthly buckets.
+const DAILY_PERIOD_LABEL_FORMATTER = new Intl.DateTimeFormat("en-US", {
+  month: "short",
+  day: "numeric",
+  timeZone: APPLICATION_TIME_ZONE,
+})
+
+const MONTHLY_PERIOD_LABEL_FORMATTER = new Intl.DateTimeFormat("en-US", {
+  month: "short",
+  year: "2-digit",
+  timeZone: APPLICATION_TIME_ZONE,
+})
+
 export const EXCLUDED_IMPORT_BATCH_FILE_NAMES = ["tmp-upload-sample.csv"]
 
 export const getApplicationCalendarParts = (value) => {
@@ -424,10 +438,10 @@ export const buildCustomRangeOccupancyPeriods = ({ startDate, endDate, forceDail
     (safeEndDateExclusive.getTime() - safeStartDate.getTime()) / 86400000
   )
 
-  // Daily buckets for short ranges (<= 62 days), otherwise monthly buckets.
-  // When `forceDaily` is true (e.g. management report wants per-date granularity),
-  // always emit one bucket per day in the range.
-  if (forceDaily || totalDays <= 62) {
+  // Daily buckets for short ranges (< 30 days), otherwise monthly buckets —
+  // same boundary as the Revenue Trend grouping on the management report.
+  // When `forceDaily` is true, always emit one bucket per day in the range.
+  if (forceDaily || totalDays < 30) {
     const days = []
     const cursor = new Date(safeStartDate)
 
@@ -436,7 +450,7 @@ export const buildCustomRangeOccupancyPeriods = ({ startDate, endDate, forceDail
       const dayEndExclusive = new Date(cursor.getTime() + 86400000)
 
       days.push({
-        label: `${getApplicationCalendarParts(cursor).day} ${MONTH_LABELS[getApplicationCalendarParts(cursor).month - 1]}`,
+        label: DAILY_PERIOD_LABEL_FORMATTER.format(cursor),
         date: formatIsoDate(dayStart),
         startDate: dayStart,
         endDateExclusive: dayEndExclusive,
@@ -467,7 +481,7 @@ export const buildCustomRangeOccupancyPeriods = ({ startDate, endDate, forceDail
     const effectiveStart = monthStart < safeStartDate ? safeStartDate : monthStart
 
     months.push({
-      label: `${MONTH_LABELS[getApplicationCalendarParts(cursor).month - 1]} ${String(getApplicationCalendarParts(cursor).year).slice(2)}`,
+      label: MONTHLY_PERIOD_LABEL_FORMATTER.format(cursor),
       month: MONTH_LABELS[getApplicationCalendarParts(cursor).month - 1],
       startDate: effectiveStart,
       endDateExclusive: monthEndExclusive,
