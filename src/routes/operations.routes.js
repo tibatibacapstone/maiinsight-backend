@@ -24,6 +24,10 @@ import {
   getDashboardTransactionGroup,
   normalizeDashboardTransactionGroup,
 } from "../services/transactionStatus.service.js"
+import {
+  getSegmentationSummary,
+  SEGMENT_DEFINITIONS,
+} from "../services/rfmSegmentation.service.js"
 
 const router = Router()
 
@@ -36,6 +40,15 @@ const SESSION_DEFINITIONS = [
   { name: "Night", startHour: 19, endHour: 23 },
 ]
 const REPORT_COURT_TYPES = ["mini_soccer", "basketball"]
+
+// Canonical segment categories come from the shared segmentation service
+// (same source that labels the clusters shown on the Segments page).
+const CANONICAL_SEGMENT_NAMES = SEGMENT_DEFINITIONS.map(
+  (definition) => definition.baseName
+)
+const CANONICAL_SEGMENT_ORDER = new Map(
+  CANONICAL_SEGMENT_NAMES.map((name, index) => [name, index])
+)
 
 const toNumber = (value) => Number(value || 0)
 const roundTo = (value, digits = 1) => Number(Number(value || 0).toFixed(digits))
@@ -748,7 +761,7 @@ router.get(
         includeOperational: true,
       })
 
-      const [transactions, courtHourCount, latestSegmentationRun] = await Promise.all([
+      const [transactions, courtHourCount, segmentationSnapshot] = await Promise.all([
         prisma.facilityTransaction.findMany({
           where: transactionWhere,
           orderBy: { playDate: "asc" },
@@ -763,15 +776,10 @@ router.get(
           },
         }),
         prisma.courtHourUsage.count({ where: courtHourWhere }),
-        prisma.segmentationRun.findFirst({
-          orderBy: { runDate: "desc" },
-          select: {
-            id: true,
-            runDate: true,
-            totalCustomers: true,
-          },
-        }),
+        getSegmentationSummary(),
       ])
+
+      const latestSegmentationRun = segmentationSnapshot?.run ?? null
 
       const courtCount = getCourtCount(courtType)
       const availableSessions = getAvailableCourtHours(startDate, endDateExclusive, courtCount)
@@ -787,7 +795,7 @@ router.get(
 
       const groupedTrend = new Map()
       const useDailyGrouping =
-        Math.round((endDateExclusive - startDate) / 86400000) <= 45
+        Math.round((endDateExclusive - startDate) / 86400000) < 30
 
       transactions.forEach((item) => {
         if (!item.playDate) return
@@ -959,54 +967,70 @@ router.get(
         selectedGroup === DASHBOARD_TRANSACTION_GROUPS.INTERNAL
           ? new Map()
           : [...segmentByCustomerKey.entries()].length
-        ? transactions.reduce((accumulator, item) => {
-            if (item.customerKey?.startsWith("SYS-")) return accumulator
-            const segmentName = segmentByCustomerKey.get(item.customerKey) || "Unsegmented"
-            const existing = accumulator.get(segmentName) || {
-              segmentName,
-              revenue: 0,
-              bookings: 0,
-              customerKeys: new Set(),
-            }
+          ? transactions.reduce((accumulator, item) => {
+              if (item.customerKey?.startsWith("SYS-")) return accumulator
+              const segmentName = segmentByCustomerKey.get(item.customerKey) || "Unsegmented"
+              const existing = accumulator.get(segmentName) || {
+                segmentName,
+                revenue: 0,
+                bookings: 0,
+              }
 
-            existing.revenue += toNumber(item.netRevenue)
-            existing.bookings += 1
-            if (item.customerKey) existing.customerKeys.add(item.customerKey)
-            accumulator.set(segmentName, existing)
-            return accumulator
-          }, new Map())
-        : transactions.reduce((accumulator, item) => {
-            if (item.customerKey?.startsWith("SYS-")) return accumulator
-            const existing = accumulator.get("Unsegmented") || {
-              segmentName: "Unsegmented",
-              revenue: 0,
-              bookings: 0,
-              customerKeys: new Set(),
-            }
+              existing.revenue += toNumber(item.netRevenue)
+              existing.bookings += 1
+              accumulator.set(segmentName, existing)
+              return accumulator
+            }, new Map())
+          : transactions.reduce((accumulator, item) => {
+              if (item.customerKey?.startsWith("SYS-")) return accumulator
+              const existing = accumulator.get("Unsegmented") || {
+                segmentName: "Unsegmented",
+                revenue: 0,
+                bookings: 0,
+              }
 
-            existing.revenue += toNumber(item.netRevenue)
-            existing.bookings += 1
-            if (item.customerKey) existing.customerKeys.add(item.customerKey)
-            accumulator.set("Unsegmented", existing)
-            return accumulator
-          }, new Map())
+              existing.revenue += toNumber(item.netRevenue)
+              existing.bookings += 1
+              accumulator.set("Unsegmented", existing)
+              return accumulator
+            }, new Map())
 
-      const segmentContributionRows = [...segmentContribution.values()]
-        .map((item) => ({
-          segmentName: item.segmentName,
-          revenue: item.revenue,
-          bookings: item.bookings,
-          customerCount: item.customerKeys.size,
-          revenueShare: totalRevenue > 0 ? roundTo((item.revenue / totalRevenue) * 100, 1) : 0,
-          bookingShare: totalBookings > 0 ? roundTo((item.bookings / totalBookings) * 100, 1) : 0,
-        }))
-        .sort((left, right) => right.revenue - left.revenue)
+      const observedSegmentRows = [...segmentContribution.values()].map((item) => ({
+        segmentName: item.segmentName,
+        revenue: item.revenue,
+        bookings: item.bookings,
+        revenueShare: totalRevenue > 0 ? roundTo((item.revenue / totalRevenue) * 100, 1) : 0,
+        bookingShare: totalBookings > 0 ? roundTo((item.bookings / totalBookings) * 100, 1) : 0,
+      }))
+
+      const clusterBySegmentName = new Map(
+        (segmentationSnapshot.clusters || []).map((cluster) => [cluster.segmentName, cluster])
+      )
+      const segmentContributionRows =
+        selectedGroup === DASHBOARD_TRANSACTION_GROUPS.INTERNAL
+          ? []
+          : [
+              ...CANONICAL_SEGMENT_NAMES.map((segmentName) => ({
+                segmentName,
+                customerCount: clusterBySegmentName.get(segmentName)?.customerCount ?? 0,
+              })),
+              ...(segmentationSnapshot.clusters || [])
+                .filter((cluster) => !CANONICAL_SEGMENT_ORDER.has(cluster.segmentName))
+                .sort((left, right) => left.segmentName.localeCompare(right.segmentName))
+                .map((cluster) => ({
+                  segmentName: cluster.segmentName,
+                  customerCount: cluster.customerCount,
+                })),
+            ]
 
       const topRevenueCourtType = [...courtTypePerformance].sort((left, right) => right.revenue - left.revenue)[0] || null
       const topOccupancyCourtType = [...courtTypePerformance].sort((left, right) => right.occupancyRate - left.occupancyRate)[0] || null
       const highestOccupancySession = [...sessionOccupancy].sort((left, right) => right.occupancyRate - left.occupancyRate)[0] || null
       const lowestOccupancySession = [...sessionOccupancy].sort((left, right) => left.occupancyRate - right.occupancyRate)[0] || null
-      const topSegmentContribution = segmentContributionRows[0] || null
+      const topSegmentContribution =
+        observedSegmentRows.length > 0
+          ? [...observedSegmentRows].sort((left, right) => right.revenue - left.revenue)[0] || null
+          : null
 
       const keyFindings = [
         revenueComparison.changePct !== null

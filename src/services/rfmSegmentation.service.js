@@ -43,7 +43,7 @@ const BOOKING_TYPE_DISPLAY_MAP = {
   other: "Other",
 }
 
-const SEGMENT_DEFINITIONS = [
+export const SEGMENT_DEFINITIONS = [
   {
     baseName: "Prime Players",
     description:
