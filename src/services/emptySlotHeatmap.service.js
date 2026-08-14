@@ -93,11 +93,13 @@ export const buildEmptySlotHeatmap = ({
 
   const slots = [...capacityByCell.entries()].map(([key, grossCapacity]) => {
     const [day_short, startHour] = key.split("|")
-    const occupiedSlots = occupiedByCell.get(key) || 0
+    const customerSlots = occupiedByCell.get(key) || 0
     const internalSessions = internalByCell.get(key) || 0
-    const blockedSlots = blockedByCell.get(key) || 0
+    const tutupSessions = blockedByCell.get(key) || 0
+    const occupiedSlots = customerSlots + internalSessions
+    const blockedSlots = tutupSessions
     const unavailableSlots = internalSessions + blockedSlots
-    const totalPossibleSlots = Math.max(0, grossCapacity - unavailableSlots)
+    const totalPossibleSlots = Math.max(0, grossCapacity - blockedSlots)
     const emptySlots = Math.max(0, totalPossibleSlots - occupiedSlots)
     const occupancyRate = totalPossibleSlots > 0
       ? (occupiedSlots / totalPossibleSlots) * 100
@@ -115,15 +117,17 @@ export const buildEmptySlotHeatmap = ({
       totalPossibleSlots,
       totalPossibleSessions: totalPossibleSlots,
       occupiedSlots,
-      occupiedCustomerSessions: occupiedSlots,
+      occupiedCustomerSessions: customerSlots,
       internalSessions,
       blockedSlots,
+      tutupSessions,
       unavailableSlots,
       emptySlots,
       emptySessions: emptySlots,
       occupancyRate,
       emptyRate: totalPossibleSlots > 0 ? emptySlots / totalPossibleSlots : null,
-      internalRate: grossCapacity > 0 ? unavailableSlots / grossCapacity : 0,
+      internalRate: grossCapacity > 0 ? internalSessions / grossCapacity : 0,
+      tutupRate: grossCapacity > 0 ? tutupSessions / grossCapacity : 0,
     }
   })
 

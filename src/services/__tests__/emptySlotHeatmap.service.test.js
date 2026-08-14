@@ -27,7 +27,7 @@ const build = (usageRows, courtCount = 2) =>
 const getMondaySix = (result) =>
   result.slots.find((slot) => slot.day_short === "Mon" && slot.startHour === "06:00")
 
-test("customer occupancy excludes Internal capacity from the denominator", () => {
+test("customer and Internal usage both count as occupied slots", () => {
   const cell = getMondaySix(
     build([
       usage({ key: "customer", status: "Payment Completed" }),
@@ -36,23 +36,32 @@ test("customer occupancy excludes Internal capacity from the denominator", () =>
   )
 
   assert.equal(cell.grossCapacity, 2)
-  assert.equal(cell.totalPossibleSlots, 1)
-  assert.equal(cell.occupiedSlots, 1)
+  assert.equal(cell.totalPossibleSlots, 2)
+  assert.equal(cell.occupiedSlots, 2)
+  assert.equal(cell.occupiedCustomerSessions, 1)
   assert.equal(cell.internalSessions, 1)
+  assert.equal(cell.tutupSessions, 0)
   assert.equal(cell.emptySlots, 0)
   assert.equal(cell.occupancyRate, 100)
   assert.equal(cell.emptyRate, 0)
   assert.equal(cell.internalRate, 0.5)
+  assert.equal(cell.tutupRate, 0)
   assert.equal(cell.session_count, cell.emptySessions)
 })
 
-test("Internal is reported separately from blocked and maintenance capacity", () => {
+test("Internal is reported separately from maintenance with its own capacity treatment", () => {
   for (const status of ["Internal", "Tutup", "Maintenance", "Tutup/Maintenance"]) {
     const cell = getMondaySix(build([usage({ key: status, status })]))
-    assert.equal(cell.internalSessions, status === "Internal" ? 1 : 0, status)
-    assert.equal(cell.blockedSlots, status === "Internal" ? 0 : 1, status)
-    assert.equal(cell.totalPossibleSlots, 1, status)
+    const isInternal = status === "Internal"
+    assert.equal(cell.internalSessions, isInternal ? 1 : 0, status)
+    assert.equal(cell.blockedSlots, isInternal ? 0 : 1, status)
+    assert.equal(cell.tutupSessions, isInternal ? 0 : 1, status)
+    assert.equal(cell.totalPossibleSlots, isInternal ? 2 : 1, status)
+    assert.equal(cell.occupiedSlots, isInternal ? 1 : 0, status)
     assert.equal(cell.emptySlots, 1, status)
+    assert.equal(cell.occupancyRate, isInternal ? 50 : 0, status)
+    assert.equal(cell.internalRate, isInternal ? 0.5 : 0, status)
+    assert.equal(cell.tutupRate, isInternal ? 0 : 0.5, status)
   }
 })
 
@@ -66,6 +75,8 @@ test("a repeated physical court-hour is counted only once", () => {
 
   assert.equal(cell.internalSessions, 1)
   assert.equal(cell.blockedSlots, 0)
+  assert.equal(cell.tutupSessions, 0)
+  assert.equal(cell.occupiedSlots, 1)
   assert.equal(cell.emptySlots, 1)
 })
 
@@ -75,6 +86,7 @@ test("zero-capacity rates are safe", () => {
   assert.equal(cell.occupancyRate, null)
   assert.equal(cell.emptyRate, null)
   assert.equal(cell.internalRate, 0)
+  assert.equal(cell.tutupRate, 0)
 })
 
 test("twelve Mondays aggregate five occupied slots into 41.6667 percent occupancy", () => {

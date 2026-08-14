@@ -86,6 +86,28 @@ export const resolveSessionNameByHour = (hour) => {
   return session?.name || null
 }
 
+export const sumCampaignRevenue = (rows) => {
+  let revenue = 0
+  const revenueEvents = new Set()
+
+  for (const row of rows) {
+    const group = getDashboardTransactionGroup(row.transaction?.status)
+    if (
+      group === DASHBOARD_TRANSACTION_GROUPS.GELORA_APP_BOOKING ||
+      group === DASHBOARD_TRANSACTION_GROUPS.MANUAL_WALK_IN ||
+      group === DASHBOARD_TRANSACTION_GROUPS.INTERNAL
+    ) {
+      const eventKey = row.transaction?.bookingEventKey
+      if (!revenueEvents.has(eventKey)) {
+        revenueEvents.add(eventKey)
+        revenue += toNumber(row.transaction?.netRevenue)
+      }
+    }
+  }
+
+  return revenue
+}
+
 const mapCourtTypeLabel = (courtType) => COURT_TYPE_LABELS[courtType] || courtType || "Unknown"
 
 const mapCustomerTypeLabel = (bookingTypeDominant) => {
@@ -756,15 +778,7 @@ export const getRecommendedCustomers = async ({
     })
     const occupiedSlots = campaignCells.reduce((sum, cell) => sum + cell.occupiedSlots, 0)
     const totalPossibleSlots = campaignCells.reduce((sum, cell) => sum + cell.totalPossibleSlots, 0)
-    let revenue = 0
-    const revenueEvents = new Set()
-    for (const row of matching) {
-      const group = getDashboardTransactionGroup(row.transaction.status)
-      if (group === DASHBOARD_TRANSACTION_GROUPS.GELORA_APP_BOOKING || group === DASHBOARD_TRANSACTION_GROUPS.MANUAL_WALK_IN) {
-        const eventKey = row.transaction.bookingEventKey
-        if (!revenueEvents.has(eventKey)) { revenueEvents.add(eventKey); revenue += toNumber(row.transaction.netRevenue) }
-      }
-    }
+    const revenue = sumCampaignRevenue(matching)
     const emptySlots = Math.max(0, totalPossibleSlots - occupiedSlots)
     monthlyPerformance.push({
       month: `${monthStart.getFullYear()}-${String(monthStart.getMonth() + 1).padStart(2, "0")}`,

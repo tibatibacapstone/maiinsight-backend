@@ -11,6 +11,7 @@ import {
   getLatestCampaignPlayDate,
   matchesCampaignPlayContext,
   resolveSessionNameByHour,
+  sumCampaignRevenue,
 } from "../lowOccupancyTargeting.service.js"
 
 test("Campaign Targeting anchors calendar months to the latest valid play date", async () => {
@@ -170,4 +171,26 @@ test("buildWhatsappMessage switches tone for re-engagement customers", () => {
   assert.match(regularMessage, /Morning/)
   assert.match(comebackMessage, /Sudah lama belum main di Maiin/)
   assert.match(comebackMessage, /Night/)
+})
+
+test("campaign revenue includes customer and Internal bookings but excludes maintenance", () => {
+  const rows = [
+    { transaction: { status: "Payment Completed", bookingEventKey: "EVT-1", netRevenue: 300000 } },
+    { transaction: { status: "Manual/Walk-in", bookingEventKey: "EVT-2", netRevenue: 200000 } },
+    { transaction: { status: "Internal", bookingEventKey: "EVT-3", netRevenue: 150000 } },
+    { transaction: { status: "Internal", bookingEventKey: "EVT-3", netRevenue: 150000 } },
+    { transaction: { status: "Tutup/Maintenance", bookingEventKey: "EVT-4", netRevenue: 50000 } },
+    { transaction: { status: "Unknown Status", bookingEventKey: "EVT-5", netRevenue: 90000 } },
+  ]
+
+  assert.equal(sumCampaignRevenue(rows), 650000)
+})
+
+test("campaign revenue counts a row without a booking event once", () => {
+  const rows = [
+    { transaction: { status: "Payment Completed", bookingEventKey: null, netRevenue: 100000 } },
+    { transaction: { status: "Payment Completed", bookingEventKey: null, netRevenue: 200000 } },
+  ]
+
+  assert.equal(sumCampaignRevenue(rows), 100000)
 })
