@@ -96,14 +96,13 @@ test("safe Operational status never contains integration credentials or server s
   assert.equal(serialized.includes(secretConfig.metaAccessToken), false)
 })
 
-test("IT configuration response exposes the Gemini API key for editing but keeps Meta secrets hidden", () => {
+test("IT configuration response exposes the Gemini API key and Meta access token for editing, hiding other secrets", () => {
   const response = buildSafeIntegrationConfig(secretConfig)
   assert.equal(response.geminiApiKey, "gemini-secret-value")
   assert.equal(response.geminiApiKeyConfigured, true)
+  assert.equal(response.metaAccessToken, "meta-secret-value")
   assert.equal(response.metaAccessTokenConfigured, true)
-  assert.equal(findForbiddenKey(response, new Set(["geminiapikey"])), false)
-  assert.equal(JSON.stringify(response).includes("meta-secret-value"), false)
-  assert.equal("metaAccessToken" in response, false)
+  assert.equal(findForbiddenKey(response, new Set(["geminiapikey", "metaaccesstoken"])), false)
 })
 
 test("blank secret updates preserve stored values and new secrets replace them", () => {

@@ -3,6 +3,7 @@ import { prisma } from "../config/prisma.js"
 import { checkMetaTokenHealth } from "./meta.service.js"
 import { checkGeminiHealth } from "./aiProvider.service.js"
 import { sendIntegrationReminderEmail } from "./reminderEmail.service.js"
+import { createNotificationsForRoles } from "./notification.service.js"
 
 const REMINDER_STATE_KEYS = {
   meta: "HEALTH_META_REMINDER_STATE",
@@ -199,6 +200,24 @@ export const runHealthReminder = async ({ now = Date.now(), logger = console } =
         sent.push({ to: recipient.email, subject })
       }
     }
+
+    for (const issue of alerting) {
+      const levelLabel =
+        issue.level === "expired"
+          ? "Meta access token has expired"
+          : issue.level === "critical"
+            ? "Meta access token expires in a few days — renew now"
+            : issue.level === "error"
+              ? "Integration health check failed"
+              : "Integration requires attention"
+      const title = issue.level === "expired"
+        ? "Meta Access Token Expired"
+        : issue.level === "critical"
+          ? "Meta Access Token Expiring Soon"
+          : "Integration Health Alert"
+      const message = `${levelLabel}. ${issue.detail || ""} Open Settings for details.`.trim()
+      await createNotificationsForRoles(prisma, ["it_support"], { title, message })
+    }
   }
 
   if (resolved.length) {
@@ -227,6 +246,12 @@ export const runHealthReminder = async ({ now = Date.now(), logger = console } =
       } else {
         sent.push({ to: recipient.email, subject })
       }
+    }
+
+    for (const name of resolved) {
+      const title = "Integration Health Restored"
+      const message = `${name} is healthy again. Automated health check passed — no action needed.`
+      await createNotificationsForRoles(prisma, ["it_support"], { title, message })
     }
   }
 

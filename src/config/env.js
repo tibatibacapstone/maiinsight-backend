@@ -40,7 +40,7 @@ export const env = {
     .split(",")
     .map((email) => email.trim())
     .filter(Boolean),
-  healthReminderCron: process.env.HEALTH_REMINDER_CRON || "0 9 * * *",
+  healthReminderCron: process.env.HEALTH_REMINDER_CRON || "0 6,18 * * *",
 };
 
 export const getRequiredJwtSecret = (value = env.jwtSecret) =>

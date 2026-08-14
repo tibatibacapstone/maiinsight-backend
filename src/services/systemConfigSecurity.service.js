@@ -24,6 +24,7 @@ export const buildSafeIntegrationConfig = (config) => ({
   geminiApiKeyConfigured: Boolean(config.geminiApiKey),
   geminiModel: config.geminiModel,
   geminiEnabled: config.geminiEnabled,
+  metaAccessToken: config.metaAccessToken,
   metaAccessTokenConfigured: Boolean(config.metaAccessToken),
   metaIgUserId: config.metaIgUserId,
   metaGraphVersion: config.metaGraphVersion,
