@@ -3,6 +3,7 @@ import { Router } from "express"
 import { prisma } from "../config/prisma.js"
 import { authenticate, authorize } from "../middleware/auth.js"
 import { saveDownloadRecordAndNotifyManagement } from "../services/download.service.js"
+import { logActivity } from "../services/activityLog.service.js"
 import {
   generateManagementPresentation,
   isValidPresentationTheme,
@@ -16,8 +17,10 @@ import {
 import {
   buildCourtHourUsageWhere,
   buildFacilityTransactionWhere,
+  createApplicationDateStart,
   EXCLUDED_IMPORT_BATCH_FILE_NAMES,
   formatIsoDate,
+  getApplicationCalendarParts,
   getAvailableCourtHours,
   getCourtCount,
   getPreviousComparisonRange,
@@ -251,19 +254,25 @@ const buildDerivedNotifications = async () => {
   return derived
 }
 
-const buildActivityItems = async () => {
+const actorSelect = { id: true, name: true, email: true, role: true }
+
+// IT Support is the only role that can audit every user's activity. Every
+// other role may only see the history of actions it performed itself, so
+// this scopes each source query to the requesting user before anything is
+// merged/deduped below.
+const buildActivityItems = async (viewer) => {
+  const isPrivilegedViewer = viewer?.role === "it_support"
+  const ownerOnly = (field) =>
+    isPrivilegedViewer ? {} : { [field]: viewer?.userId ?? -1 }
+
   const [logs, batches, segmentationRuns, metaSyncLogs] = await Promise.all([
     prisma.activityLog.findMany({
+      where: ownerOnly("userId"),
       orderBy: { createdAt: "desc" },
       take: 120,
       include: {
         user: {
-          select: {
-            id: true,
-            name: true,
-            email: true,
-            role: true,
-          },
+          select: actorSelect,
         },
       },
     }),
@@ -272,6 +281,7 @@ const buildActivityItems = async () => {
         fileName: {
           notIn: EXCLUDED_IMPORT_BATCH_FILE_NAMES,
         },
+        ...ownerOnly("performedByUserId"),
       },
       orderBy: { updatedAt: "desc" },
       take: 20,
@@ -283,9 +293,13 @@ const buildActivityItems = async () => {
         updatedAt: true,
         createdAt: true,
         errorMessage: true,
+        performedBy: {
+          select: actorSelect,
+        },
       },
     }),
     prisma.segmentationRun.findMany({
+      where: ownerOnly("performedByUserId"),
       orderBy: { runDate: "desc" },
       take: 20,
       select: {
@@ -294,9 +308,13 @@ const buildActivityItems = async () => {
         totalCustomers: true,
         runDate: true,
         errorMessage: true,
+        performedBy: {
+          select: actorSelect,
+        },
       },
     }),
     prisma.metaSyncLog.findMany({
+      where: ownerOnly("performedByUserId"),
       orderBy: { startedAt: "desc" },
       take: 20,
       select: {
@@ -304,6 +322,9 @@ const buildActivityItems = async () => {
         status: true,
         message: true,
         startedAt: true,
+        performedBy: {
+          select: actorSelect,
+        },
       },
     }),
   ])
@@ -315,9 +336,11 @@ const buildActivityItems = async () => {
       action: log.action,
       user: log.user?.name || log.user?.email || "System",
       role: log.user?.role || "system",
-      details: log.metadata?.route
-        ? `${log.metadata.route} (${log.metadata.method || "action"})`
-        : "System activity recorded.",
+      details:
+        log.metadata?.description ||
+        (log.metadata?.route
+          ? `${log.metadata.route} (${log.metadata.method || "action"})`
+          : "System activity recorded."),
       timestamp: log.createdAt,
       relativeTime: formatRelativeTime(log.createdAt),
       status: buildStatus(log.action, log.metadata),
@@ -327,8 +350,8 @@ const buildActivityItems = async () => {
       id: `batch-${batch.id}`,
       type: "data",
       action: batch.status === "failed" ? "Import Failed" : "Import Completed",
-      user: "System",
-      role: "system",
+      user: batch.performedBy?.name || batch.performedBy?.email || "System",
+      role: batch.performedBy?.role || "system",
       details:
         batch.status === "failed"
           ? batch.errorMessage || `${batch.fileName} failed to import.`
@@ -345,8 +368,8 @@ const buildActivityItems = async () => {
         run.status?.toLowerCase() === "failed"
           ? "Segmentation Update Failed"
           : "Segmentation Updated",
-      user: "System",
-      role: "system",
+      user: run.performedBy?.name || run.performedBy?.email || "System",
+      role: run.performedBy?.role || "system",
       details:
         run.status?.toLowerCase() === "failed"
           ? run.errorMessage || "Segmentation run failed."
@@ -363,8 +386,8 @@ const buildActivityItems = async () => {
         syncLog.status?.toLowerCase() === "failed"
           ? "InstaSight Sync Failed"
           : "InstaSight Sync Completed",
-      user: "System",
-      role: "system",
+      user: syncLog.performedBy?.name || syncLog.performedBy?.email || "System",
+      role: syncLog.performedBy?.role || "system",
       details: syncLog.message || "Meta performance sync executed.",
       timestamp: syncLog.startedAt,
       relativeTime: formatRelativeTime(syncLog.startedAt),
@@ -707,7 +730,7 @@ router.get(
   authorize("operational", "it_support"),
   async (req, res, next) => {
     try {
-      const items = await buildActivityItems()
+      const items = await buildActivityItems({ userId: req.user.userId, role: req.user.role })
       const filteredItems = filterActivityItems(items, req.query || {})
 
       return res.json({
@@ -725,7 +748,7 @@ router.get(
   authorize("operational", "it_support"),
   async (req, res, next) => {
     try {
-      const items = await buildActivityItems()
+      const items = await buildActivityItems({ userId: req.user.userId, role: req.user.role })
       const filteredItems = filterActivityItems(items, req.query || {})
       const csv = toCsv(filteredItems)
 
@@ -748,6 +771,7 @@ const buildManagementReportData = async ({
   courtType,
   bookingType,
   customerType,
+  periodType,
 }) => {
   const inclusiveEndDate = new Date(endDateExclusive.getTime() - 1)
 
@@ -802,8 +826,20 @@ const buildManagementReportData = async ({
       const occupancyRate = availableSessions > 0 ? (courtHourCount / availableSessions) * 100 : 0
 
       const groupedTrend = new Map()
+      const totalRangeDays = Math.round((endDateExclusive - startDate) / 86400000)
+      // Overview sends an explicit periodType. YTD always groups by month,
+      // however wide the range is. MTD groups by day, but only forces that
+      // when a single month was actually selected (a short range) — "All
+      // Month" + MTD spans the whole year so far and should stay monthly,
+      // same as before. Callers without a periodType (custom date-range
+      // pickers, like the Management Report page) keep the day-count
+      // heuristic.
       const useDailyGrouping =
-        Math.round((endDateExclusive - startDate) / 86400000) < 30
+        periodType === "YTD"
+          ? false
+          : periodType === "MTD"
+            ? totalRangeDays < 32
+            : totalRangeDays < 30
 
       transactions.forEach((item) => {
         if (!item.playDate) return
@@ -833,6 +869,36 @@ const buildManagementReportData = async ({
         existing.bookings = existing.bookingEventKeys.size
         groupedTrend.set(key, existing)
       })
+
+      // A year-to-date view should always show every month from January
+      // through the current month, even ones with zero bookings, instead of
+      // silently skipping months that had no transactions.
+      if (periodType === "YTD") {
+        const startParts = getApplicationCalendarParts(startDate)
+        const endParts = getApplicationCalendarParts(new Date(endDateExclusive.getTime() - 1))
+        let year = startParts.year
+        let month = startParts.month
+
+        while (year < endParts.year || (year === endParts.year && month <= endParts.month)) {
+          const key = `${year}-${String(month).padStart(2, "0")}`
+
+          if (!groupedTrend.has(key)) {
+            const monthStart = createApplicationDateStart(year, month, 1)
+            const label = new Intl.DateTimeFormat("en-US", {
+              month: "short",
+              year: "2-digit",
+              timeZone: "Asia/Bangkok",
+            }).format(monthStart)
+            groupedTrend.set(key, { key, label, revenue: 0, bookings: 0, bookingEventKeys: new Set() })
+          }
+
+          month += 1
+          if (month > 12) {
+            month = 1
+            year += 1
+          }
+        }
+      }
 
       const revenueTrend = [...groupedTrend.values()]
         .map((item) => ({
@@ -1160,6 +1226,9 @@ router.get(
       const courtType = normalizeCourtTypeFilter(req.query.courtType)
       const bookingType = req.query.bookingType ? String(req.query.bookingType) : "all"
       const customerType = req.query.customerType ? String(req.query.customerType) : "All Type"
+      const periodType = ["MTD", "YTD"].includes(req.query.periodType)
+        ? req.query.periodType
+        : undefined
 
       if (!req.query.startDate || !req.query.endDate) {
         return res.status(400).json({
@@ -1178,6 +1247,7 @@ router.get(
         courtType,
         bookingType,
         customerType,
+        periodType,
       })
 
       if (result.error) {
@@ -1314,6 +1384,15 @@ router.post(
         fileSizeBytes: presentation.fileSizeBytes,
         req,
       })
+
+      await logActivity(req, "MANAGEMENT_REPORT_EXPORTED", {
+        description: `${presentation.fileName} was exported as a PDF report (${formatIsoDate(startDate)} to ${formatIsoDate(new Date(endDateExclusive.getTime() - 1))}).`,
+        fileName: presentation.fileName,
+        theme,
+        courtType,
+        bookingType,
+        customerType,
+      }).catch(() => null)
 
       res.setHeader("Content-Type", presentation.contentType)
       res.setHeader("Content-Disposition", `attachment; filename="${presentation.fileName}"`)

@@ -13,6 +13,7 @@ import {
   isEligibleCustomerStatus,
 } from "./transactionStatus.service.js"
 import {
+  getLatestCampaignPlayDate,
   getSessionDefinitionByName,
   resolveSessionNameByHour,
 } from "./lowOccupancyTargeting.service.js"
@@ -24,6 +25,7 @@ import {
   buildAiBusinessOpportunities,
   resolveAnalysisPeriodRange,
 } from "./aiBusinessOpportunity.service.js"
+import { computeContentPerformance } from "./instagramContentPerformance.service.js"
 
 const VALID_CUSTOMER_STATUSES = [
   CANONICAL_TRANSACTION_STATUSES.PAYMENT_COMPLETED,
@@ -58,6 +60,10 @@ const SUPPORTED_CAMPAIGN_OBJECTIVES = new Set([
   "customer_reactivation_and_retention",
 ])
 const LOW_OCCUPANCY_OBJECTIVE = "maximize_off_peak_occupancy"
+const SOCIAL_CONTENT_OBJECTIVE = "boost_social_media_conversion"
+const SOCIAL_CONTENT_TOP_LIMIT = 5
+const SOCIAL_CONTENT_LOW_LIMIT = 3
+const SOCIAL_CAPTION_EXCERPT_LENGTH = 160
 
 export const validateWorkspaceObjectiveCombination = ({
   workspaceModeKey,
@@ -401,7 +407,121 @@ export const buildVenueOpportunity = async ({
   }
 }
 
-export const buildAiStrategyContext = async (input = {}, { now = new Date() } = {}) => {
+const average = (values) => {
+  const finite = values.filter((value) => Number.isFinite(value))
+  return finite.length
+    ? round(finite.reduce((total, value) => total + value, 0) / finite.length)
+    : null
+}
+
+const excerptCaption = (caption) => {
+  const text = String(caption ?? "").trim()
+  if (!text) return null
+  return text.length > SOCIAL_CAPTION_EXCERPT_LENGTH
+    ? `${text.slice(0, SOCIAL_CAPTION_EXCERPT_LENGTH)}…`
+    : text
+}
+
+const summarizeContentGroup = (key, items) => ({
+  key,
+  postCount: items.length,
+  averageViews: average(items.map((item) => item.views)),
+  averageReach: average(items.map((item) => item.reach)),
+  averageEngagementRate: average(items.map((item) => item.engagementRate)),
+})
+
+const summarizePost = (item) => ({
+  postedAt: asDateOnly(item.postedAt),
+  mediaType: item.mediaProductType || item.mediaType || null,
+  contentLabel: item.contentLabel,
+  captionExcerpt: excerptCaption(item.caption),
+  views: item.views,
+  reach: item.reach,
+  likes: item.likes,
+  comments: item.comments,
+  shares: item.shares,
+  saved: item.saved,
+  engagementRate: item.engagementRate,
+})
+
+const groupBy = (items, keyOf) => {
+  const groups = new Map()
+  items.forEach((item) => {
+    const key = keyOf(item)
+    groups.set(key, [...(groups.get(key) || []), item])
+  })
+  return groups
+}
+
+// Evidence for the "boost social media conversion" objective: how the
+// account's own Instagram content actually performed within the same
+// analysis-period window already resolved for the rest of the context (see
+// buildAiStrategyContext), so "3 months" means the same 3 months everywhere
+// in the prompt. There is no data linking a specific post to a specific
+// customer or segment in MaiinSight, so this only supplies aggregate content
+// evidence; the prompt is responsible for reasoning qualitatively from
+// segment lifecycle + this evidence rather than claiming attribution.
+export const buildSocialMediaPerformanceContext = async ({ analysisPeriod, db = prisma }) => {
+  if (!analysisPeriod) {
+    return { available: false, reason: "No analysis period is selected." }
+  }
+
+  const media = await db.instagramMedia.findMany({
+    where: {
+      postedAt: {
+        gte: analysisPeriod.analysisStart,
+        lt: analysisPeriod.analysisEndExclusive,
+      },
+    },
+    include: { insights: true },
+    orderBy: { postedAt: "desc" },
+    take: 1000,
+  })
+
+  if (!media.length) {
+    return {
+      available: false,
+      analysisPeriodKey: analysisPeriod.analysisPeriodKey,
+      reason: "No Instagram content was posted during the selected analysis period.",
+    }
+  }
+
+  const contentPerformance = computeContentPerformance(media)
+  const hasEngagementSignal = contentPerformance.some((item) => item.engagementRate != null)
+  const rankingMetric = hasEngagementSignal ? "engagementRate" : "views"
+  const ranked = [...contentPerformance]
+    .filter((item) => item[rankingMetric] != null)
+    .sort((left, right) => right[rankingMetric] - left[rankingMetric])
+
+  const byMediaType = groupBy(
+    contentPerformance,
+    (item) => item.mediaProductType || item.mediaType || "Unknown"
+  )
+  const byContentLabel = groupBy(contentPerformance, (item) => item.contentLabel)
+  const sortByEngagement = (left, right) =>
+    (right.averageEngagementRate ?? -1) - (left.averageEngagementRate ?? -1)
+
+  return {
+    available: true,
+    analysisPeriodKey: analysisPeriod.analysisPeriodKey,
+    postCount: contentPerformance.length,
+    averageEngagementRate: average(contentPerformance.map((item) => item.engagementRate)),
+    rankingMetric,
+    contentTypeBreakdown: [...byMediaType.entries()]
+      .map(([key, items]) => summarizeContentGroup(key, items))
+      .sort(sortByEngagement),
+    contentLabelBreakdown: [...byContentLabel.entries()]
+      .map(([key, items]) => summarizeContentGroup(key, items))
+      .sort(sortByEngagement),
+    topPerformingContent: ranked.slice(0, SOCIAL_CONTENT_TOP_LIMIT).map(summarizePost),
+    lowestPerformingContent: ranked
+      .slice(-SOCIAL_CONTENT_LOW_LIMIT)
+      .reverse()
+      .map(summarizePost),
+  }
+}
+
+export const buildAiStrategyContext = async (input = {}, { now } = {}) => {
   const selected = input.selected_scope || input.selected_filters || {}
   const { workspaceModeKey, campaignObjectiveKey } =
     validateWorkspaceObjectiveCombination({
@@ -423,12 +543,28 @@ export const buildAiStrategyContext = async (input = {}, { now = new Date() } = 
     error.statusCode = 400
     throw error
   }
+  // "N months" always looks back from the newest real transaction in the
+  // database, not from today's calendar date, so a stale dataset still
+  // yields a period that actually contains data. `now` may still be passed
+  // explicitly (tests, callers with their own anchor); it only falls back to
+  // the latest transaction date, then finally today if the database is
+  // empty.
   const analysisPeriod = usesHistoricalAnalysis
     ? resolveAnalysisPeriodRange({
         analysisPeriodKey: resolvedPeriod.key,
-        now,
+        now: now || (await getLatestCampaignPlayDate(prisma)) || new Date(),
       })
     : null
+  // Instagram content evidence only applies to the social-conversion
+  // objective, and reuses the exact same analysisPeriod window resolved
+  // above so the strategy reasons about one consistent period.
+  const socialMediaPerformance =
+    campaignObjectiveKey === SOCIAL_CONTENT_OBJECTIVE
+      ? await buildSocialMediaPerformanceContext({ analysisPeriod })
+      : {
+          available: false,
+          reason: "Instagram content performance only applies to the boost social media conversion objective.",
+        }
   const segment = resolveCustomerSegment(selected.segmentKey || selected.segmentName)
   if (!segment) {
     const error = new Error("The selected customer segment is not supported.")
@@ -585,6 +721,7 @@ export const buildAiStrategyContext = async (input = {}, { now = new Date() } = 
     futureSlotAvailabilityAvailable:
       !isGeneralStrategy && opportunities.futureSlotOpportunity.available,
     offPeakOpportunityAvailable: opportunities.offPeakOpportunity.available,
+    socialMediaPerformanceAvailable: socialMediaPerformance.available,
     promotionConversionAvailable: false,
     campaignAttributionAvailable: false,
     customerResponseRateAvailable: false,
@@ -618,6 +755,7 @@ export const buildAiStrategyContext = async (input = {}, { now = new Date() } = 
       : {}),
     promotion_usage_context: opportunities.promotionUsageContext,
     off_peak_opportunity: opportunities.offPeakOpportunity,
+    social_media_performance: socialMediaPerformance,
     offer_constraints: {
       exactDiscountAllowed: false,
       approvedDiscountRangePct: null,

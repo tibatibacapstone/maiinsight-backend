@@ -33,3 +33,25 @@ export async function logItSupportActivity(req, action, metadata = {}) {
     ...metadata,
   });
 }
+
+// Login happens before the `authenticate` middleware runs, so there is no
+// `req.user` yet to read the actor from. This logs against the just-verified
+// user record directly instead.
+export async function logAuthActivity(user, req, action, metadata = {}) {
+  if (!user?.id) {
+    return null;
+  }
+
+  return prisma.activityLog.create({
+    data: {
+      userId: user.id,
+      action,
+      metadata: {
+        route: req.originalUrl,
+        method: req.method,
+        role: user.role,
+        ...metadata,
+      },
+    },
+  });
+}

@@ -286,6 +286,10 @@ export const buildTargetPriorityLabel = (score) => {
 }
 
 export const buildSuggestedAction = ({ customerTypeLabel, rfmSegmentName }) => {
+  if (rfmSegmentName === "Prime Players") {
+    return "Give VIP priority slot access and personalized loyalty perks."
+  }
+
   if (customerTypeLabel === "Non Membership" && rfmSegmentName === "Routine Players") {
     return "Offer session promo or repeat booking package."
   }
@@ -305,21 +309,59 @@ export const buildSuggestedAction = ({ customerTypeLabel, rfmSegmentName }) => {
   return "Offer available slot reminder."
 }
 
+const buildBookingHistoryPhrase = ({ totalBookingCount, recencyDays }) => {
+  if (!Number.isFinite(recencyDays) || recencyDays >= 999) {
+    return "Ini kesempatan pertama kami hubungi Kakak"
+  }
+
+  const timesPhrase = totalBookingCount > 1 ? `sudah ${totalBookingCount}x booking` : "pernah booking"
+  const recencyPhrase =
+    recencyDays <= 3
+      ? "beberapa hari lalu"
+      : recencyDays <= 30
+        ? `sekitar ${recencyDays} hari lalu`
+        : recencyDays <= 180
+          ? `sekitar ${Math.round(recencyDays / 30)} bulan lalu`
+          : "cukup lama"
+
+  return `Kakak ${timesPhrase} bareng kami, terakhir ${recencyPhrase}`
+}
+
 export const buildWhatsappMessage = ({
   customerName,
-  sessionName,
-  date,
+  preferredSession,
   courtType,
   rfmSegmentName,
+  customerTypeLabel,
+  totalBookingCount,
+  recencyDays,
 }) => {
   const safeName = customerName || "Kak"
   const courtLabel = mapCourtTypeLabel(courtType)
+  const sessionPhrase = preferredSession ? `sesi ${preferredSession}` : "jadwal yang biasa Kakak pilih"
+  const historyPhrase = buildBookingHistoryPhrase({ totalBookingCount, recencyDays })
 
-  if (rfmSegmentName === "Re-Engagement Players") {
-    return `Halo Kak ${safeName}, kami dari Maiin Gandaria. Sudah lama belum main di Maiin. Saat ini ada slot tersedia untuk ${courtLabel} sesi ${sessionName} pada ${date}. Kalau Kakak mau comeback main bareng tim, kami bisa bantu cek jadwalnya.`
+  if (rfmSegmentName === "Prime Players") {
+    return `Halo Kak ${safeName}, kami dari Maiin Gandaria. ${historyPhrase}, jadi kami mau kasih Kakak akses prioritas untuk slot ${courtLabel} di ${sessionPhrase}. Kabari kami ya kalau mau kami bantu amankan jadwalnya duluan.`
   }
 
-  return `Halo Kak ${safeName}, kami dari Maiin Gandaria. Kakak biasanya main di sesi ${sessionName}, dan kebetulan ada slot tersedia untuk ${courtLabel} pada ${date}. Kalau Kakak berminat, kami bisa bantu cek jadwal dan promo yang tersedia.`
+  if (rfmSegmentName === "Re-Engagement Players") {
+    return `Halo Kak ${safeName}, kami dari Maiin Gandaria. ${historyPhrase}, kami kangen main bareng Kakak lagi. Saat ini ada slot ${courtLabel} tersedia di ${sessionPhrase}. Yuk balik main bareng tim, kami siapin promo comeback khusus buat Kakak.`
+  }
+
+  if (customerTypeLabel === "Membership" && rfmSegmentName === "Routine Players") {
+    return `Halo Kak ${safeName}, kami dari Maiin Gandaria. ${historyPhrase} di ${sessionPhrase}. Sebagai member rutin, kami mau ingetin ada slot ${courtLabel} yang bisa Kakak amankan lagi sesuai jadwal favorit.`
+  }
+
+  if (customerTypeLabel === "Non Membership" && rfmSegmentName === "Growth Players") {
+    return `Halo Kak ${safeName}, kami dari Maiin Gandaria. ${historyPhrase} di ${sessionPhrase}. Ada slot ${courtLabel} tersedia, plus promo khusus kalau Kakak booking lagi.`
+  }
+
+  if (customerTypeLabel === "Non Membership" && rfmSegmentName === "Routine Players") {
+    return `Halo Kak ${safeName}, kami dari Maiin Gandaria. ${historyPhrase} di ${sessionPhrase}. Ada paket booking berulang yang bisa bikin Kakak lebih hemat kalau mau main rutin di sesi ini.`
+  }
+
+  return `Halo Kak ${safeName}, kami dari Maiin Gandaria. ${historyPhrase} di ${sessionPhrase}. Ada slot ${courtLabel} tersedia, kalau Kakak berminat kami bisa bantu cek jadwal dan promo yang ada.`
 }
 
 const buildSegmentMap = async (customerKeys) => {
@@ -703,10 +745,12 @@ export const getRecommendedCustomers = async ({
       })
       const whatsappMessage = buildWhatsappMessage({
         customerName: customer.customerName,
-        sessionName,
-        date: selectedDate,
+        preferredSession: customer.preferredSession,
         courtType,
         rfmSegmentName: customer.rfmSegmentName,
+        customerTypeLabel: customer.customerTypeLabel,
+        totalBookingCount: customer.totalBookingCount,
+        recencyDays: customer.recencyDays,
       })
 
       return {

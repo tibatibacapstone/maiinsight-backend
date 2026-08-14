@@ -148,29 +148,48 @@ test("buildSuggestedAction follows business targeting rules", () => {
     }),
     "Offer priority slot reminder or membership package maintenance."
   )
+
+  assert.equal(
+    buildSuggestedAction({
+      customerTypeLabel: "Membership",
+      rfmSegmentName: "Prime Players",
+    }),
+    "Give VIP priority slot access and personalized loyalty perks."
+  )
 })
 
-test("buildWhatsappMessage switches tone for re-engagement customers", () => {
-  const regularMessage = buildWhatsappMessage({
+test("buildWhatsappMessage personalizes by segment, preferred session, and booking history, without a campaign date", () => {
+  const primeMessage = buildWhatsappMessage({
     customerName: "Andi",
-    sessionName: "Morning",
-    date: "2026-07-10",
+    preferredSession: "Morning",
     courtType: "mini_soccer",
-    rfmSegmentName: "Routine Players",
+    rfmSegmentName: "Prime Players",
+    customerTypeLabel: "Membership",
+    totalBookingCount: 12,
+    recencyDays: 5,
   })
 
   const comebackMessage = buildWhatsappMessage({
     customerName: "Budi",
-    sessionName: "Night",
-    date: "2026-07-10",
+    preferredSession: "Night",
     courtType: "basketball",
     rfmSegmentName: "Re-Engagement Players",
+    customerTypeLabel: "Non Membership",
+    totalBookingCount: 2,
+    recencyDays: 200,
   })
 
-  assert.match(regularMessage, /Andi/)
-  assert.match(regularMessage, /Morning/)
-  assert.match(comebackMessage, /Sudah lama belum main di Maiin/)
-  assert.match(comebackMessage, /Night/)
+  assert.match(primeMessage, /Andi/)
+  assert.match(primeMessage, /sesi Morning/)
+  assert.match(primeMessage, /12x booking/)
+  assert.doesNotMatch(primeMessage, /\d{4}-\d{2}-\d{2}/)
+
+  assert.match(comebackMessage, /Budi/)
+  assert.match(comebackMessage, /sesi Night/)
+  assert.match(comebackMessage, /kangen main bareng/)
+  assert.doesNotMatch(comebackMessage, /\d{4}-\d{2}-\d{2}/)
+
+  assert.notEqual(primeMessage, comebackMessage)
 })
 
 test("campaign revenue includes customer and Internal bookings but excludes maintenance", () => {

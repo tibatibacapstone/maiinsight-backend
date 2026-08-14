@@ -12,6 +12,7 @@ import {
 } from "../services/passwordReset.service.js"
 import { authenticateGoogleCredential } from "../services/googleAuth.service.js"
 import { registerInvitedUser } from "../services/invitedRegistration.service.js"
+import { logAuthActivity } from "../services/activityLog.service.js"
 import { validatePassword } from "../services/passwordPolicy.service.js"
 import {
   googleAuthRateLimit,
@@ -125,6 +126,11 @@ router.post("/login", loginRateLimit, async (req, res, next) => {
 
     const token = createToken(user)
 
+    await logAuthActivity(user, req, "LOGIN", {
+      description: `${user.name || user.email} signed in with a password.`,
+      method: "password",
+    }).catch(() => null)
+
     res.json({ token, user: { id: user.id, email: user.email, name: user.name, role: user.role } })
   } catch (error) {
     next(error)
@@ -156,6 +162,11 @@ router.post("/google", googleAuthRateLimit, async (req, res, next) => {
     }
 
     const token = createToken(user)
+
+    await logAuthActivity(user, req, "LOGIN", {
+      description: `${user.name || user.email} signed in with Google.`,
+      method: "google",
+    }).catch(() => null)
 
     res.json({ token, user: { id: user.id, email: user.email, name: user.name, role: user.role } })
   } catch (error) {

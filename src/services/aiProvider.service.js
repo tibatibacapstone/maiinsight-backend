@@ -171,6 +171,8 @@ Strategy decision matrix:
   lowest-occupancy window when available.
 - For boost_social_media_conversion, Routine should prefer Photographer or Match Highlight Video
   because these create naturally shareable visual content; never use a recurring package.
+  When social_media_performance.available is true, ground the specific content format and theme
+  in its evidence (see the boost_social_media_conversion rules below) instead of a generic add-on.
 - For customer_reactivation_and_retention, prefer loyalty benefits, exclusive experiences,
   premium service, or priority booking while respecting the selected segment lifecycle.
 - If supplied historical evidence does not support a treatment, choose another treatment allowed
@@ -184,6 +186,24 @@ When campaignObjectiveKey is maximize_off_peak_occupancy and off_peak_opportunit
 - Name that exact day and session in campaignObjective, suggestedOffer, offerReasoning,
   executionPlan, and whatsappMessage. Never give only a generic off-peak recommendation.
 - Use no other day/session window and never invent occupancy, capacity, or available hours.
+When campaignObjectiveKey is boost_social_media_conversion:
+- If social_media_performance.available is true, evaluate what already worked: compare
+  contentTypeBreakdown and contentLabelBreakdown, and use topPerformingContent as the evidence for
+  which content format, theme, or caption angle to repeat. Use lowestPerformingContent only to justify
+  avoiding a pattern, never as a customer-facing claim.
+- Recommend a concrete content format (for example Reels, Feed carousel, testimonial, match-highlight
+  video) and a short content theme in suggestedOffer, grounded in that evidence. Reference the
+  specific advantage (e.g. higher engagementRate for Reels over Feed) in offerReasoning and
+  evidenceUsed, using only the supplied numbers.
+- Connect the content recommendation to the selected segment's lifecycle and its preferred
+  venue/session from selected_segment_history, but never claim that a specific past post was seen,
+  engaged with, or converted by the selected segment or by any individual customer: MaiinSight has no
+  data linking a specific Instagram post to a specific customer or segment, only aggregate content
+  performance for the account as a whole.
+- If social_media_performance.available is false, state the missing content-performance evidence in
+  dataLimitation and fall back to the selected segment's historical booking evidence and the
+  Photographer/Match Highlight Video treatment above. Never invent post counts, views, reach,
+  engagement rate, or any other content metric that is not supplied.
 The selected customer segment and its lifecycle treatment remain mandatory.
 Never invent a discount amount. Exact percentages or currency discounts are prohibited when
 offer_constraints.exactDiscountAllowed is false; recommend a category, value-added benefit,
@@ -713,4 +733,127 @@ export const generateStrategy = async (strategyContext) => {
     })
   }
   return generateWithGemini(strategyContext)
+}
+
+export const OUTREACH_MESSAGE_PLACEHOLDER = "{{customerName}}"
+
+const outreachMessageSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["message"],
+  properties: {
+    message: { type: "string" },
+  },
+}
+
+const buildOutreachMessagePrompt = (signals) => `You are a WhatsApp marketing copywriter for Maiin Gandaria,
+a sports venue business in Indonesia. Write exactly ONE short, warm, casual, persuasive WhatsApp
+message in Bahasa Indonesia inviting this specific customer to book again.
+
+Ground the message in the customer behavior signals below: their preferred play-time session and
+how long it has been since their last visit. Let suggestedAction shape the promotional angle
+(comeback offer, repeat-booking promo, priority/loyalty reminder, and so on).
+
+Rules:
+- Begin the greeting with the placeholder ${OUTREACH_MESSAGE_PLACEHOLDER} exactly once, e.g.
+  "Hai ${OUTREACH_MESSAGE_PLACEHOLDER}, ...". Never use any other name or placeholder.
+- Never invent a discount percentage, exact price, or specific date. Never mention today's date
+  or a campaign date.
+- Do not recite raw numbers (exact booking counts or exact day counts) as a summary; translate
+  the recencyDays field into a natural, casual phrase using this guide, and never contradict it:
+  0-7 days: very recent, do not say "lama" or imply absence, use an appreciative/keep-it-up tone
+  instead (for example "makasih ya udah main minggu ini"); 8-30 days: "beberapa minggu lalu";
+  31-90 days: "sebulan-an lalu" or "beberapa bulan lalu"; 91+ days: "udah lama banget nih".
+- Keep it to one or two short sentences, under 45 words total, friendly and casual tone.
+- Output valid JSON only: { "message": "..." }
+
+Customer behavior signals:
+${JSON.stringify(sanitizeGeminiContext(signals), null, 2)}`
+
+const validateOutreachMessage = (result) => {
+  requireText(result?.message, "message")
+  if (!result.message.includes(OUTREACH_MESSAGE_PLACEHOLDER)) {
+    throw createAiServiceError({
+      errorCode: "AI_INVALID_RESPONSE",
+      technicalMessage: `message must contain the ${OUTREACH_MESSAGE_PLACEHOLDER} placeholder.`,
+    })
+  }
+  if (/\b\d{4}-\d{2}-\d{2}\b/.test(result.message)) {
+    throw createAiServiceError({
+      errorCode: "AI_INVALID_RESPONSE",
+      technicalMessage: "message must not reference a specific date.",
+    })
+  }
+  validateWordLimit(result.message, "message", 55)
+  if (isClearlyEnglish([result.message])) {
+    throw createAiServiceError({
+      errorCode: "AI_RESPONSE_LANGUAGE_MISMATCH",
+      technicalMessage: "message must be written in Bahasa Indonesia.",
+    })
+  }
+  return result
+}
+
+export const generateOutreachMessage = async (signals) => {
+  const config = await buildConfigSnapshot()
+  if (!config.geminiEnabled) {
+    throw createAiServiceError({
+      errorCode: "AI_DISABLED",
+      message: "AI message generation is currently disabled.",
+      technicalMessage: "Gemini integration is disabled.",
+      statusCode: 503,
+    })
+  }
+  if (!config.geminiApiKey) {
+    throw createAiServiceError({
+      errorCode: "GEMINI_NOT_CONFIGURED",
+      message: "AI message generation is not configured yet.",
+      suggestion: "Please ask IT Support to configure Gemini API credentials.",
+      technicalMessage: "Missing GEMINI_API_KEY.",
+      statusCode: 503,
+    })
+  }
+
+  const geminiModel = config.geminiModel || "gemini-2.5-flash"
+  const ai = new GoogleGenAI({ apiKey: config.geminiApiKey })
+
+  let lastValidationError = null
+  let lastUsage = null
+  for (let attempt = 0; attempt < GEMINI_GENERATION_CONFIG.maxAttempts; attempt += 1) {
+    let response
+    try {
+      response = await ai.models.generateContent({
+        model: geminiModel,
+        contents: buildOutreachMessagePrompt(signals),
+        config: {
+          temperature: 0.6,
+          maxOutputTokens: 300,
+          responseMimeType: "application/json",
+          responseJsonSchema: outreachMessageSchema,
+          thinkingConfig: { thinkingBudget: 0 },
+        },
+      })
+      if (response?.usageMetadata) lastUsage = response.usageMetadata
+    } catch (error) {
+      throw createAiServiceError({
+        errorCode: "AI_GENERATION_FAILED",
+        technicalMessage: error instanceof Error ? error.message : "Gemini request failed.",
+        statusCode: 500,
+      })
+    }
+
+    try {
+      const parsed = parseJsonResponse(await responseText(response))
+      const validated = validateOutreachMessage(parsed)
+      return {
+        provider: "gemini",
+        model: geminiModel,
+        message: validated.message,
+        usage: normalizeUsage(lastUsage),
+      }
+    } catch (error) {
+      lastValidationError = error
+    }
+  }
+  throw lastValidationError
 }

@@ -60,6 +60,9 @@ const createFailedImportHistory = async ({
   rowCount = 0,
   headers = [],
   message,
+  errorCode = null,
+  suggestion = null,
+  validationErrors = null,
   performedByUserId = null,
 }) => {
   if (!fileName) return null;
@@ -71,6 +74,9 @@ const createFailedImportHistory = async ({
       headers,
       status: "failed",
       errorMessage: message || "Import failed.",
+      errorCode,
+      errorSuggestion: suggestion,
+      validationErrors: validationErrors?.length ? validationErrors : null,
       performedByUserId,
     },
   });
@@ -676,6 +682,18 @@ try {
           errorMessage: rowErrors.length
             ? `${rowErrors.length} row(s) could not be mapped.`
             : null,
+          errorCode: rowErrors.length ? "ROW_MAPPING_FAILED" : null,
+          errorSuggestion: rowErrors.length
+            ? "Please fix the listed rows and upload the transaction file again."
+            : null,
+          validationErrors: rowErrors.length
+            ? rowErrors.map((item) => ({
+                rowNumber: item.rowNumber,
+                column: null,
+                value: null,
+                message: item.message,
+              }))
+            : null,
         },
       });
 
@@ -729,6 +747,11 @@ try {
             headers: parsedHeaders.length ? parsedHeaders : batch.headers,
             status: "failed",
             errorMessage: friendlyFailure.message,
+            errorCode: friendlyFailure.errorCode || null,
+            errorSuggestion: friendlyFailure.suggestion || null,
+            validationErrors: friendlyFailure.validationErrors?.length
+              ? friendlyFailure.validationErrors
+              : null,
           },
         }).catch(() => null);
         friendlyFailure.batchId = batch.id;
@@ -738,6 +761,9 @@ try {
           rowCount: parsedRecords.length || 0,
           headers: parsedHeaders || [],
           message: friendlyFailure.message,
+          errorCode: friendlyFailure.errorCode,
+          suggestion: friendlyFailure.suggestion,
+          validationErrors: friendlyFailure.validationErrors,
           performedByUserId: req.user.userId,
         }).catch(() => null);
         if (failedBatch?.id) friendlyFailure.batchId = failedBatch.id;
@@ -922,6 +948,10 @@ router.get("/batches/:id/rows", authorize("operational", "it_support"), async (r
     rowCount: true,
     headers: true,
     status: true,
+    errorMessage: true,
+    errorCode: true,
+    errorSuggestion: true,
+    validationErrors: true,
     createdAt: true,
   },
 });
@@ -930,6 +960,24 @@ router.get("/batches/:id/rows", authorize("operational", "it_support"), async (r
       return res.status(404).json({
         success: false,
         message: "Import batch not found.",
+      });
+    }
+
+    if (batch.status === "failed") {
+      await logItSupportActivity(req, "IT_SUPPORT_IMPORT_FAILURE_VIEW", {
+        batchId,
+      });
+
+      return res.json({
+        success: true,
+        message: "Import failure details fetched successfully.",
+        data: {
+          batch,
+          errorMessage: batch.errorMessage,
+          errorCode: batch.errorCode,
+          suggestion: batch.errorSuggestion,
+          validationErrors: Array.isArray(batch.validationErrors) ? batch.validationErrors : [],
+        },
       });
     }
 
@@ -1020,12 +1068,16 @@ router.delete("/jobs/:id", authorize("operational", "it_support"), async (req, r
 
     const deletionSummary = await deleteImportBatchData(prisma, batchId);
 
-    await logItSupportActivity(req, "IT_SUPPORT_IMPORT_DELETE", {
+    // Deleting the batch removes its ImportBatch row, so the activity log is
+    // the only remaining trace of this action. Log it for every authorized
+    // role (not just IT Support) so it still shows up in the Data history.
+    await logActivity(req, "IMPORT_DELETE", {
+      description: `${existingBatch.fileName} (batch #${batchId}) was deleted.`,
       batchId,
       fileName: existingBatch.fileName,
       rowCount: existingBatch.rowCount,
       ...deletionSummary,
-    });
+    }).catch(() => null);
 
     return res.json({
       success: true,

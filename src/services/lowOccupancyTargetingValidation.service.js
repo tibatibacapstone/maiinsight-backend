@@ -13,6 +13,7 @@ const ALLOWED_SEGMENT_NAMES = new Set([
 ])
 const ALLOWED_CAMPAIGN_DAYS = new Set(["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"])
 const ALLOWED_ANALYSIS_MONTHS = new Set([1, 2, 3, 4, 6, 12])
+const ALLOWED_CUSTOMER_TYPE_LABELS = new Set(["Membership", "Non Membership", "Mixed/Other"])
 
 const hasValue = (value) => value !== undefined && value !== null && String(value).trim() !== ""
 
@@ -129,6 +130,54 @@ export const validateRecommendedCustomersInput = (input = {}) => ({
   }),
   offset: normalizeNumber(input.offset, "offset", {
     minimum: 0,
+    fallback: 0,
+  }),
+})
+
+const normalizeRequiredText = (value, fieldName, { maxLength = 200 } = {}) => {
+  if (!hasValue(value)) throw badRequest(`${fieldName} is required.`)
+
+  const normalized = String(value).trim()
+  if (normalized.length > maxLength) {
+    throw badRequest(`${fieldName} must be ${maxLength} characters or fewer.`)
+  }
+
+  return normalized
+}
+
+export const validateGenerateOutreachMessageInput = (input = {}) => ({
+  customerName: normalizeRequiredText(input.customerName, "customerName", { maxLength: 120 }),
+  rfmSegmentName: normalizeSegmentName(input.rfmSegmentName),
+  customerTypeLabel: (() => {
+    if (!hasValue(input.customerTypeLabel)) return "Mixed/Other"
+
+    const normalized = String(input.customerTypeLabel).trim()
+    if (!ALLOWED_CUSTOMER_TYPE_LABELS.has(normalized)) {
+      throw badRequest("customerTypeLabel must be Membership, Non Membership, or Mixed/Other.")
+    }
+
+    return normalized
+  })(),
+  preferredSession: (() => {
+    if (!hasValue(input.preferredSession)) return null
+
+    const normalized = String(input.preferredSession).trim()
+    if (!ALLOWED_SESSION_NAMES.has(normalized)) {
+      throw badRequest("preferredSession must be Morning, Afternoon, Evening, Night, or omitted.")
+    }
+
+    return normalized
+  })(),
+  courtType: normalizeCourtType(input.courtType),
+  suggestedAction: normalizeRequiredText(input.suggestedAction, "suggestedAction", { maxLength: 200 }),
+  recencyDays: normalizeNumber(input.recencyDays, "recencyDays", {
+    minimum: 0,
+    maximum: 99999,
+    fallback: 999,
+  }),
+  totalBookingCount: normalizeNumber(input.totalBookingCount, "totalBookingCount", {
+    minimum: 0,
+    maximum: 100000,
     fallback: 0,
   }),
 })
