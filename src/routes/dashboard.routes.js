@@ -522,12 +522,21 @@ dashboardRouter.get(
         prisma.courtHourUsage.findMany({ where: customerUsageWhere, select: usageSelect }),
         prisma.courtHourUsage.findMany({ where: operationalUsageWhere, select: usageSelect }),
       ])
+      const usageRows = [...customerUsageRows, ...operationalUsageRows]
+
+      if (usageRows.length === 0) {
+        return res.json({
+          success: true,
+          message: "Empty slot heatmap fetched successfully.",
+          data: { slots: [], mostEmptySlot: null },
+        })
+      }
 
       res.json({
         success: true,
         message: "Empty slot heatmap fetched successfully.",
         data: buildEmptySlotHeatmap({
-          usageRows: [...customerUsageRows, ...operationalUsageRows],
+          usageRows,
           startDate,
           endDate: new Date(endDateExclusive.getTime() - 1),
           courtCount,
