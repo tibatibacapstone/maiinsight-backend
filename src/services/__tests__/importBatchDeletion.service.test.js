@@ -1,7 +1,10 @@
 import test from "node:test"
 import assert from "node:assert/strict"
 
-import { deleteImportBatchData } from "../importBatchDeletion.service.js"
+import {
+  deleteImportBatchData,
+  getImportBatchImpact,
+} from "../importBatchDeletion.service.js"
 
 const buildDatabase = () => {
   const state = {
@@ -32,8 +35,14 @@ const buildDatabase = () => {
   const idsFromWhere = (where) => new Set(where?.id?.in || where?.customerId?.in || [])
 
   const transaction = {
-    courtHourUsage: { deleteMany: async ({ where }) => removeByBatch(state.courtHours, where.batchId) },
-    rawTransactionTable: { deleteMany: async ({ where }) => removeByBatch(state.rawRows, where.batchId) },
+    courtHourUsage: {
+      deleteMany: async ({ where }) => removeByBatch(state.courtHours, where.batchId),
+      count: async ({ where }) => state.courtHours.filter((item) => item.batchId === where.batchId).length,
+    },
+    rawTransactionTable: {
+      deleteMany: async ({ where }) => removeByBatch(state.rawRows, where.batchId),
+      count: async ({ where }) => state.rawRows.filter((item) => item.batchId === where.batchId).length,
+    },
     importBatch: {
       delete: async ({ where }) => {
         const index = state.batches.findIndex((batch) => batch.id === where.id)
@@ -42,6 +51,7 @@ const buildDatabase = () => {
       },
     },
     facilityTransaction: {
+      count: async ({ where }) => state.transactions.filter((item) => item.batchId === where.batchId).length,
       findMany: async ({ where }) => [
         ...new Set(
           state.transactions
@@ -56,7 +66,8 @@ const buildDatabase = () => {
           (item) =>
             ids.has(item.customerId) &&
             (where.validBooking === undefined || item.validBooking === where.validBooking) &&
-            (!where.bookingType?.in || where.bookingType.in.includes(item.bookingType))
+            (!where.bookingType?.in || where.bookingType.in.includes(item.bookingType)) &&
+            (where.batchId?.not === undefined || item.batchId !== where.batchId.not)
         )
         const groups = new Map()
         for (const item of matching) {
@@ -153,6 +164,38 @@ test("batch deletion handles a batch with no inserted customer transactions", as
   assert.equal(summary.deletedTransactionCount, 0)
   assert.equal(summary.deletedOrphanCustomerCount, 0)
   assert.equal(database.state.customers.length, 4)
+})
+
+test("getImportBatchImpact returns the deletion scope without removing data", async () => {
+  const database = buildDatabase()
+  const before = structuredClone(database.state)
+
+  const impact = await getImportBatchImpact(database.transaction, 20)
+
+  assert.deepEqual(impact, {
+    facilityTransactionCount: 3,
+    courtHourUsageCount: 1,
+    rawTransactionCount: 2,
+    orphanCustomerCount: 1,
+    retainedCustomerCount: 2,
+  })
+  assert.deepEqual(database.state, before)
+})
+
+test("getImportBatchImpact reports a zero scope for a batch without customer transactions", async () => {
+  const database = buildDatabase()
+  database.state.batches.push({ id: 40 })
+  database.state.rawRows.push({ id: 40, batchId: 40 })
+
+  const impact = await getImportBatchImpact(database.transaction, 40)
+
+  assert.deepEqual(impact, {
+    facilityTransactionCount: 0,
+    courtHourUsageCount: 0,
+    rawTransactionCount: 1,
+    orphanCustomerCount: 0,
+    retainedCustomerCount: 0,
+  })
 })
 
 test("batch deletion rolls back every mutation when customer cleanup fails", async () => {

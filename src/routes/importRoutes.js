@@ -12,7 +12,10 @@ import {
   resolveCustomersForTransactions,
   syncCustomersForTransactions,
 } from "../services/customerCanonicalization.service.js";
-import { deleteImportBatchData } from "../services/importBatchDeletion.service.js";
+import {
+  deleteImportBatchData,
+  getImportBatchImpact,
+} from "../services/importBatchDeletion.service.js";
 import {
   buildFriendlyImportFailure,
   createImportError,
@@ -1032,6 +1035,55 @@ router.delete("/jobs/:id", authorize("operational", "it_support"), async (req, r
       message: "Import history and uploaded data deleted successfully.",
       data: {
         batchId,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Marketing Operational and IT support can preview the impact of deleting an import batch.
+router.get("/jobs/:id/impact", authorize("operational", "it_support"), async (req, res, next) => {
+  try {
+    const batchId = Number(req.params.id);
+
+    if (!batchId || Number.isNaN(batchId)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid import batch ID.",
+      });
+    }
+
+    const existingBatch = await prisma.importBatch.findUnique({
+      where: {
+        id: batchId,
+      },
+      select: {
+        id: true,
+        fileName: true,
+        status: true,
+        rowCount: true,
+      },
+    });
+
+    if (!existingBatch) {
+      return res.status(404).json({
+        success: false,
+        message: "Import batch not found.",
+      });
+    }
+
+    const impact = await getImportBatchImpact(prisma, batchId);
+
+    return res.json({
+      success: true,
+      message: "Import batch deletion impact fetched successfully.",
+      data: {
+        batchId,
+        fileName: existingBatch.fileName,
+        status: existingBatch.status,
+        rowCount: existingBatch.rowCount,
+        ...impact,
       },
     });
   } catch (error) {
