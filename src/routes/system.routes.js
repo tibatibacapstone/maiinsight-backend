@@ -313,6 +313,18 @@ router.post("/check-meta", authorize(...SYSTEM_STATUS_ROLES), async (req, res, n
   }
 })
 
+router.post("/check-gemini", authorize(...SYSTEM_STATUS_ROLES), async (req, res, next) => {
+  try {
+    const gemini = await checkGeminiHealth()
+    return res.json({
+      success: true,
+      data: { gemini, checkedAt: new Date().toISOString() },
+    })
+  } catch (error) {
+    next(error)
+  }
+})
+
 router.get("/gemini-usage", authorize(...SYSTEM_STATUS_ROLES), async (req, res, next) => {
   try {
     const days = Math.min(Number(req.query.days) || 30, 365)

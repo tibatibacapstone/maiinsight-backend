@@ -857,3 +857,156 @@ export const generateOutreachMessage = async (signals) => {
   }
   throw lastValidationError
 }
+
+// Overview dashboard "Business Insight" card: unlike generateStrategy (GenAI
+// Workspace, rolling lookback periods) this always summarizes the exact
+// calendar month/year/venue/booking-type the user has filtered the Overview
+// page to, using only the facts already computed for that scope.
+const overviewInsightSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: [
+    "campaignObjective",
+    "targetCustomerGroup",
+    "customerReasoning",
+    "suggestedOffer",
+    "followUpPlan",
+    "expectedBusinessImpact",
+    "dataLimitation",
+  ],
+  properties: {
+    campaignObjective: { type: "string" },
+    targetCustomerGroup: { type: "string" },
+    customerReasoning: { type: "string" },
+    suggestedOffer: { type: "string" },
+    followUpPlan: { type: "string" },
+    expectedBusinessImpact: { type: "string" },
+    dataLimitation: { type: "string" },
+  },
+}
+
+const describeOverviewScope = (filters = {}) => {
+  const periodLabel =
+    filters.month && filters.month !== "all" && filters.month !== "All Month"
+      ? `${filters.month} ${filters.year}`
+      : `all of ${filters.year}`
+  const venueLabel =
+    filters.venue && filters.venue !== "All Venue" ? filters.venue : "all venues"
+  const bookingTypeLabel =
+    filters.bookingType && filters.bookingType !== "All Type"
+      ? filters.bookingType
+      : "all booking types"
+
+  return { periodLabel, venueLabel, bookingTypeLabel }
+}
+
+const buildOverviewInsightPrompt = (context) => {
+  const filters = context?.selected_filters || {}
+  const { periodLabel, venueLabel, bookingTypeLabel } = describeOverviewScope(filters)
+  const planningMonthLabel = context?.planning_context?.targetMonth || "the upcoming month"
+
+  return `You are a business analyst for Maiin Gandaria, a sports venue business in Indonesia.
+Write a short business insight summary in English for the venue's Overview dashboard.
+
+STRICT SCOPE RULE: Only analyze and reference the period, venue, and booking type explicitly
+given below: period = ${periodLabel}, venue = ${venueLabel}, booking type = ${bookingTypeLabel}.
+Do not mention, compare with, or generalize to any other month, quarter, or year. Every number
+and claim you make must come only from the JSON facts provided below; never invent data that
+isn't present in them.
+
+suggestedOffer, campaignObjective, and followUpPlan should be forward-looking: plan for
+${planningMonthLabel} based on what actually happened in ${periodLabel}.
+
+Facts for ${periodLabel} (${venueLabel}, ${bookingTypeLabel}) only:
+${JSON.stringify(sanitizeGeminiContext(context), null, 2)}
+
+Output valid JSON only, matching exactly this shape (every field is a short string, under 30 words):
+{
+  "campaignObjective": "...",
+  "targetCustomerGroup": "...",
+  "customerReasoning": "...",
+  "suggestedOffer": "...",
+  "followUpPlan": "...",
+  "expectedBusinessImpact": "...",
+  "dataLimitation": "..."
+}`
+}
+
+const validateOverviewInsight = (result) => {
+  const fields = [
+    "campaignObjective",
+    "targetCustomerGroup",
+    "customerReasoning",
+    "suggestedOffer",
+    "followUpPlan",
+    "expectedBusinessImpact",
+    "dataLimitation",
+  ]
+  fields.forEach((field) => requireText(result?.[field], field))
+  fields.forEach((field) => validateWordLimit(result[field], field, 40))
+  return result
+}
+
+export const generateOverviewBusinessInsight = async (context) => {
+  const config = await buildConfigSnapshot()
+  if (!config.geminiEnabled) {
+    throw createAiServiceError({
+      errorCode: "AI_DISABLED",
+      message: "AI business insight generation is currently disabled.",
+      technicalMessage: "Gemini integration is disabled.",
+      statusCode: 503,
+    })
+  }
+  if (!config.geminiApiKey) {
+    throw createAiServiceError({
+      errorCode: "GEMINI_NOT_CONFIGURED",
+      message: "AI business insight generation is not configured yet.",
+      suggestion: "Please ask IT Support to configure Gemini API credentials.",
+      technicalMessage: "Missing GEMINI_API_KEY.",
+      statusCode: 503,
+    })
+  }
+
+  const geminiModel = config.geminiModel || "gemini-2.5-flash"
+  const ai = new GoogleGenAI({ apiKey: config.geminiApiKey })
+
+  let lastValidationError = null
+  let lastUsage = null
+  for (let attempt = 0; attempt < GEMINI_GENERATION_CONFIG.maxAttempts; attempt += 1) {
+    let response
+    try {
+      response = await ai.models.generateContent({
+        model: geminiModel,
+        contents: buildOverviewInsightPrompt(context),
+        config: {
+          temperature: 0.4,
+          maxOutputTokens: 700,
+          responseMimeType: "application/json",
+          responseJsonSchema: overviewInsightSchema,
+          thinkingConfig: { thinkingBudget: 0 },
+        },
+      })
+      if (response?.usageMetadata) lastUsage = response.usageMetadata
+    } catch (error) {
+      throw createAiServiceError({
+        errorCode: "AI_GENERATION_FAILED",
+        technicalMessage: error instanceof Error ? error.message : "Gemini request failed.",
+        statusCode: 500,
+      })
+    }
+
+    try {
+      const parsed = parseJsonResponse(await responseText(response))
+      const validated = validateOverviewInsight(parsed)
+      return {
+        provider: "gemini",
+        model: geminiModel,
+        strategy: validated,
+        usage: normalizeUsage(lastUsage),
+      }
+    } catch (error) {
+      lastValidationError = error
+    }
+  }
+  throw lastValidationError
+}

@@ -19,6 +19,8 @@ import {
 } from "../services/dashboardPeriod.service.js";
 import { buildEmptySlotHeatmap } from "../services/emptySlotHeatmap.service.js";
 import { getLatestTransactionDate } from "../services/dataCenterTransactionStatus.service.js";
+import { generateOverviewBusinessInsight } from "../services/aiProvider.service.js";
+import { logActivity } from "../services/activityLog.service.js";
 
 export const dashboardRouter = Router();
 
@@ -207,6 +209,8 @@ const getLowSessionSummary = async ({
     return {
       lowSessionLabel: "No Data",
       lowSessionCount: 0,
+      lowSessionRate: 0,
+      lowSessionRevenue: 0,
       lowSessionBasis: "no_data",
       lowSessionDetail: "No historical session data is available for the selected period.",
     };
@@ -225,6 +229,7 @@ const getLowSessionSummary = async ({
     select: {
       hourStart: true,
       courtType: true,
+      hourlyRevenue: true,
     },
   });
 
@@ -235,7 +240,10 @@ const getLowSessionSummary = async ({
     if (!sessionName || !row.courtType) continue;
 
     const bucketKey = `${sessionName}|${row.courtType}`;
-    usageByBucket.set(bucketKey, (usageByBucket.get(bucketKey) || 0) + 1);
+    const existing = usageByBucket.get(bucketKey) || { count: 0, revenue: 0 };
+    existing.count += 1;
+    existing.revenue += Number(row.hourlyRevenue || 0);
+    usageByBucket.set(bucketKey, existing);
   }
 
   let selectedBucket = null;
@@ -245,7 +253,8 @@ const getLowSessionSummary = async ({
 
     for (const trackedCourtType of trackedCourtTypes) {
       const bucketKey = `${session.name}|${trackedCourtType}`;
-      const occupiedCourtHours = usageByBucket.get(bucketKey) || 0;
+      const bucketUsage = usageByBucket.get(bucketKey) || { count: 0, revenue: 0 };
+      const occupiedCourtHours = bucketUsage.count;
       const availableCourtHours = rangeDays.length * sessionHourCount;
       const occupancyRate =
         availableCourtHours > 0 ? occupiedCourtHours / availableCourtHours : 0;
@@ -256,6 +265,7 @@ const getLowSessionSummary = async ({
         occupiedCourtHours,
         availableCourtHours,
         occupancyRate,
+        revenue: bucketUsage.revenue,
       };
 
       if (!selectedBucket) {
@@ -290,6 +300,8 @@ const getLowSessionSummary = async ({
     return {
       lowSessionLabel: "No Data",
       lowSessionCount: 0,
+      lowSessionRate: 0,
+      lowSessionRevenue: 0,
       lowSessionBasis: "no_data",
       lowSessionDetail: "No historical session data is available for the selected period.",
     };
@@ -303,6 +315,8 @@ const getLowSessionSummary = async ({
   return {
     lowSessionLabel: `${selectedBucket.sessionName}${courtSuffix}`,
     lowSessionCount: selectedBucket.occupiedCourtHours,
+    lowSessionRate: occupancyPercent,
+    lowSessionRevenue: selectedBucket.revenue,
     lowSessionBasis,
     lowSessionDetail: `${lowSessionDetail} Historical occupancy was ${occupancyPercent}% for this session bucket${courtSuffix ? " in the referenced venue" : ""}.`,
   };
@@ -758,10 +772,13 @@ dashboardRouter.get(
             revenueChange: 0,
             lowSessionLabel: "No Data",
             lowSessionCount: 0,
+            lowSessionRate: 0,
+            lowSessionRevenue: 0,
             lowSessionBasis: "no_data",
             lowSessionDetail: "No historical session data is available for the selected period.",
             peakSessionLabel: "-",
             peakSessionRevenue: 0,
+            peakSessionRate: 0,
             totalBookedSessions: 0,
             availableSessions: 0,
           },
@@ -813,6 +830,7 @@ dashboardRouter.get(
         previousBookedSessions,
         lowSession,
         transactions,
+        courtHourUsageRows,
       ] = await Promise.all([
         prisma.facilityTransaction.aggregate({
           where: transactionWhere,
@@ -845,6 +863,14 @@ dashboardRouter.get(
           select: {
             startHour: true,
             netRevenue: true,
+            courtType: true,
+          },
+        }),
+        prisma.courtHourUsage.findMany({
+          where: courtHourWhere,
+          select: {
+            hourStart: true,
+            courtType: true,
           },
         }),
       ]);
@@ -852,34 +878,74 @@ dashboardRouter.get(
       const totalRevenue = Number(revenueResult._sum.netRevenue || 0);
       const previousRevenue = Number(previousRevenueResult._sum.netRevenue || 0);
 
-      // Calculate peak session revenue
-      const sessionRevenue = {
-        Morning: 0,
-        Afternoon: 0,
-        Evening: 0,
-        Night: 0,
-      };
+      // Calculate peak session revenue, bucketed by session + court type so the
+      // label can show the venue too (matching the Lowest-Demand Session card).
+      const sessionRevenueByBucket = new Map();
 
       transactions.forEach((tx) => {
         const hourStr = tx.startHour || "";
         const hour = Number(String(hourStr).split(":")[0]);
 
         const session = resolveSessionNameByHour(hour);
+        if (!session || !tx.courtType) return;
 
-        if (session) {
-          sessionRevenue[session] += Number(tx.netRevenue || 0);
-        }
+        const bucketKey = `${session}|${tx.courtType}`;
+        sessionRevenueByBucket.set(
+          bucketKey,
+          (sessionRevenueByBucket.get(bucketKey) || 0) + Number(tx.netRevenue || 0)
+        );
       });
 
-      const peakSession =
-        transactions.length > 0
-          ? Object.entries(sessionRevenue).reduce((max, [session, revenue]) =>
-              revenue > max[1] ? [session, revenue] : max
-            )
-          : null;
+      const trackedPeakCourtTypes = courtType ? [courtType] : COURT_TYPES;
+      let peakBucket = null;
 
-      const peakSessionLabel = peakSession ? peakSession[0] : "No Data";
-      const peakSessionRevenue = peakSession ? peakSession[1] : 0;
+      for (const session of SESSION_DEFINITIONS) {
+        for (const trackedCourtType of trackedPeakCourtTypes) {
+          const revenue = sessionRevenueByBucket.get(`${session.name}|${trackedCourtType}`) || 0;
+
+          if (!peakBucket || revenue > peakBucket.revenue) {
+            peakBucket = { sessionName: session.name, courtType: trackedCourtType, revenue };
+          }
+        }
+      }
+
+      const peakCourtSuffix = courtType
+        ? ""
+        : ` - ${COURT_TYPE_LABELS[peakBucket?.courtType] || peakBucket?.courtType}`;
+
+      const peakSessionLabel =
+        peakBucket && peakBucket.revenue > 0 ? `${peakBucket.sessionName}${peakCourtSuffix}` : "No Data";
+      const peakSessionRevenue = peakBucket ? peakBucket.revenue : 0;
+
+      // Occupancy for the peak bucket, computed the same way as the
+      // Lowest-Demand Session card (occupied court-hours / available court-hours
+      // for that exact session + court type over the selected range).
+      const peakOccupancyByBucket = new Map();
+
+      courtHourUsageRows.forEach((row) => {
+        const session = resolveSessionNameByHour(row.hourStart);
+        if (!session || !row.courtType) return;
+
+        const bucketKey = `${session}|${row.courtType}`;
+        peakOccupancyByBucket.set(bucketKey, (peakOccupancyByBucket.get(bucketKey) || 0) + 1);
+      });
+
+      const peakSessionDefinition = SESSION_DEFINITIONS.find(
+        (session) => session.name === peakBucket?.sessionName
+      );
+      const peakRangeDays = Math.round(
+        (selectedRange.endDateExclusive.getTime() - selectedRange.startDate.getTime()) / 86400000
+      );
+      const peakAvailableCourtHours = peakSessionDefinition
+        ? peakRangeDays * (peakSessionDefinition.endHour - peakSessionDefinition.startHour + 1)
+        : 0;
+      const peakOccupiedCourtHours = peakBucket
+        ? peakOccupancyByBucket.get(`${peakBucket.sessionName}|${peakBucket.courtType}`) || 0
+        : 0;
+      const peakSessionRate =
+        peakBucket && peakAvailableCourtHours > 0
+          ? Number(((peakOccupiedCourtHours / peakAvailableCourtHours) * 100).toFixed(1))
+          : 0;
 
       const courtCount = getCourtCount(courtType);
       const availableSessions = getAvailableCourtHours(
@@ -909,6 +975,8 @@ dashboardRouter.get(
           : {
               lowSessionLabel: "-",
               lowSessionCount: 0,
+              lowSessionRate: 0,
+              lowSessionRevenue: 0,
               lowSessionBasis: "no_data",
               lowSessionDetail: "No data is available for the selected period.",
             };
@@ -923,16 +991,89 @@ dashboardRouter.get(
           revenueChange: Number(revenueChange.toFixed(1)),
           lowSessionLabel: normalizedLowSession.lowSessionLabel,
           lowSessionCount: normalizedLowSession.lowSessionCount,
+          lowSessionRate: normalizedLowSession.lowSessionRate,
+          lowSessionRevenue: normalizedLowSession.lowSessionRevenue,
           lowSessionBasis: normalizedLowSession.lowSessionBasis,
           lowSessionDetail: normalizedLowSession.lowSessionDetail,
           peakSessionLabel,
           peakSessionRevenue,
+          peakSessionRate,
           totalBookedSessions,
           availableSessions,
         },
       });
     } catch (error) {
       next(error);
+    }
+  }
+);
+
+// Overview page "Business Insight" card. Unlike /ai-strategy/generate (GenAI
+// Workspace campaign strategy, rolling lookback periods), this always
+// summarizes exactly the calendar month/year/venue/booking-type the caller
+// has already scoped the Overview page's own data to, so the insight text
+// never drifts to a different period than what the user filtered.
+dashboardRouter.post(
+  "/business-insight",
+  authorize("operational", "it_support"),
+  async (req, res) => {
+    const context = req.body;
+
+    try {
+      if (!context || typeof context !== "object" || Array.isArray(context)) {
+        return res.status(400).json({
+          success: false,
+          errorCode: "INVALID_BUSINESS_INSIGHT_INPUT",
+          message: "Business insight context is missing or invalid.",
+        });
+      }
+
+      const result = await generateOverviewBusinessInsight(context);
+
+      await prisma.aiUsageLog.create({
+        data: {
+          userId: req.user.userId,
+          model: result.model,
+          feature: "overview_business_insight",
+          promptTokens: Number(result.usage?.promptTokens) || 0,
+          candidatesTokens: Number(result.usage?.candidatesTokens) || 0,
+          totalTokens: Number(result.usage?.totalTokens) || 0,
+        },
+      });
+
+      await logActivity(req, "OVERVIEW_BUSINESS_INSIGHT_GENERATED", {
+        status: "success",
+        provider: result.provider,
+        model: result.model,
+        selectedFilters: context.selected_filters || null,
+      }).catch(() => null);
+
+      return res.json({
+        success: true,
+        message: "Business insight generated successfully.",
+        data: {
+          provider: result.provider,
+          model: result.model,
+          generatedAt: new Date().toISOString(),
+          strategy: result.strategy,
+        },
+      });
+    } catch (error) {
+      await logActivity(req, "OVERVIEW_BUSINESS_INSIGHT_FAILED", {
+        status: "failed",
+        errorCode: error?.errorCode || "AI_GENERATION_FAILED",
+        technicalMessage:
+          error instanceof Error ? error.message : "Business insight generation failed.",
+      }).catch(() => null);
+
+      return res.status(error?.statusCode || 500).json({
+        success: false,
+        errorCode: error?.errorCode || "AI_GENERATION_FAILED",
+        message: error?.message || "Business insight could not be generated.",
+        suggestion: error?.suggestion || "Please try again after the latest data import is complete.",
+        technicalMessage:
+          error instanceof Error ? error.message : "Business insight generation failed.",
+      });
     }
   }
 );
