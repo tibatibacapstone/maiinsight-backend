@@ -546,7 +546,7 @@ export const buildOccupancyTrendPeriods = ({
     return MONTH_LABELS.slice(0, maxMonthIndex + 1).map((label, monthIndex) => ({
       label,
       month: label,
-      startDate: createApplicationDateStart(year, 1, 1),
+      startDate: createApplicationDateStart(year, monthIndex + 1, 1),
       endDateExclusive: getSafeMonthEndExclusive(year, monthIndex, today),
     }))
   }
@@ -571,7 +571,7 @@ export const buildOccupancyTrendPeriods = ({
   return MONTH_LABELS.slice(0, lastVisibleMonthIndex + 1).map((label, monthIndex) => ({
     label,
     month: label,
-    startDate: createApplicationDateStart(year, 1, 1),
+    startDate: createApplicationDateStart(year, monthIndex + 1, 1),
     endDateExclusive: getSafeMonthEndExclusive(year, monthIndex, today),
   }))
 }

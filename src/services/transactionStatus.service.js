@@ -40,7 +40,7 @@ const STATUS_DEFINITIONS = new Map([
       bookingType: "GeloraApp Booking",
     },
   ],
-  ...["manual/walk/in", "manual/walkin", "manual walk/in", "manual walkin", "manual booking"].map(
+  ...["manual/walk/in", "manual/walkin", "manual/walk in", "manual walk/in", "manual walkin", "manual walk in", "manual booking"].map(
     (alias) => [
       alias,
       {

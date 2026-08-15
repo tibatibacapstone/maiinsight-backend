@@ -7,7 +7,7 @@ import { buildConfigSnapshot } from "../services/appConfig.service.js";
 import { syncMetaRawToAnalytics } from "../services/meta.service.js";
 import { createNotificationsForRoles } from "../services/notification.service.js";
 import { resolveMetaConnectionStatus } from "../services/meta.service.js";
-import { metricValueOrNull } from "../services/metaHistorical.service.js";
+import { computeContentPerformance } from "../services/instagramContentPerformance.service.js";
 import {
   calculateAvailableChangePct,
   resolveFollowerSnapshot,
@@ -696,80 +696,7 @@ const followersTrend = buildMonthlyFollowersTrend(followerSnapshots)
               : 0,
       }));
 
-      const contentPerformance = media
-  .map((item) => {
-    const itemInsights = item.insights || [];
-
-    const getLatestMetric = (metricNames = []) => {
-      const matchedInsights = itemInsights
-        .filter((insight) => metricNames.includes(insight.metricName))
-        .sort(
-          (a, b) => {
-            const dateDifference =
-              new Date(b.insightDate).getTime() -
-              new Date(a.insightDate).getTime();
-            if (dateDifference !== 0) return dateDifference;
-            return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
-          }
-        );
-
-      if (!matchedInsights.length || matchedInsights[0].metricValue == null) {
-        return null;
-      }
-      return metricValueOrNull(matchedInsights[0].metricValue);
-    };
-
-    const rawMedia = item.rawJson || {};
-
-    const views = getLatestMetric(["views", "impressions", "plays"]);
-    const reach = getLatestMetric(["reach"]);
-
-    const insightLikes = getLatestMetric(["likes"]);
-    const likes = insightLikes ?? metricValueOrNull(rawMedia.like_count);
-
-    const insightComments = getLatestMetric(["comments"]);
-    const comments = insightComments ?? metricValueOrNull(rawMedia.comments_count);
-
-    const shares = getLatestMetric(["shares"]);
-    const saved = getLatestMetric(["saved"]);
-
-    const interactions =
-      getLatestMetric(["total_interactions"]) ??
-      (likes ?? 0) + (comments ?? 0) + (shares ?? 0) + (saved ?? 0);
-
-    const localEngagementRate =
-      reach == null ? null : reach > 0 ? Number(((interactions / reach) * 100).toFixed(2)) : 0;
-
-    const localShareRate =
-      reach == null || shares == null ? null : reach > 0 ? Number(((shares / reach) * 100).toFixed(2)) : 0;
-
-    const localSaveRate =
-      reach == null || saved == null ? null : reach > 0 ? Number(((saved / reach) * 100).toFixed(2)) : 0;
-
-    return {
-      id: item.id,
-      igMediaId: item.igMediaId,
-      caption: item.caption,
-      contentLabel: item.contentLabel || "content_advertisement",
-      mediaType: item.mediaType,
-      mediaProductType: item.mediaProductType,
-      mediaUrl: item.mediaUrl,
-      thumbnailUrl: item.thumbnailUrl,
-      permalink: item.permalink,
-      postedAt: item.postedAt,
-      views,
-      reach,
-      likes,
-      comments,
-      interactions,
-      shares,
-      saved,
-      engagementRate: localEngagementRate,
-      shareRate: localShareRate,
-      saveRate: localSaveRate,
-    };
-  })
-  .sort((a, b) => (b.views ?? -1) - (a.views ?? -1));
+      const contentPerformance = computeContentPerformance(media);
 
       const contentList = [...contentPerformance].sort(
   (a, b) =>

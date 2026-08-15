@@ -147,6 +147,9 @@ model ImportBatch {
   headers              Json
   status               ImportStatus          @default(uploaded)
   errorMessage         String?               @db.Text
+  errorCode            String?               @db.VarChar(50)
+  errorSuggestion      String?               @db.Text
+  validationErrors     Json?
   createdAt            DateTime              @default(now())
   updatedAt            DateTime              @updatedAt
   performedByUserId    Int?

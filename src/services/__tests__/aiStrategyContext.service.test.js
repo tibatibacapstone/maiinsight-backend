@@ -4,6 +4,7 @@ import assert from "node:assert/strict"
 import {
   aggregateSelectedSegmentHistory,
   buildMembershipOpportunity,
+  buildSocialMediaPerformanceContext,
   buildVenueOpportunity,
   resolveSession,
   resolveVenue,
@@ -258,4 +259,105 @@ test("resolved analysis period is echoed with backend-provided labels and dates"
     displayEndDate: "2026-07-29",
     timezone: "Asia/Bangkok",
   })
+})
+
+const igInsight = (metricName, metricValue) => ({
+  metricName,
+  metricValue,
+  insightDate: "2026-04-05T00:00:00Z",
+  updatedAt: "2026-04-05T00:00:00Z",
+})
+
+const igPost = ({ id, mediaProductType, contentLabel, views, reach, likes = 0, comments = 0 }) => ({
+  id,
+  igMediaId: id,
+  caption: `Caption for ${id}`,
+  contentLabel,
+  mediaType: null,
+  mediaProductType,
+  postedAt: "2026-04-10T00:00:00Z",
+  rawJson: {},
+  insights: [
+    igInsight("views", views),
+    ...(reach != null ? [igInsight("reach", reach)] : []),
+    igInsight("likes", likes),
+    igInsight("comments", comments),
+  ],
+})
+
+test("social media performance is unavailable without a resolved analysis period", async () => {
+  const result = await buildSocialMediaPerformanceContext({ analysisPeriod: null })
+  assert.equal(result.available, false)
+  assert.match(result.reason, /no analysis period/i)
+})
+
+test("social media performance is unavailable when nothing was posted in the period", async () => {
+  const analysisPeriod = resolveAnalysisPeriodRange({
+    analysisPeriodKey: "three_months",
+    now: new Date("2026-07-30T00:00:00.000Z"),
+  })
+  const result = await buildSocialMediaPerformanceContext({
+    analysisPeriod,
+    db: { instagramMedia: { findMany: async () => [] } },
+  })
+  assert.equal(result.available, false)
+  assert.equal(result.analysisPeriodKey, "three_months")
+  assert.match(result.reason, /no instagram content/i)
+})
+
+test("social media performance ranks content by engagement rate and groups by type and label", async () => {
+  const analysisPeriod = resolveAnalysisPeriodRange({
+    analysisPeriodKey: "three_months",
+    now: new Date("2026-07-30T00:00:00.000Z"),
+  })
+  const capture = {}
+  const media = [
+    igPost({ id: "reel-high", mediaProductType: "REELS", contentLabel: "content_promotion", views: 500, reach: 200, likes: 60, comments: 10 }),
+    igPost({ id: "feed-low", mediaProductType: "FEED", contentLabel: "content_advertisement", views: 100, reach: 100, likes: 2, comments: 0 }),
+    igPost({ id: "reel-mid", mediaProductType: "REELS", contentLabel: "content_advertisement", views: 300, reach: 150, likes: 15, comments: 5 }),
+  ]
+  const result = await buildSocialMediaPerformanceContext({
+    analysisPeriod,
+    db: {
+      instagramMedia: {
+        findMany: async (query) => {
+          capture.query = query
+          return media
+        },
+      },
+    },
+  })
+
+  assert.equal(capture.query.where.postedAt.gte.getTime(), analysisPeriod.analysisStart.getTime())
+  assert.equal(capture.query.where.postedAt.lt.getTime(), analysisPeriod.analysisEndExclusive.getTime())
+  assert.equal(result.available, true)
+  assert.equal(result.postCount, 3)
+  assert.equal(result.rankingMetric, "engagementRate")
+  assert.equal(result.topPerformingContent[0].mediaType, "REELS")
+  assert.equal(result.topPerformingContent[0].captionExcerpt, "Caption for reel-high")
+  assert.equal(result.contentTypeBreakdown[0].key, "REELS")
+  assert.equal(result.contentTypeBreakdown[0].postCount, 2)
+  assert.deepEqual(
+    result.contentLabelBreakdown.map((group) => group.key).sort(),
+    ["content_advertisement", "content_promotion"]
+  )
+  assert.ok(result.lowestPerformingContent.some((item) => item.mediaType === "FEED"))
+})
+
+test("social media performance falls back to view rank when no post has reach data", async () => {
+  const analysisPeriod = resolveAnalysisPeriodRange({
+    analysisPeriodKey: "three_months",
+    now: new Date("2026-07-30T00:00:00.000Z"),
+  })
+  const media = [
+    igPost({ id: "no-reach-low", mediaProductType: "FEED", contentLabel: "content_advertisement", views: 50, reach: null }),
+    igPost({ id: "no-reach-high", mediaProductType: "FEED", contentLabel: "content_advertisement", views: 900, reach: null }),
+  ]
+  const result = await buildSocialMediaPerformanceContext({
+    analysisPeriod,
+    db: { instagramMedia: { findMany: async () => media } },
+  })
+
+  assert.equal(result.rankingMetric, "views")
+  assert.equal(result.topPerformingContent[0].captionExcerpt, "Caption for no-reach-high")
 })

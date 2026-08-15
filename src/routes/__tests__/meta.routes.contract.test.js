@@ -52,14 +52,23 @@ test("historical trend never falls back to content performance", () => {
 
 test("media performance remains posting-period plus latest snapshot", () => {
   assert.match(dashboardRoute, /postedAt: \{[\s\S]*gte: startDate,[\s\S]*lte: endDate/);
-  assert.match(dashboardRoute, /const getLatestMetric/);
-  assert.match(dashboardRoute, /new Date\(b\.updatedAt\).*new Date\(a\.updatedAt\)/);
-  assert.match(dashboardRoute, /const views = getLatestMetric\(\["views", "impressions", "plays"\]\)/);
+  assert.match(
+    dashboardRoute,
+    /const contentPerformance = computeContentPerformance\(media\)/,
+    "dashboard must reuse the shared per-post metric extraction instead of a local copy"
+  );
   assert.match(dashboardRoute, /const topContent = \[\.\.\.contentPerformance\]/);
   assert.match(dashboardRoute, /contentPerformance\.forEach/);
   assert.doesNotMatch(
     dashboardRoute,
     /total_views|facebook_views|crossposted_views/,
     "dashboard consumers must remain on the canonical media views contract"
+  );
+});
+
+test("shared content-performance helper is imported from its own service", () => {
+  assert.match(
+    source,
+    /import \{ computeContentPerformance \} from "\.\.\/services\/instagramContentPerformance\.service\.js";/
   );
 });
