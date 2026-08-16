@@ -4,9 +4,8 @@ import { prisma } from "../config/prisma.js";
 import { authenticate, authorize } from "../middleware/auth.js";
 import { logActivity } from "../services/activityLog.service.js";
 import { buildConfigSnapshot } from "../services/appConfig.service.js";
-import { syncMetaRawToAnalytics } from "../services/meta.service.js";
+import { syncMetaRawToAnalytics, resolveMetaConnectionStatus, META_HISTORY_MONTHS } from "../services/meta.service.js";
 import { createNotificationsForRoles } from "../services/notification.service.js";
-import { resolveMetaConnectionStatus } from "../services/meta.service.js";
 import { computeContentPerformance } from "../services/instagramContentPerformance.service.js";
 import {
   calculateAvailableChangePct,
@@ -698,6 +697,23 @@ const followersTrend = buildMonthlyFollowersTrend(followerSnapshots)
 
       const contentPerformance = computeContentPerformance(media);
 
+      const metaInsightRetentionStart = new Date();
+      metaInsightRetentionStart.setUTCMonth(
+        metaInsightRetentionStart.getUTCMonth() - META_HISTORY_MONTHS
+      );
+      const mediaWithoutInsights = media.filter(
+        (item) => !(Array.isArray(item.insights) && item.insights.length)
+      );
+      const mediaOutsideInsightRetention = mediaWithoutInsights.filter(
+        (item) => item.postedAt && new Date(item.postedAt) < metaInsightRetentionStart
+      );
+      const contentInsightsAvailability = {
+        totalMedia: media.length,
+        mediaWithInsights: media.length - mediaWithoutInsights.length,
+        mediaWithoutInsights: mediaWithoutInsights.length,
+        outsideInsightRetention: mediaOutsideInsightRetention.length,
+      };
+
       const contentList = [...contentPerformance].sort(
   (a, b) =>
     new Date(b.postedAt || 0).getTime() -
@@ -892,6 +908,7 @@ monthlyViewsTrend: historicalMonthlyTrend,
 topContent,
 contentList,
 contentListTotal: contentList.length,
+contentInsightsAvailability,
 
         },
       });

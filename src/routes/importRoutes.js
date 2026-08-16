@@ -601,6 +601,16 @@ try {
 
       if (facilityTransactions.length) {
         const resolved = await resolveCustomersForTransactions(prisma, facilityTransactions);
+        // Merge identity errors into rowErrors (partial import supported)
+        if (resolved.errors) {
+          resolved.errors.forEach((e) => {
+            rowErrors.push({
+              rowNumber: e.rowNumber,
+              column: e.column,
+              message: e.message,
+            });
+          });
+        }
         const existingBookingEvents = await prisma.facilityTransaction.findMany({
           where: {
             bookingEventKey: {
@@ -862,6 +872,18 @@ router.post(
 
       if (mappedTransactions.length) {
         const resolved = await resolveCustomersForTransactions(prisma, mappedTransactions);
+        // Merge identity errors into summary.errors
+        if (resolved.errors) {
+          resolved.errors.forEach((e) => {
+            const tx = mappedTransactions.find((t) => t.rowNumber === e.rowNumber);
+            summary.errors.push({
+              transactionId: tx ? tx.id : e.rowNumber,
+              rowNumber: e.rowNumber,
+              batchId: batchId,
+              message: e.message,
+            });
+          });
+        }
         const seenBookingEventKeys = new Set();
 
         for (const transaction of resolved.transactions) {

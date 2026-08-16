@@ -51,6 +51,7 @@ export const buildCustomerUpsertCandidates = (transactions = []) => {
       customerKeyType: transaction.customerKeyType || "unknown",
       customerKeyConfidence: normalizeConfidenceValue(transaction.customerKeyConfidence),
     }
+
     const existing = candidateByIdentity.get(candidate.customerIdentity)
 
     if (!existing || scoreCandidate(candidate) >= scoreCandidate(existing)) {
@@ -70,11 +71,11 @@ const createIdentityError = ({ errorCode, rowNumber, column, message, suggestion
   return error
 }
 
-const identityConflict = (rowNumber) =>
+const identityConflict = (rowNumber, column) =>
   createIdentityError({
     errorCode: "CUSTOMER_IDENTITY_CONFLICT",
     rowNumber,
-    column: "Email, Phone",
+    column,
     message:
       "Customer identity could not be resolved because the email and phone number match different customer records.",
     suggestion: "Please verify the email and phone number in the source transaction file.",
@@ -182,6 +183,40 @@ const resolveCustomer = async (database, candidate) => {
   })
 }
 
+const computeUnreliableIdentifiers = (transactions, storedCustomers, emailIndex, phoneIndex) => {
+  const unreliablePhones = new Set()
+  const unreliableEmails = new Set()
+
+  // (a) Identifiers that map to >=2 customers in the DB are unreliable.
+  for (const [value, customers] of phoneIndex) {
+    if (customers && customers.length > 1) unreliablePhones.add(value)
+  }
+  for (const [value, customers] of emailIndex) {
+    if (customers && customers.length > 1) unreliableEmails.add(value)
+  }
+
+  // (b) Identifiers that appear in the batch with >=2 distinct normalized names are also unreliable.
+  const phoneNameMap = new Map()
+  const emailNameMap = new Map()
+  for (const transaction of transactions) {
+    const ph = normalizeCustomerPhone(transaction.normalizedPhone ?? transaction.noTelepon)
+    const em = normalizeCustomerEmail(transaction.Email ?? transaction.email)
+    const nm = normalizeCustomerName(transaction.normalizedName ?? transaction.customerName ?? transaction.nama)
+    if (ph) {
+      if (!phoneNameMap.has(ph)) phoneNameMap.set(ph, new Set())
+      phoneNameMap.get(ph).add(nm)
+    }
+    if (em) {
+      if (!emailNameMap.has(em)) emailNameMap.set(em, new Set())
+      emailNameMap.get(em).add(nm)
+    }
+  }
+  for (const [value, names] of phoneNameMap) if (names.size > 1) unreliablePhones.add(value)
+  for (const [value, names] of emailNameMap) if (names.size > 1) unreliableEmails.add(value)
+
+  return { unreliablePhones, unreliableEmails }
+}
+
 export const resolveCustomersForTransactions = async (database, transactions = []) => {
   const storedCustomers = await database.customer.findMany()
   const emailIndex = new Map()
@@ -202,7 +237,12 @@ export const resolveCustomersForTransactions = async (database, transactions = [
     addToIndex(nameIndex, customer.normalizedName, customer)
   }
 
+  // Pre-scan: mark identifiers that are unreliable (appear with multiple names in batch or >=2 DB customers)
+  const { unreliablePhones, unreliableEmails } = computeUnreliableIdentifiers(transactions, storedCustomers, emailIndex, phoneIndex)
+
   const resolutionByTransaction = new Map()
+  const rowErrors = []
+
   for (const transaction of transactions) {
     if (String(transaction.customerKey).startsWith("SYS-")) {
       let customer = workingCustomers.find(
@@ -225,18 +265,99 @@ export const resolveCustomersForTransactions = async (database, transactions = [
     const normalizedName = normalizeCustomerName(
       transaction.normalizedName ?? transaction.customerName ?? transaction.nama
     )
-    const emailMatch = oneMatch(emailIndex, email)
-    const phoneMatch = oneMatch(phoneIndex, phone)
 
-    if (Array.isArray(emailMatch) || Array.isArray(phoneMatch)) {
-      throw identityConflict(transaction.rowNumber)
+    // Determine email match, but treat unreliable emails as absent
+    let emailMatch = null
+    if (email && !unreliableEmails.has(email)) {
+      emailMatch = oneMatch(emailIndex, email)
     }
 
+    // Determine phone match, but treat unreliable phones as absent
+    let phoneMatch = null
+    if (phone && !unreliablePhones.has(phone)) {
+      phoneMatch = oneMatch(phoneIndex, phone)
+    }
+
+    // Name-priority fallback: if phone matches multiple candidates, prefer the one whose
+    // normalizedName exactly matches the row's name.
+    if (phoneMatch && Array.isArray(phoneMatch)) {
+      // phoneMatch is an array of customers; filter by name match
+      const nameMatched = phoneMatch.filter(c => normalizeCustomerName(c.name) === normalizedName)
+      if (nameMatched.length === 1) {
+        phoneMatch = nameMatched[0]
+      } else if (nameMatched.length === 0) {
+        // No name match among the candidates → treat phone as unreliable for this row
+        phoneMatch = null
+        rowErrors.push({
+          rowNumber: transaction.rowNumber,
+          column: "Phone",
+          message: "Phone number matches multiple customer records and does not match the transaction name.",
+          errorCode: "CUSTOMER_IDENTITY_CONFLICT",
+        })
+      } else {
+        // Multiple name matches → also unreliable
+        phoneMatch = null
+        rowErrors.push({
+          rowNumber: transaction.rowNumber,
+          column: "Phone",
+          message: "Phone number matches multiple customer records with different names.",
+          errorCode: "CUSTOMER_IDENTITY_CONFLICT",
+        })
+      }
+    }
+
+    // Same for email multi-match with name priority
+    if (emailMatch && Array.isArray(emailMatch)) {
+      const nameMatched = emailMatch.filter(c => normalizeCustomerName(c.name) === normalizedName)
+      if (nameMatched.length === 1) {
+        emailMatch = nameMatched[0]
+      } else if (nameMatched.length === 0) {
+        emailMatch = null
+        rowErrors.push({
+          rowNumber: transaction.rowNumber,
+          column: "Email",
+          message: "Email address matches multiple customer records and does not match the transaction name.",
+          errorCode: "CUSTOMER_IDENTITY_CONFLICT",
+        })
+      } else {
+        emailMatch = null
+        rowErrors.push({
+          rowNumber: transaction.rowNumber,
+          column: "Email",
+          message: "Email address matches multiple customer records with different names.",
+          errorCode: "CUSTOMER_IDENTITY_CONFLICT",
+        })
+      }
+    }
+
+    // If phoneMatch or emailMatch is an array (and name-priority didn't resolve it),
+    // treat as conflict and record error (but don't abort the whole batch)
+    if (Array.isArray(emailMatch) || Array.isArray(phoneMatch)) {
+      // Already handled above with name-priority; if still array, record error
+      if (!rowErrors.some(e => e.rowNumber === transaction.rowNumber)) {
+        rowErrors.push({
+          rowNumber: transaction.rowNumber,
+          column: "Email, Phone",
+          message: "Customer identity could not be resolved because the email and phone number match different customer records.",
+          errorCode: "CUSTOMER_IDENTITY_CONFLICT",
+        })
+      }
+    }
+
+    // Name matching when no reliable email/phone resolve it
     let customer = emailMatch || phoneMatch
     if (!customer && !email && !phone && normalizedName) {
       const nameMatches = nameIndex.get(normalizedName) || []
-      if (nameMatches.length > 1) throw ambiguousName(transaction.rowNumber)
-      customer = nameMatches[0] || null
+      if (nameMatches.length > 1) {
+        rowErrors.push({
+          rowNumber: transaction.rowNumber,
+          column: "Customer Name",
+          message: "Customer identity could not be resolved because the name matches multiple customer records.",
+          errorCode: "CUSTOMER_NAME_AMBIGUOUS",
+        })
+      } else if (nameMatches.length === 1) {
+        customer = nameMatches[0]
+      }
     }
 
     const incoming = {
@@ -252,6 +373,7 @@ export const resolveCustomersForTransactions = async (database, transactions = [
     }
 
     if (!customer) {
+      // No identifier resolved → create a new customer from the transaction data (name-based)
       customer = { ...incoming, pendingUpdate: {}, isNew: true }
       workingCustomers.push(customer)
       addToIndex(emailIndex, email, customer)
@@ -264,20 +386,31 @@ export const resolveCustomersForTransactions = async (database, transactions = [
       addToIndex(phoneIndex, customer.phone, customer)
       addToIndex(nameIndex, customer.normalizedName, customer)
     }
+
     resolutionByTransaction.set(transaction, customer)
   }
 
+  // Persist customers
   const persistedByWorkingCustomer = new Map()
   for (const candidate of new Set(resolutionByTransaction.values())) {
     const persisted = await resolveCustomer(database, candidate)
     persistedByWorkingCustomer.set(candidate, persisted)
   }
 
+  // Enrich transactions
   const enrichedTransactions = transactions.map((transaction) => {
     const workingCustomer = resolutionByTransaction.get(transaction)
     const customer = persistedByWorkingCustomer.get(workingCustomer)
     if (!customer) {
-      throw new Error(`Customer identity could not be persisted for row ${transaction.rowNumber}.`)
+      // Row had an identity error → no customer; still need a minimal enriched transaction
+      return {
+        ...transaction,
+        customerId: null,
+        customerKey: null,
+        customerIdentity: transaction.customerIdentity,
+        bookingEventKey: null,
+        bookingRangeKey: null,
+      }
     }
 
     const bookingEventKey = buildBookingEventKey({
@@ -308,11 +441,12 @@ export const resolveCustomersForTransactions = async (database, transactions = [
   return {
     customers: [...persistedByWorkingCustomer.values()],
     transactions: enrichedTransactions,
+    errors: rowErrors,
   }
 }
 
 export const syncCustomersForTransactions = async (database, transactions = []) => {
-  const { customers, transactions: enrichedTransactions } =
+  const { customers, transactions: enrichedTransactions, errors } =
     await resolveCustomersForTransactions(database, transactions)
 
   const transactionIdsByCustomerId = new Map()
@@ -349,5 +483,6 @@ export const syncCustomersForTransactions = async (database, transactions = []) 
     linkedTransactionCount: enrichedTransactions.filter(
       (transaction) => transaction.id && transaction.customerId
     ).length,
+    errors,
   }
 }
