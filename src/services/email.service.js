@@ -68,6 +68,52 @@ export const sendActivationEmail = async (
   return { skipped: false }
 }
 
+export const sendChangePasswordCodeEmail = async (
+  { to, name, code },
+  { transporter = createTransporter(), logger = console } = {},
+) => {
+  if (!to || !name || !code) {
+    throw new Error("Change-password code email requires recipient, name, and code")
+  }
+
+  const subject = "Your MaiinSight password change code"
+  const text = [
+    `Hi ${name},`,
+    "",
+    "Use this code to confirm your password change in MaiinSight:",
+    "",
+    code,
+    "",
+    "This code expires in 15 minutes. If you did not request this, you can ignore this email.",
+  ].join("\n")
+
+  const html = `
+    <p>Hi ${name},</p>
+    <p>Use this code to confirm your password change in MaiinSight:</p>
+    <p style="font-size: 28px; font-weight: bold; letter-spacing: 4px;">${code}</p>
+    <p>This code expires in 15 minutes. If you did not request this, you can ignore this email.</p>
+  `
+
+  if (!transporter) {
+    logger.warn("[mail] Email delivery skipped.", {
+      type: "change_password_code",
+      delivery: "skipped",
+      reason: "smtp_not_configured",
+    })
+    return { skipped: true }
+  }
+
+  await transporter.sendMail({
+    from: env.smtpFrom,
+    to,
+    subject,
+    text,
+    html,
+  })
+
+  return { skipped: false }
+}
+
 export const sendPasswordResetEmail = async (
   { to, name, resetUrl },
   { transporter = createTransporter(), logger = console } = {},

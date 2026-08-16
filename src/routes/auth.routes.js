@@ -5,16 +5,22 @@ import { Router } from "express"
 import { env, getRequiredJwtSecret } from "../config/env.js"
 import { prisma } from "../config/prisma.js"
 import { authenticate, authorize } from "../middleware/auth.js"
-import { sendPasswordResetEmail } from "../services/email.service.js"
+import { hasSmtpConfig, sendChangePasswordCodeEmail, sendPasswordResetEmail } from "../services/email.service.js"
 import {
   createPasswordResetToken,
   resetPasswordWithToken,
 } from "../services/passwordReset.service.js"
+import {
+  confirmChangePassword,
+  requestChangePasswordCode,
+} from "../services/changePassword.service.js"
 import { authenticateGoogleCredential } from "../services/googleAuth.service.js"
 import { registerInvitedUser } from "../services/invitedRegistration.service.js"
-import { logAuthActivity } from "../services/activityLog.service.js"
+import { logActivity, logAuthActivity } from "../services/activityLog.service.js"
 import { validatePassword } from "../services/passwordPolicy.service.js"
 import {
+  changePasswordConfirmRateLimit,
+  changePasswordRequestRateLimit,
   googleAuthRateLimit,
   loginRateLimit,
   passwordResetAccountRateLimit,
@@ -296,5 +302,68 @@ router.patch("/me", authenticate, authorize("operational", "management", "it_sup
     next(error)
   }
 })
+
+router.post(
+  "/change-password/request",
+  authenticate,
+  authorize("operational", "management", "it_support"),
+  changePasswordRequestRateLimit,
+  async (req, res, next) => {
+    try {
+      if (!hasSmtpConfig) {
+        return res.status(503).json({
+          errorCode: "SMTP_NOT_CONFIGURED",
+          error: "Email is not configured on this server yet. Please contact IT Support.",
+        })
+      }
+
+      const { code, user } = await requestChangePasswordCode(req.user.id)
+
+      await sendChangePasswordCodeEmail({ to: user.email, name: user.name, code })
+
+      return res.json({ success: true, message: "A confirmation code has been sent to your email." })
+    } catch (error) {
+      if (error?.errorCode) {
+        return res.status(error.statusCode || 400).json({
+          errorCode: error.errorCode,
+          error: error.message,
+        })
+      }
+      next(error)
+    }
+  },
+)
+
+router.post(
+  "/change-password/confirm",
+  authenticate,
+  authorize("operational", "management", "it_support"),
+  changePasswordConfirmRateLimit,
+  async (req, res, next) => {
+    try {
+      const { code, newPassword } = req.body || {}
+
+      try {
+        await confirmChangePassword(req.user.id, { code, newPassword })
+      } catch (error) {
+        if (error?.errorCode) {
+          return res.status(error.statusCode || 400).json({
+            errorCode: error.errorCode,
+            error: error.message,
+          })
+        }
+        throw error
+      }
+
+      await logActivity(req, "PASSWORD_CHANGE", {
+        description: "Password changed from the profile menu.",
+      }).catch(() => null)
+
+      return res.json({ success: true, message: "Password updated successfully." })
+    } catch (error) {
+      next(error)
+    }
+  },
+)
 
 export const authRouter = router
