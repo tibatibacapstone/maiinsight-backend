@@ -14,6 +14,8 @@ model User {
   avatar         String?        @db.MediumText
   password       String?
   passwordResetVersion Int           @default(0)
+  changePasswordCode          String?
+  changePasswordCodeExpiresAt DateTime?
   isActive       Boolean       @default(true)
   role           Role          @default(operational)
   createdAt      DateTime      @default(now())

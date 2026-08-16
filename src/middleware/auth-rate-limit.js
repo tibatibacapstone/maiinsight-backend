@@ -67,3 +67,17 @@ export const passwordResetConfirmationRateLimit = createAuthRateLimit({
   max: 10,
   keyGenerator: (req) => `${authClientIp(req)}:${tokenFingerprint(req)}`,
 })
+
+const authenticatedUserKey = (req) =>
+  Number.isInteger(req.user?.id) ? `user:${req.user.id}` : authClientIp(req)
+
+export const changePasswordRequestRateLimit = createAuthRateLimit({
+  windowMs: ONE_HOUR,
+  max: 5,
+  keyGenerator: authenticatedUserKey,
+})
+export const changePasswordConfirmRateLimit = createAuthRateLimit({
+  windowMs: FIFTEEN_MINUTES,
+  max: 10,
+  keyGenerator: authenticatedUserKey,
+})
