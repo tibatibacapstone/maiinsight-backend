@@ -115,7 +115,7 @@ const oneMatch = (index, value) => {
   return matches.length === 1 ? matches[0] : matches
 }
 
-const fillEmptyProfileFields = (customer, incoming, nameIndex) => {
+const fillEmptyProfileFields = (customer, incoming, nameIndex, skipPhone = false) => {
   const changed = {}
 
   if (!customer.normalizedName && incoming.name && incoming.normalizedName) {
@@ -131,6 +131,7 @@ const fillEmptyProfileFields = (customer, incoming, nameIndex) => {
   }
 
   for (const field of ["email", "phone", "customerProfile"]) {
+    if (skipPhone && field === "phone") continue
     if (!customer[field] && incoming[field]) {
       customer[field] = incoming[field]
       changed[field] = incoming[field]
@@ -230,9 +231,6 @@ export const resolveCustomersForTransactions = async (database, transactions = [
     if (Array.isArray(emailMatch) || Array.isArray(phoneMatch)) {
       throw identityConflict(transaction.rowNumber)
     }
-    if (emailMatch && phoneMatch && emailMatch !== phoneMatch) {
-      throw identityConflict(transaction.rowNumber)
-    }
 
     let customer = emailMatch || phoneMatch
     if (!customer && !email && !phone && normalizedName) {
@@ -260,7 +258,8 @@ export const resolveCustomersForTransactions = async (database, transactions = [
       addToIndex(phoneIndex, phone, customer)
       addToIndex(nameIndex, normalizedName, customer)
     } else {
-      fillEmptyProfileFields(customer, incoming, nameIndex)
+      const skipPhone = Boolean(emailMatch && phoneMatch && emailMatch !== phoneMatch)
+      fillEmptyProfileFields(customer, incoming, nameIndex, skipPhone)
       addToIndex(emailIndex, customer.email, customer)
       addToIndex(phoneIndex, customer.phone, customer)
       addToIndex(nameIndex, customer.normalizedName, customer)

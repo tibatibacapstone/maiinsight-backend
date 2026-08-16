@@ -53,7 +53,37 @@ test("valid phone is used when email is unavailable", () => {
       .customerIdentity,
     "PHONE|81315235649"
   )
-  assert.equal(normalizeCustomerPhone("8.1315235649E+10"), "81315235649")
+})
+
+test("scientific-notation and zero-padded default phone numbers are treated as garbage", () => {
+  for (const garbage of [
+    "6.28E+12",
+    "8.1315235649E+10",
+    "6200000000000",
+    "6280000000000",
+    "6290000000000",
+    "629000000000",
+    "6200000000",
+  ]) {
+    assert.equal(normalizeCustomerPhone(garbage), null, garbage)
+  }
+  assert.equal(normalizeCustomerPhone("081315235649"), "81315235649")
+})
+
+test("garbage phone falls back to name or email when building an identity", () => {
+  const byName = buildCustomerIdentity({
+    email: "n/a",
+    name: "Aditya 25 Basketball",
+    phone: "6.28E+12",
+  })
+  assert.equal(byName.customerIdentity, "NAME|ADITYA 25 BASKETBALL")
+
+  const byEmail = buildCustomerIdentity({
+    email: "adit@gmail.com",
+    name: "Aditya",
+    phone: "6.28E+12",
+  })
+  assert.equal(byEmail.customerIdentity, "EMAIL|adit@gmail.com")
 })
 
 test("booking event keys are deterministic per customer, venue, date, and start time", () => {

@@ -34,41 +34,18 @@ export const normalizeCustomerName = (value) => {
   return name.toUpperCase()
 }
 
-const expandScientificNotation = (value) => {
-  const text = String(value ?? "").trim()
-  if (!/^[+-]?\d+(?:\.\d+)?e[+-]?\d+$/i.test(text)) return text
-
-  const match = text.toLowerCase().match(/^([+-]?)(\d+)(?:\.(\d+))?e([+-]?\d+)$/)
-  if (!match) return text
-
-  const [, sign, integerPart, fractionPart = "", exponentText] = match
-  const exponent = Number(exponentText)
-  if (!Number.isInteger(exponent) || Math.abs(exponent) > 30) return text
-
-  const digits = `${integerPart}${fractionPart}`.replace(/^0+(?=\d)/, "")
-  const decimalIndex = integerPart.length + exponent
-
-  if (decimalIndex <= 0) {
-    return `${sign}0.${"0".repeat(Math.abs(decimalIndex))}${digits}`
-  }
-
-  if (decimalIndex >= digits.length) {
-    return `${sign}${digits}${"0".repeat(decimalIndex - digits.length)}`
-  }
-
-  return `${sign}${digits.slice(0, decimalIndex)}.${digits.slice(decimalIndex)}`
-}
-
 export const normalizeCustomerPhone = (value) => {
   if (value === null || value === undefined || value === "") return null
 
-  const expanded = expandScientificNotation(value)
-  if (isPlaceholder(expanded)) return null
+  const text = String(value ?? "").trim()
+  if (isPlaceholder(text)) return null
+  if (/e[+-]?\d+/i.test(text)) return null
 
-  const digits = expanded.replace(/\D/g, "").replace(/^0+/, "")
+  const digits = text.replace(/\D/g, "").replace(/^0+/, "")
   if (digits.length < 8 || digits.length > 15) return null
   if (/^(\d)\1+$/.test(digits)) return null
   if (/^(?:12345678|123456789|1234567890)$/.test(digits)) return null
+  if (/^6(?:2|28|29)0{8,}$/.test(digits)) return null
 
   return digits
 }

@@ -225,19 +225,64 @@ test("phone match fills an empty email and preserves a conflicting stored email"
   assert.equal(database.customers.size, 1)
 })
 
-test("email and phone matching different customers produces a controlled conflict without writes", async () => {
+test("email wins over a differing trusted phone and does not absorb the other customer's phone", async () => {
   const database = buildDatabase()
   seedCustomer(database, { id: 1, email: "a@example.com", phone: "8111111111", customerIdentity: "EMAIL|a@example.com" })
   seedCustomer(database, { id: 2, email: "b@example.com", phone: "8222222222", customerIdentity: "EMAIL|b@example.com" })
-  const before = structuredClone([...database.customers.values()])
 
-  await assert.rejects(
-    resolveCustomersForTransactions(database, [
-      buildTransaction({ normalizedEmail: "a@example.com", normalizedPhone: "08222222222" }),
-    ]),
-    (error) => error.errorCode === "CUSTOMER_IDENTITY_CONFLICT" && error.validationErrors[0].rowNumber === 1
-  )
-  assert.deepEqual([...database.customers.values()], before)
+  const result = await resolveCustomersForTransactions(database, [
+    buildTransaction({ normalizedEmail: "a@example.com", normalizedPhone: "08222222222" }),
+  ])
+
+  assert.equal(result.transactions[0].customerId, 1)
+  assert.equal(database.customers.size, 2)
+  assert.equal(database.customers.get("EMAIL|a@example.com").phone, "8111111111")
+  assert.equal(database.customers.get("EMAIL|b@example.com").phone, "8222222222")
+})
+
+test("a garbage phone never blocks an email match and is ignored", async () => {
+  const database = buildDatabase()
+  seedCustomer(database)
+
+  const result = await resolveCustomersForTransactions(database, [
+    buildTransaction({ normalizedPhone: "6.28E+12" }),
+  ])
+
+  assert.equal(result.transactions[0].customerId, 1)
+  assert.equal(database.customers.size, 1)
+  assert.equal(database.customers.get("EMAIL|test@example.com").phone, null)
+})
+
+test("no email plus a garbage phone falls back to an exact name match", async () => {
+  const database = buildDatabase()
+  seedCustomer(database, { id: 1, customerIdentity: "NAME|KAYLA", name: "Kayla", email: null })
+
+  const result = await resolveCustomersForTransactions(database, [
+    buildTransaction({
+      customerIdentity: "NAME|KAYLA",
+      normalizedEmail: null,
+      normalizedPhone: "6.28E+12",
+      customerName: "Kayla",
+    }),
+  ])
+
+  assert.equal(result.transactions[0].customerId, 1)
+})
+
+test("no email plus a garbage phone creates a customer by name when there is no match", async () => {
+  const database = buildDatabase()
+
+  const result = await resolveCustomersForTransactions(database, [
+    buildTransaction({
+      customerIdentity: "NAME|NEW GUY",
+      normalizedEmail: null,
+      normalizedPhone: "6280000000000",
+      customerName: "New Guy",
+    }),
+  ])
+
+  assert.equal(result.customers.length, 1)
+  assert.equal(result.transactions[0].customerKey, "CUST-00001")
 })
 
 test("name fallback is exact, identifier-free, and refuses ambiguous matches", async () => {
@@ -283,16 +328,16 @@ test("same-batch candidates fill identifiers and detect cross-customer conflict 
   assert.equal(merged.transactions[0].customerId, merged.transactions[1].customerId)
   assert.equal(database.customers.get("EMAIL|test@example.com").phone, "8123456789")
 
-  const conflictDatabase = buildDatabase()
-  await assert.rejects(
-    resolveCustomersForTransactions(conflictDatabase, [
-      buildTransaction({ normalizedEmail: "a@example.com", customerIdentity: "EMAIL|a@example.com", normalizedPhone: "08111111111" }),
-      buildTransaction({ rowNumber: 2, normalizedEmail: "b@example.com", customerIdentity: "EMAIL|b@example.com", normalizedPhone: "08222222222" }),
-      buildTransaction({ rowNumber: 3, normalizedEmail: "a@example.com", customerIdentity: "EMAIL|a@example.com", normalizedPhone: "08222222222" }),
-    ]),
-    (error) => error.errorCode === "CUSTOMER_IDENTITY_CONFLICT"
-  )
-  assert.equal(conflictDatabase.customers.size, 0)
+  const sameBatchDatabase = buildDatabase()
+  const sameBatch = await resolveCustomersForTransactions(sameBatchDatabase, [
+    buildTransaction({ normalizedEmail: "a@example.com", customerIdentity: "EMAIL|a@example.com", normalizedPhone: "08111111111" }),
+    buildTransaction({ rowNumber: 2, normalizedEmail: "b@example.com", customerIdentity: "EMAIL|b@example.com", normalizedPhone: "08222222222" }),
+    buildTransaction({ rowNumber: 3, normalizedEmail: "a@example.com", customerIdentity: "EMAIL|a@example.com", normalizedPhone: "08222222222" }),
+  ])
+  assert.equal(sameBatch.customers.length, 2)
+  assert.equal(sameBatch.transactions[2].customerId, sameBatch.transactions[0].customerId)
+  assert.equal(sameBatchDatabase.customers.get("EMAIL|a@example.com").phone, "8111111111")
+  assert.equal(sameBatchDatabase.customers.get("EMAIL|b@example.com").phone, "8222222222")
 })
 
 test("email match fills transient normalized-name state for later name-only same-batch matching", async () => {
