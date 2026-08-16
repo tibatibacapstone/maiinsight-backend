@@ -2,11 +2,14 @@ import test from "node:test"
 import assert from "node:assert/strict"
 
 import {
+  ASK_AI_WORD_LIMIT,
+  buildAskAiPrompt,
   buildPrompt,
   GEMINI_GENERATION_CONFIG,
   generateValidatedStrategy,
   sanitizeGeminiContext,
   STRATEGY_WORD_LIMITS,
+  validateAskAiAnswer,
   validateStrategyResponse,
 } from "../aiProvider.service.js"
 
@@ -36,24 +39,24 @@ const validResult = (overrides = {}) => ({
   targetSessionLabel: "Night",
   targetDayKey: null,
   targetDayLabel: null,
-  campaignObjective: "Mengaktifkan kembali pelanggan yang tidak aktif.",
+  campaignObjective: "Reactivate customers who have stopped booking.",
   recommendedOfferKey: "reactivation_offer",
-  recommendedOfferType: "Paket kembali bermain",
-  suggestedOffer: "Berikan benefit tambahan untuk pemesanan berikutnya.",
-  offerReasoning: "Recency tinggi mendukung penawaran kembali bermain yang terbatas.",
-  customerReasoning: "Segmen terpilih pernah booking tetapi kini tidak aktif.",
-  evidenceUsed: ["Rata-rata recency segmen tergolong tinggi."],
+  recommendedOfferType: "Comeback play package",
+  suggestedOffer: "Add a welcome-back benefit to the next booking.",
+  offerReasoning: "High recency supports a limited-time comeback offer.",
+  customerReasoning: "Selected segment booked before but is now inactive.",
+  evidenceUsed: ["Average recency for the segment is high."],
   executionPlan: Array.from({ length: 3 }, (_, index) => ({
-    timing: `H-${index}`, action: "Kirim penawaran melalui WhatsApp.", successCondition: "Pesan campaign telah disiapkan.",
+    timing: `D-${index}`, action: "Send the offer via WhatsApp.", successCondition: "Campaign message is ready.",
   })),
-  followUpPlan: "Kirim satu pengingat kepada pelanggan yang belum booking.",
-  stopCondition: "Hentikan campaign setelah periode berakhir.",
-  whatsappMessage: "Halo Kak, yuk kembali main di Maiin Gandaria.",
-  expectedBusinessImpact: "Berpotensi meningkatkan booking dari pelanggan yang kembali aktif.",
+  followUpPlan: "Send one reminder to customers who have not booked yet.",
+  stopCondition: "Stop the campaign after the period ends.",
+  whatsappMessage: "Hi, come back and play at Maiin Gandaria again.",
+  expectedBusinessImpact: "May increase bookings from reactivated customers.",
   kpis: Array.from({ length: 3 }, (_, index) => ({
-    name: `KPI ${index}`, definition: "Jumlah booking segmen target.", targetDirection: "increase",
+    name: `KPI ${index}`, definition: "Bookings from the target segment.", targetDirection: "increase",
   })),
-  dataLimitation: "Data atribusi campaign belum tersedia.",
+  dataLimitation: "Campaign attribution data is not available.",
   ...overrides,
 })
 
@@ -84,16 +87,16 @@ const validOffPeakResult = (overrides = {}) =>
     targetDayLabel: "Selasa",
     targetSessionKey: "afternoon",
     targetSessionLabel: "Siang",
-    campaignObjective: "Tingkatkan okupansi Selasa sesi Siang.",
-    suggestedOffer: "Berikan benefit tambahan untuk booking Selasa sesi Siang.",
-    offerReasoning: "Selasa sesi Siang memiliki okupansi historis terendah.",
-    whatsappMessage: "Yuk booking Selasa sesi Siang dengan benefit tambahan dari Maiin Gandaria.",
+    campaignObjective: "Increase Tuesday (Selasa) afternoon (Siang) session occupancy.",
+    suggestedOffer: "Add a benefit to Tuesday (Selasa) afternoon (Siang) bookings.",
+    offerReasoning: "Tuesday (Selasa) afternoon (Siang) has the lowest historical occupancy.",
+    whatsappMessage: "Book Tuesday (Selasa) afternoon (Siang) with an extra benefit from Maiin Gandaria.",
     ...overrides,
   })
 
-test("prompt requires concise Bahasa Indonesia and compact structured output", () => {
+test("prompt requires concise English and compact structured output", () => {
   const prompt = buildPrompt(context())
-  assert.match(prompt, /Bahasa Indonesia/)
+  assert.match(prompt, /professional English/)
   assert.match(prompt, /campaignObjective: 18/)
   assert.match(prompt, /whatsappMessage: 65/)
   assert.match(prompt, /Do not repeat/)
@@ -107,6 +110,8 @@ test("prompt requires concise Bahasa Indonesia and compact structured output", (
   assert.match(prompt, /Growth: next booking, recurring or weekly booking packages/i)
   assert.match(prompt, /Every General Strategy recommendation must use analysis_period/i)
   assert.match(prompt, /historical empty court hours, not future available slots/i)
+  assert.match(prompt, /Quote at least two specific figures in offerReasoning and evidenceUsed/i)
+  assert.match(prompt, /Avoid hedge words such as "consider"/i)
   assert.equal(GEMINI_GENERATION_CONFIG.temperature, 0.3)
   assert.equal(GEMINI_GENERATION_CONFIG.maxOutputTokens, 1100)
   assert.equal(GEMINI_GENERATION_CONFIG.maxAttempts, 2)
@@ -114,24 +119,36 @@ test("prompt requires concise Bahasa Indonesia and compact structured output", (
   assert.equal(STRATEGY_WORD_LIMITS.evidenceItem, 16)
 })
 
-test("concise Indonesian response is accepted and canonical English keys remain valid", () => {
+test("user notes are appended as the highest-priority instruction", () => {
+  const withNotes = buildPrompt(context(), null, "Focus on the Friday evening slot and premium add-ons.")
+  const withoutNotes = buildPrompt(context())
+  assert.match(withNotes, /Additional user instructions \(highest priority/)
+  assert.match(withNotes, /Focus on the Friday evening slot and premium add-ons\./)
+  assert.doesNotMatch(withoutNotes, /Additional user instructions/)
+
+  const corrected = buildPrompt(context(), "AI_RESPONSE_TOO_VERBOSE", "Keep it shorter.")
+  assert.match(corrected, /Additional user instructions/)
+  assert.match(corrected, /preserving the exact selected scope/)
+})
+
+test("concise English response is accepted and canonical keys remain valid", () => {
   const result = validateStrategyResponse(validResult(), context())
   assert.equal(result.targetSegmentKey, "re_engagement")
   assert.equal(result.kpis[0].targetDirection, "increase")
 })
 
-test("clearly English explanatory content is rejected", () => {
+test("clearly Indonesian explanatory content is rejected", () => {
   assert.throws(
     () => validateStrategyResponse(validResult({
-      campaignObjective: "The campaign will reactivate selected customers through a targeted offer.",
-      suggestedOffer: "Send the selected customers a valuable comeback offer.",
-      offerReasoning: "This offer is suitable because the customers have become inactive.",
-      customerReasoning: "The selected customers are the right audience for this campaign.",
-      followUpPlan: "Send one reminder after the first campaign message.",
-      stopCondition: "Stop when the campaign period has ended.",
-      expectedBusinessImpact: "The strategy may increase bookings from inactive customers.",
-      dataLimitation: "Campaign attribution data is unavailable.",
-      whatsappMessage: "Come back and book your next game with us today.",
+      campaignObjective: "Kampanye ini akan mengaktifkan kembali pelanggan terpilih.",
+      suggestedOffer: "Kirim penawaran khusus untuk pelanggan yang sudah tidak aktif.",
+      offerReasoning: "Penawaran ini cocok karena pelanggan sudah lama tidak bermain.",
+      customerReasoning: "Pelanggan terpilih adalah target yang tepat untuk kampanye ini.",
+      followUpPlan: "Kirim satu pengingat setelah pesan kampanye pertama.",
+      stopCondition: "Hentikan ketika periode kampanye telah berakhir.",
+      expectedBusinessImpact: "Strategi ini berpotensi meningkatkan booking dari pelanggan tidak aktif.",
+      dataLimitation: "Data atribusi kampanye tidak tersedia.",
+      whatsappMessage: "Yuk kembali main bersama kami di Maiin Gandaria.",
     }), context()),
     (error) => error.errorCode === "AI_RESPONSE_LANGUAGE_MISMATCH"
   )
@@ -392,7 +409,7 @@ test("off-peak day and session must match the calculated primary window", () => 
 test("reliable off-peak strategy rejects generic wording and unapproved exact discounts", () => {
   assert.throws(
     () => validateStrategyResponse(
-      validOffPeakResult({ campaignObjective: "Tingkatkan okupansi pada periode sepi." }),
+      validOffPeakResult({ campaignObjective: "Increase occupancy during the quiet period." }),
       offPeakContext()
     ),
     (error) => error.errorCode === "AI_INVALID_RESPONSE"
@@ -400,7 +417,7 @@ test("reliable off-peak strategy rejects generic wording and unapproved exact di
   assert.throws(
     () => validateStrategyResponse(
       validOffPeakResult({
-        suggestedOffer: "Berikan diskon 20% untuk booking Selasa sesi Siang.",
+        suggestedOffer: "Give a discount of 20% for Tuesday (Selasa) afternoon (Siang) bookings.",
       }),
       offPeakContext()
     ),
@@ -409,7 +426,7 @@ test("reliable off-peak strategy rejects generic wording and unapproved exact di
   assert.equal(
     validateStrategyResponse(
       validOffPeakResult({
-        suggestedOffer: "Berikan layanan tambahan untuk booking Selasa sesi Siang.",
+        suggestedOffer: "Add an extra service for Tuesday (Selasa) afternoon (Siang) bookings.",
       }),
       offPeakContext()
     ).recommendedOfferKey,
@@ -448,21 +465,21 @@ test("General Strategy rejects future-slot and unavailable revenue-target claims
   }
   assert.throws(
     () => validateStrategyResponse(
-      validResult({ evidenceUsed: ["Slot masa depan masih tersedia."] }),
+      validResult({ evidenceUsed: ["A future slot remains available."] }),
       generalContext
     ),
     (error) => error.errorCode === "AI_FUTURE_AVAILABILITY_UNSUPPORTED"
   )
   assert.throws(
     () => validateStrategyResponse(
-      validResult({ evidenceUsed: ["Target revenue belum tercapai."] }),
+      validResult({ evidenceUsed: ["The revenue target has not been met."] }),
       generalContext
     ),
     (error) => error.errorCode === "AI_UNAVAILABLE_METRIC_REFERENCE"
   )
   assert.throws(
     () => validateStrategyResponse(
-      validResult({ evidenceUsed: ["Booking pada 2026-04-01 tercatat tinggi."] }),
+      validResult({ evidenceUsed: ["Bookings on 2026-04-01 were high."] }),
       {
         ...generalContext,
         analysis_period: {
@@ -472,5 +489,39 @@ test("General Strategy rejects future-slot and unavailable revenue-target claims
       }
     ),
     (error) => error.errorCode === "AI_ANALYSIS_PERIOD_MISMATCH"
+  )
+})
+
+test("ask prompt embeds the question, sanitized context, and English rules", () => {
+  const prompt = buildAskAiPrompt("Which session should the next promotion target?", context())
+  assert.match(prompt, /Operator's question:/)
+  assert.match(prompt, /Which session should the next promotion target\?/)
+  assert.match(prompt, /Aggregated historical context:/)
+  assert.match(prompt, /"segmentKey": "re_engagement"/)
+  assert.match(prompt, /Respond in English/)
+  assert.match(prompt, /Never output names, email addresses, phone numbers, customer keys/)
+  assert.doesNotMatch(prompt, /"customerName"/)
+})
+
+test("ask answers must be non-empty, within the word limit, and free of personal data", () => {
+  assert.throws(
+    () => validateAskAiAnswer(""),
+    (error) => error.errorCode === "AI_INVALID_RESPONSE"
+  )
+  assert.throws(
+    () => validateAskAiAnswer(Array(ASK_AI_WORD_LIMIT + 1).fill("word").join(" ")),
+    (error) => error.errorCode === "AI_RESPONSE_TOO_VERBOSE"
+  )
+  assert.throws(
+    () => validateAskAiAnswer("Please call this customer at 081234567890 about the offer."),
+    (error) => error.errorCode === "AI_PRIVACY_VALIDATION_FAILED"
+  )
+  assert.throws(
+    () => validateAskAiAnswer("Email the report to budi@example.com."),
+    (error) => error.errorCode === "AI_PRIVACY_VALIDATION_FAILED"
+  )
+  assert.equal(
+    validateAskAiAnswer("Target Tuesday afternoon: its historical occupancy is 20%."),
+    "Target Tuesday afternoon: its historical occupancy is 20%."
   )
 })

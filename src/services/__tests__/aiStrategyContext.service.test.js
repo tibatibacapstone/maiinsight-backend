@@ -9,6 +9,7 @@ import {
   resolveSession,
   resolveVenue,
   serializeAnalysisPeriod,
+  serializeStrategyContextForClient,
   validateWorkspaceObjectiveCombination,
 } from "../aiStrategyContext.service.js"
 import { resolveAnalysisPeriodRange } from "../aiBusinessOpportunity.service.js"
@@ -360,4 +361,41 @@ test("social media performance falls back to view rank when no post has reach da
 
   assert.equal(result.rankingMetric, "views")
   assert.equal(result.topPerformingContent[0].captionExcerpt, "Caption for no-reach-high")
+})
+
+test("client serialization trims server-only context fields", () => {
+  const result = serializeStrategyContextForClient({
+    selected_scope: { segmentKey: "re_engagement" },
+    analysis_period: { key: "three_months" },
+    selected_segment_history: { customerCount: 38 },
+    membership_opportunity: { eligible: false },
+    revenue_history: { available: true },
+    revenue_target_context: { available: false },
+    occupancy_history: { available: true },
+    promotion_usage_context: { available: true },
+    off_peak_opportunity: { available: false },
+    social_media_performance: { available: false },
+    business_opportunity_summary: { primaryOpportunity: "occupancy" },
+    data_availability: { rfmAvailable: true },
+    offer_constraints: { exactDiscountAllowed: false },
+    analytical_reference: { some: "notes" },
+    venue_opportunity: { venueKey: "mini_soccer" },
+    future_slot_opportunity: { available: true },
+    analysisPeriod: { key: "three_months" },
+  })
+  assert.deepEqual(result, {
+    selected_scope: { segmentKey: "re_engagement" },
+    analysis_period: { key: "three_months" },
+    selected_segment_history: { customerCount: 38 },
+    membership_opportunity: { eligible: false },
+    revenue_history: { available: true },
+    revenue_target_context: { available: false },
+    occupancy_history: { available: true },
+    promotion_usage_context: { available: true },
+    off_peak_opportunity: { available: false },
+    social_media_performance: { available: false },
+    business_opportunity_summary: { primaryOpportunity: "occupancy" },
+  })
+  assert.equal(serializeStrategyContextForClient(null), null)
+  assert.equal(serializeStrategyContextForClient(undefined), null)
 })

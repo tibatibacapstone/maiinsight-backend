@@ -131,7 +131,7 @@ const strategySchema = {
   },
 }
 
-export const buildPrompt = (strategyContext, correction = null) => {
+export const buildPrompt = (strategyContext, correction = null, userNotes = null) => {
   const safeContext = sanitizeGeminiContext(strategyContext)
   return `You are an AI marketing decision-support assistant for Maiin Gandaria.
 The selected_scope is mandatory. The selected segment must always remain the target.
@@ -147,7 +147,8 @@ or campaign success. Revenue and occupancy are supporting business evidence; the
 lifecycle and business_opportunity_summary.primaryOpportunity remain mandatory. Explain how the offer
 addresses the primary lifecycle opportunity and any available supporting occupancy or revenue opportunity.
 Every General Strategy recommendation must use analysis_period and only facts calculated inside that
-exact historical range. Mention the selected period when relevant, such as "berdasarkan data 3 bulan terakhir".
+exact historical range. Mention the selected period when relevant, for example "based on data from the
+last 3 months (through <analysis_period.displayEndDate>)".
 Use selected-period revenue_history, occupancy_history, off_peak_opportunity, promotion usage,
 and preferred venue/session. Never cite data from outside the selected period.
 General Strategy contains historical empty court hours, not future available slots. Never claim future
@@ -210,13 +211,26 @@ offer_constraints.exactDiscountAllowed is false; recommend a category, value-add
 or an offer within separately approved promotion limits.
 
 Mandatory language and style:
-- Write every user-facing value in clear, natural, professional Bahasa Indonesia.
-- English is allowed only for canonical keys and established terms such as WhatsApp, KPI, segment labels,
-  Mini Soccer, and Basketball. Keep canonical keys and targetDirection values unchanged.
+- Write every user-facing value in clear, natural, professional English.
+- Established terms such as WhatsApp, KPI, segment labels, day/session labels from the context, Mini Soccer,
+  and Basketball may keep their canonical form. Keep canonical keys and targetDirection values unchanged.
 - State the recommendation directly. Avoid academic language, introductions, repetition, and generic reasoning.
 - Each field must serve a distinct purpose: campaignObjective states the goal; suggestedOffer states the offer;
   offerReasoning connects the offer to evidence; customerReasoning explains the selected audience;
   evidenceUsed contains only supplied facts; expectedBusinessImpact states potential, not guaranteed, impact.
+
+Be specific and decisive:
+- Ground every recommendation in the concrete figures present in the aggregated context: occupancy
+  percentages, empty court hours, average recency days, visit frequency, average monetary value,
+  promotion usage percentage, revenue totals, membership composition, or content engagement rates.
+- Quote at least two specific figures in offerReasoning and evidenceUsed, and reference the relevant
+  figure in expectedBusinessImpact. Never use a figure that is not present in the context.
+- Recommend exactly one clear action with a concrete target (named day/session/venue when available)
+  and a concrete offer type. Avoid hedge words such as "consider", "possibly", "maybe", "could",
+  "might", or "we could". If the data points to a clear action, say it plainly.
+- If the selected objective is maximize_off_peak_occupancy, name the exact day and session from
+  off_peak_opportunity.recommendedPrimaryWindow; never fall back to a generic "increase occupancy"
+  statement.
 
 Strict word limits:
 - campaignObjective: 18; suggestedOffer: 22; offerReasoning: 28; customerReasoning: 28.
@@ -227,17 +241,20 @@ Strict word limits:
 Use one sentence unless two short sentences are explicitly useful. Shorter is preferred. Do not repeat
 the same fact across reasoning, evidence, and impact.
 
-All three executionPlan entries must use concise Indonesian timing, action, and successCondition values.
+All three executionPlan entries must use concise English timing, action, and successCondition values.
 Use only observable conditions supported by the supplied context. All three KPI names and definitions
-must be Indonesian and measurable in MaiinSight. Keep targetDirection as increase, decrease, or maintain.
+must be English and measurable in MaiinSight. Keep targetDirection as increase, decrease, or maintain.
 Do not use offer redemption, WhatsApp/customer response, campaign conversion, or campaign attribution
 as evidence, a KPI, or a stop condition when its availability flag is not true. Do not invent thresholds.
-The whatsappMessage must be concise, persuasive, ready to send, and in Bahasa Indonesia.
+The whatsappMessage must be concise, persuasive, ready to send, and in English.
 Combine related unavailable data into one concise dataLimitation statement.
 
 Keep business reasoning concise and professional.
 Describe expected or potential impact and recommended KPIs; never guarantee campaign impact.
 Return exactly three executionPlan items and exactly three kpis.
+${userNotes ? `Additional user instructions (highest priority; honor them, but never contradict the
+supplied data, never invent figures, and keep the exact selected scope, segment, and period):
+${userNotes}` : ""}
 ${correction ? `Previous output failed validation. Correct only this issue while preserving the exact selected scope and factual evidence: ${correction}` : ""}
 
 Aggregated decision context:
@@ -317,7 +334,16 @@ const isClearlyEnglish = (values) => {
   return englishCount >= 4 && (indonesianCount === 0 || englishCount > indonesianCount * 2)
 }
 
-const validateConciseIndonesian = (result) => {
+const isClearlyIndonesian = (values) => {
+  const words = values
+    .filter((value) => typeof value === "string")
+    .flatMap((value) => value.toLowerCase().match(/\p{L}+/gu) || [])
+  const indonesianCount = words.filter((word) => INDONESIAN_MARKERS.has(word)).length
+  const englishCount = words.filter((word) => ENGLISH_MARKERS.has(word)).length
+  return indonesianCount >= 4 && (englishCount === 0 || indonesianCount > englishCount * 2)
+}
+
+const validateConciseOutput = (result) => {
   const limits = [
     ["campaignObjective", result.campaignObjective, STRATEGY_WORD_LIMITS.campaignObjective],
     ["suggestedOffer", result.suggestedOffer, STRATEGY_WORD_LIMITS.suggestedOffer],
@@ -354,10 +380,10 @@ const validateConciseIndonesian = (result) => {
     result.customerReasoning, result.followUpPlan, result.stopCondition,
     result.expectedBusinessImpact, result.dataLimitation, result.whatsappMessage,
   ]
-  if (isClearlyEnglish(primaryFields)) {
+  if (isClearlyIndonesian(primaryFields)) {
     throw createAiServiceError({
       errorCode: "AI_RESPONSE_LANGUAGE_MISMATCH",
-      technicalMessage: "Primary user-facing fields must be written in Bahasa Indonesia.",
+      technicalMessage: "Primary user-facing fields must be written in English.",
     })
   }
 }
@@ -590,7 +616,7 @@ export const validateStrategyResponse = (result, context) => {
       result.whatsappMessage,
     ].join(" ")
     const unapprovedDiscount =
-      /\b(?:diskon|potongan)\b[^.!?\n]{0,40}(?:\d+(?:[.,]\d+)?\s*%|rp\s*[\d.]+)/i
+      /\b(?:diskon|potongan|discount)\b[^.!?\n]{0,40}(?:\d+(?:[.,]\d+)?\s*%|rp\s*[\d.]+)/i
     if (unapprovedDiscount.test(offerText)) {
       throw createAiServiceError({
         errorCode: "AI_UNAPPROVED_DISCOUNT_VALUE",
@@ -600,7 +626,7 @@ export const validateStrategyResponse = (result, context) => {
   }
   validateObservableClaims(result, context)
   validateGeneralStrategyPeriodClaims(result, context)
-  validateConciseIndonesian(result)
+  validateConciseOutput(result)
   return result
 }
 
@@ -622,11 +648,11 @@ const normalizeUsage = (usage) => {
 
 export const isGeminiConfigured = async () => Boolean((await buildConfigSnapshot()).geminiApiKey)
 
-export const generateValidatedStrategy = async (strategyContext, generateResponse) => {
+export const generateValidatedStrategy = async (strategyContext, generateResponse, userNotes = null) => {
   let lastValidationError = null
   for (let attempt = 0; attempt < GEMINI_GENERATION_CONFIG.maxAttempts; attempt += 1) {
     const response = await generateResponse(
-      buildPrompt(strategyContext, lastValidationError?.technicalMessage),
+      buildPrompt(strategyContext, lastValidationError?.technicalMessage, userNotes),
       attempt
     )
     try {
@@ -640,7 +666,7 @@ export const generateValidatedStrategy = async (strategyContext, generateRespons
   throw lastValidationError
 }
 
-const generateWithGemini = async (strategyContext) => {
+const generateWithGemini = async (strategyContext, userNotes = null) => {
   const config = await buildConfigSnapshot()
   const geminiApiKey = config.geminiApiKey
   const geminiModel = config.geminiModel || "gemini-2.5-flash"
@@ -678,7 +704,7 @@ const generateWithGemini = async (strategyContext) => {
       })
     }
     return responseText(response)
-  })
+  }, userNotes)
   return {
     provider: "gemini",
     model: geminiModel,
@@ -722,7 +748,7 @@ export const getAiProviderStatus = async () => {
   }
 }
 
-export const generateStrategy = async (strategyContext) => {
+export const generateStrategy = async (strategyContext, userNotes = null) => {
   const config = await buildConfigSnapshot()
   if (!config.geminiEnabled) {
     throw createAiServiceError({
@@ -732,7 +758,122 @@ export const generateStrategy = async (strategyContext) => {
       statusCode: 503,
     })
   }
-  return generateWithGemini(strategyContext)
+  return generateWithGemini(strategyContext, userNotes)
+}
+
+export const ASK_AI_WORD_LIMIT = 420
+
+export const buildAskAiPrompt = (userPrompt, strategyContext) => {
+  const safeContext = sanitizeGeminiContext(strategyContext)
+  return `You are the AI strategy analyst for Maiin Gandaria, a sports venue business in Indonesia.
+Answer the operator's business question below using ONLY the supplied aggregated historical context.
+
+Rules:
+- Base every claim on the numbers in the context (occupancy %, empty court hours, average recency,
+  visit frequency, average monetary value, promotion usage %, revenue totals, membership composition,
+  engagement rates). If a number is not in the context, never invent it.
+- Stay inside the selected analysis period and the selected segment, venue, and session.
+- Give a direct, specific, actionable answer: name the exact day/session/venue and the concrete offer
+  or action when the data supports it. Avoid hedge words such as "consider", "possibly", or "maybe".
+- Connect the answer to promotion strategy whenever relevant (offer type, WhatsApp copy angle, timing).
+- Never output names, email addresses, phone numbers, customer keys, or other personal identifiers.
+- If the data needed to answer is missing, say exactly what is missing and what the operator could
+  enable in MaiinSight to get it, instead of guessing.
+- Respond in English, as concise plain text with short paragraphs or bullets. Do not exceed roughly
+  420 words.
+
+Operator's question:
+${String(userPrompt || "").trim()}
+
+Aggregated historical context:
+${JSON.stringify(safeContext, null, 2)}`
+}
+
+const PERSONAL_DATA_PATTERNS = [
+  /\b[\w.+-]+@[\w-]+\.[\w.]+\b/i,
+  /(?:\+?62|0)8[0-9]{7,}/,
+  /\bCUST-\d{4,}\b/i,
+]
+
+export const validateAskAiAnswer = (answer) => {
+  requireText(answer, "answer")
+  validateWordLimit(answer, "answer", ASK_AI_WORD_LIMIT)
+  if (PERSONAL_DATA_PATTERNS.some((pattern) => pattern.test(String(answer)))) {
+    throw createAiServiceError({
+      errorCode: "AI_PRIVACY_VALIDATION_FAILED",
+      technicalMessage: "The answer may contain personal or customer-identifying data.",
+    })
+  }
+  return answer
+}
+
+export const generateAskAiAnswer = async ({ prompt, strategyContext }) => {
+  if (!prompt || !String(prompt).trim()) {
+    throw createAiServiceError({
+      errorCode: "INVALID_AI_INPUT",
+      message: "Please describe what you want to ask before sending.",
+      statusCode: 400,
+    })
+  }
+  const config = await buildConfigSnapshot()
+  if (!config.geminiEnabled) {
+    throw createAiServiceError({
+      errorCode: "AI_DISABLED",
+      message: "AI assistant is currently disabled.",
+      technicalMessage: "Gemini integration is disabled.",
+      statusCode: 503,
+    })
+  }
+  if (!config.geminiApiKey) {
+    throw createAiServiceError({
+      errorCode: "GEMINI_NOT_CONFIGURED",
+      message: "The AI assistant is not configured yet.",
+      suggestion: "Please ask IT Support to configure Gemini API credentials.",
+      technicalMessage: "Missing GEMINI_API_KEY.",
+      statusCode: 503,
+    })
+  }
+
+  const geminiModel = config.geminiModel || "gemini-2.5-flash"
+  const ai = new GoogleGenAI({ apiKey: config.geminiApiKey })
+
+  let lastValidationError = null
+  let lastUsage = null
+  for (let attempt = 0; attempt < GEMINI_GENERATION_CONFIG.maxAttempts; attempt += 1) {
+    let response
+    try {
+      response = await ai.models.generateContent({
+        model: geminiModel,
+        contents: buildAskAiPrompt(prompt, strategyContext),
+        config: {
+          temperature: 0.4,
+          maxOutputTokens: 900,
+          responseMimeType: "text/plain",
+          thinkingConfig: { thinkingBudget: 0 },
+        },
+      })
+      if (response?.usageMetadata) lastUsage = response.usageMetadata
+    } catch (error) {
+      throw createAiServiceError({
+        errorCode: "AI_GENERATION_FAILED",
+        technicalMessage: error instanceof Error ? error.message : "Gemini request failed.",
+        statusCode: 500,
+      })
+    }
+
+    try {
+      const answer = validateAskAiAnswer(await responseText(response))
+      return {
+        provider: "gemini",
+        model: geminiModel,
+        answer,
+        usage: normalizeUsage(lastUsage),
+      }
+    } catch (error) {
+      lastValidationError = error
+    }
+  }
+  throw lastValidationError
 }
 
 export const OUTREACH_MESSAGE_PLACEHOLDER = "{{customerName}}"

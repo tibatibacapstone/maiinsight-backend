@@ -3,8 +3,11 @@ import { Router } from "express";
 import { prisma } from "../config/prisma.js";
 import { authenticate, authorize } from "../middleware/auth.js";
 import { logActivity, logItSupportActivity } from "../services/activityLog.service.js";
-import { generateStrategy, getAiProviderStatus } from "../services/aiProvider.service.js";
-import { buildAiStrategyContext } from "../services/aiStrategyContext.service.js";
+import { generateStrategy, generateAskAiAnswer, getAiProviderStatus } from "../services/aiProvider.service.js";
+import {
+  buildAiStrategyContext,
+  serializeStrategyContextForClient,
+} from "../services/aiStrategyContext.service.js";
 import { createNotificationsForRoles } from "../services/notification.service.js";
 
 export const aiStrategyRouter = Router();
@@ -107,7 +110,7 @@ aiStrategyRouter.post(
   async (req, res) => {
     try {
       const context = await buildAiStrategyContext(req.body || {})
-      return res.json({ success: true, data: context })
+      return res.json({ success: true, data: serializeStrategyContextForClient(context) })
     } catch (error) {
       return res.status(error?.statusCode || 500).json({
         success: false,
@@ -119,11 +122,101 @@ aiStrategyRouter.post(
 )
 
 aiStrategyRouter.post(
+  "/ask",
+  authenticate,
+  authorize("operational", "management", "it_support"),
+  async (req, res) => {
+    const { prompt, ...strategyContext } = req.body || {};
+
+    try {
+      if (!prompt || !String(prompt).trim()) {
+        return res.status(400).json({
+          success: false,
+          errorCode: "INVALID_AI_INPUT",
+          message: "Please describe what you want to ask before sending.",
+          suggestion: "Type a business question or instruction for the AI assistant.",
+        });
+      }
+
+      const structuredContext = await buildAiStrategyContext(strategyContext);
+      const result = await generateAskAiAnswer({
+        prompt: String(prompt).trim(),
+        strategyContext: structuredContext,
+      });
+      const generatedAt = new Date().toISOString();
+      const usage = result.usage || { promptTokens: 0, candidatesTokens: 0, totalTokens: 0 }
+      await prisma.aiUsageLog.create({
+        data: {
+          userId: req.user.userId,
+          model: result.model,
+          feature: "strategy_ask",
+          promptTokens: Number(usage.promptTokens) || 0,
+          candidatesTokens: Number(usage.candidatesTokens) || 0,
+          totalTokens: Number(usage.totalTokens) || 0,
+        },
+      })
+      await logActivity(req, "AI_STRATEGY_ASKED", {
+        jobName: "AI Strategy Engine Sync",
+        segmentKey: structuredContext.selected_scope.segmentKey,
+        venueKey: structuredContext.selected_scope.venueKey,
+        sessionKey: structuredContext.selected_scope.sessionKey,
+        campaignObjectiveKey: structuredContext.selected_scope.campaignObjectiveKey,
+        offerFrameworkKey: structuredContext.selected_scope.offerFrameworkKey,
+        provider: result.provider,
+        model: result.model,
+        status: "success",
+        completedAt: generatedAt,
+      }).catch(() => null);
+
+      return res.status(200).json({
+        success: true,
+        data: {
+          provider: result.provider,
+          model: result.model,
+          answer: result.answer,
+          generatedAt,
+        },
+      });
+    } catch (error) {
+      await logActivity(req, "AI_STRATEGY_ASKED", {
+        jobName: "AI Strategy Engine Sync",
+        segmentKey: strategyContext.selected_scope?.segmentKey || strategyContext.selected_filters?.segmentName || null,
+        venueKey: strategyContext.selected_scope?.venueKey || strategyContext.selected_filters?.venue || null,
+        sessionKey: strategyContext.selected_scope?.sessionKey || strategyContext.selected_filters?.sessionName || null,
+        errorCode: error?.errorCode || "AI_GENERATION_FAILED",
+        status: "failed",
+        completedAt: new Date().toISOString(),
+      }).catch(() => null);
+
+      if (error?.errorCode && error?.message) {
+        return res.status(error.statusCode || 500).json({
+          success: false,
+          errorCode: error.errorCode,
+          message: error.message,
+          suggestion:
+            error.suggestion ||
+            "Please try again or contact IT Support if the issue continues.",
+          technicalMessage: error.technicalMessage,
+        });
+      }
+
+      return res.status(500).json({
+        success: false,
+        errorCode: "AI_GENERATION_FAILED",
+        message: "The AI assistant could not answer right now.",
+        suggestion: "Please try again or contact IT Support if the issue continues.",
+        technicalMessage: error instanceof Error ? error.message : "AI assistant request failed.",
+      });
+    }
+  }
+);
+
+aiStrategyRouter.post(
   ["/generate", "/strategy"],
   authenticate,
   authorize("operational", "it_support"),
   async (req, res) => {
-    const strategyContext = req.body || {};
+    const { userNotes, ...strategyContext } = req.body || {};
 
     try {
       if (!strategyContext || Object.keys(strategyContext).length === 0) {
@@ -143,7 +236,7 @@ aiStrategyRouter.post(
       }
 
       const structuredContext = await buildAiStrategyContext(strategyContext);
-      const result = await generateStrategy(structuredContext);
+      const result = await generateStrategy(structuredContext, userNotes);
       const generatedAt = new Date().toISOString();
       const storedStrategy = await prisma.aiStrategy.create({
         data: {
@@ -208,19 +301,13 @@ aiStrategyRouter.post(
       return res.status(200).json({
         success: true,
         message: "AI strategy generated successfully.",
-        provider: result.provider,
-        model: result.model,
-        generatedAt,
-        strategyId: storedStrategy.id,
-        strategy: result.strategy,
-        context: structuredContext,
         data: {
           provider: result.provider,
           model: result.model,
           generatedAt,
           strategyId: storedStrategy.id,
           strategy: result.strategy,
-          context: structuredContext,
+          context: serializeStrategyContextForClient(structuredContext),
         },
       });
     } catch (error) {

@@ -771,3 +771,30 @@ export const buildAiStrategyContext = async (input = {}, { now } = {}) => {
     analytical_reference: {},
   }
 }
+
+// Client-facing projection of the full decision context. The server keeps the
+// full context internally (validation depends on data_availability,
+// offer_constraints, analysis_period, ...), but the GenAI Workspace UI only
+// renders the fields below, so anything else is trimmed from API responses.
+export const CLIENT_CONTEXT_FIELDS = [
+  "analysis_period",
+  "selected_scope",
+  "selected_segment_history",
+  "membership_opportunity",
+  "revenue_history",
+  "revenue_target_context",
+  "occupancy_history",
+  "promotion_usage_context",
+  "off_peak_opportunity",
+  "social_media_performance",
+  "business_opportunity_summary",
+]
+
+export const serializeStrategyContextForClient = (context) => {
+  if (!context || typeof context !== "object") return null
+  return Object.fromEntries(
+    CLIENT_CONTEXT_FIELDS
+      .filter((key) => context[key] !== undefined)
+      .map((key) => [key, context[key]])
+  )
+}
