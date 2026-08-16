@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  composeStoredMediaRefreshBatch,
   mediaInsightGroupsFor,
   saveMediaInsights,
   saveMediaItems,
@@ -68,6 +69,23 @@ test("media product type selects a strict source metric for canonical Views", ()
 
   assert.deepEqual(reelViews.candidates, ["total_views"]);
   assert.deepEqual(feedViews.candidates, ["views", "impressions", "plays", "video_views"]);
+})
+
+test("Reels normalize likes and comments to the total_* source metrics shown in the app", () => {
+  const reelGroups = mediaInsightGroupsFor(reel);
+  const reelLikes = reelGroups.find((group) => group.normalizedName === "likes");
+  const reelComments = reelGroups.find((group) => group.normalizedName === "comments");
+  const feedLikes = mediaInsightGroupsFor(media).find(
+    (group) => group.normalizedName === "likes"
+  );
+  const feedComments = mediaInsightGroupsFor(media).find(
+    (group) => group.normalizedName === "comments"
+  );
+
+  assert.deepEqual(reelLikes.candidates, ["total_likes"]);
+  assert.deepEqual(reelComments.candidates, ["total_comments"]);
+  assert.deepEqual(feedLikes.candidates, ["likes"]);
+  assert.deepEqual(feedComments.candidates, ["comments"]);
 })
 
 test("Reels normalize Meta total_views rather than generic views", async () => {
@@ -345,4 +363,29 @@ test("missing metric values do not overwrite a valid same-day value", async () =
   });
 
   assert.equal(database.rows.get(keyFor(existing)).metricValue, 409);
+})
+
+test("incremental refresh picks stale media before freshly refreshed ones", () => {
+  const staleMedia = {
+    id: "stale-media",
+    igMediaId: "stale-ig-id",
+    postedAt: new Date("2026-08-05T00:00:00.000Z"),
+    insights: [{ insightDate: new Date("2026-08-13T00:00:00.000Z") }],
+  };
+  const freshMedia = {
+    id: "fresh-media",
+    igMediaId: "fresh-ig-id",
+    postedAt: new Date("2026-08-14T00:00:00.000Z"),
+    insights: [{ insightDate: new Date("2026-08-16T00:00:00.000Z") }],
+  };
+
+  const batch = composeStoredMediaRefreshBatch({
+    eligibleMedia: [freshMedia, staleMedia],
+    mode: "incremental",
+    discoveredMediaIds: [],
+    newMediaIds: [],
+    syncAttemptCount: 7,
+  });
+
+  assert.deepEqual(batch.map(({ id }) => id), [staleMedia.id, freshMedia.id]);
 })

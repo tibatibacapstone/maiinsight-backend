@@ -53,7 +53,7 @@ test("per-media insight selection is bounded separately for initial and incremen
   const media = Array.from({ length: 400 }, (_, index) => ({ id: index + 1 }))
 
   assert.equal(selectMediaForInsightSync(media, "initial").length, 250)
-  assert.equal(selectMediaForInsightSync(media, "incremental").length, 12)
+  assert.equal(selectMediaForInsightSync(media, "incremental").length, 60)
 })
 
 test("stored-media refresh is independent of the seven-day discovery overlap", () => {
@@ -116,7 +116,7 @@ test("stored-media refresh batch remains bounded", () => {
     insights: [],
   }))
 
-  assert.equal(selectStoredMediaForInsightRefresh(media, "incremental").length, 12)
+  assert.equal(selectStoredMediaForInsightRefresh(media, "incremental").length, 60)
   assert.equal(selectStoredMediaForInsightRefresh(media, "initial").length, 100)
 })
 

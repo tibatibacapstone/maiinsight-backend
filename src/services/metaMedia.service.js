@@ -185,13 +185,19 @@ export function mediaInsightGroupsFor(media) {
   const productType = String(media?.mediaProductType || "").toUpperCase();
   if (!productType.includes("REEL")) return MEDIA_INSIGHT_GROUPS;
 
+  const reelSourceOverrides = {
+    views: "total_views",
+    likes: "total_likes",
+    comments: "total_comments",
+  };
+
   return MEDIA_INSIGHT_GROUPS.map((group) =>
-    group.normalizedName === "views"
-      ? { ...group, candidates: ["total_views"] }
+    reelSourceOverrides[group.normalizedName]
+      ? { ...group, candidates: [reelSourceOverrides[group.normalizedName]] }
       : group
   );
 }
-const MAX_MEDIA_INSIGHTS_PER_SYNC = Number(process.env.META_MAX_MEDIA_INSIGHT_SYNC || 12);
+const MAX_MEDIA_INSIGHTS_PER_SYNC = Number(process.env.META_MAX_MEDIA_INSIGHT_SYNC || 60);
 const MAX_INITIAL_MEDIA_INSIGHTS_PER_SYNC = Number(
   process.env.META_MAX_INITIAL_MEDIA_INSIGHT_SYNC || 250
 );
@@ -402,6 +408,22 @@ export async function selectStoredMediaRefreshBatch({
     prisma.metaSyncLog.count(),
   ]);
 
+  return composeStoredMediaRefreshBatch({
+    eligibleMedia,
+    mode,
+    discoveredMediaIds,
+    newMediaIds,
+    syncAttemptCount,
+  });
+}
+
+export function composeStoredMediaRefreshBatch({
+  eligibleMedia,
+  mode,
+  discoveredMediaIds = [],
+  newMediaIds = [],
+  syncAttemptCount = 0,
+}) {
   const limits = {
     initialLimit: MAX_INITIAL_MEDIA_INSIGHTS_PER_SYNC,
     incrementalLimit: MAX_MEDIA_INSIGHTS_PER_SYNC,
@@ -430,18 +452,30 @@ export async function selectStoredMediaRefreshBatch({
   );
   const priority = [...newPriority, ...recentPriority];
   const priorityIds = new Set(priority.map((media) => media.id));
+  const remainingPool = eligibleMedia.filter((media) => !priorityIds.has(media.id));
   const remainingLimit = Math.max(0, MAX_MEDIA_INSIGHTS_PER_SYNC - priority.length);
-  const rotating = selectStoredMediaForInsightRefresh(
-    eligibleMedia.filter((media) => !priorityIds.has(media.id)),
-    mode,
-    {
-      ...limits,
-      incrementalLimit: remainingLimit,
-      rotation: syncAttemptCount,
-    }
-  );
 
-  return [...priority, ...rotating];
+  // Media that already carry insights refresh strictly stale-first (oldest
+  // successful refresh first) so the oldest data is always replaced before
+  // anything newer, without a rotation offset that could skip it.
+  const withoutInsights = remainingPool.filter((media) => media.insights.length === 0);
+  const withInsights = remainingPool.filter((media) => media.insights.length > 0);
+  const staleLimit = Math.min(remainingLimit, withInsights.length);
+  const stale = selectStoredMediaForInsightRefresh(withInsights, mode, {
+    ...limits,
+    incrementalLimit: staleLimit,
+  });
+
+  // Media with no insight row yet rotate so one permanently unsupported post
+  // cannot keep starving the rest of the warehouse.
+  const rotatingLimit = Math.max(0, remainingLimit - stale.length);
+  const rotating = selectStoredMediaForInsightRefresh(withoutInsights, mode, {
+    ...limits,
+    incrementalLimit: rotatingLimit,
+    rotation: syncAttemptCount,
+  });
+
+  return [...priority, ...stale, ...rotating];
 }
 
 // Canonical monthly media aggregation

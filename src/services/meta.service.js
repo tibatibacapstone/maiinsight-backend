@@ -286,7 +286,7 @@ export const resolveMetaConnectionStatus = async ({
 export const META_HISTORY_MONTHS = 24
 export const META_INCREMENTAL_OVERLAP_DAYS = 7
 export const META_INITIAL_MEDIA_INSIGHT_LIMIT = 250
-export const META_INCREMENTAL_MEDIA_INSIGHT_LIMIT = 12
+export const META_INCREMENTAL_MEDIA_INSIGHT_LIMIT = 60
 
 const toDateString = (value) => new Date(value).toISOString().slice(0, 10)
 
