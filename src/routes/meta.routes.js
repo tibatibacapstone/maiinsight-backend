@@ -7,6 +7,7 @@ import { buildConfigSnapshot } from "../services/appConfig.service.js";
 import { syncMetaRawToAnalytics, resolveMetaConnectionStatus, META_HISTORY_MONTHS } from "../services/meta.service.js";
 import { createNotificationsForRoles } from "../services/notification.service.js";
 import { computeContentPerformance } from "../services/instagramContentPerformance.service.js";
+import { buildCampaignAttribution, generateCampaignAttributionInsights } from "../services/campaignAttribution.service.js";
 import {
   calculateAvailableChangePct,
   resolveFollowerSnapshot,
@@ -924,6 +925,22 @@ contentInsightsAvailability,
   }
 );
 
+metaRouter.get(
+  "/campaign-attribution",
+  authorize("operational", "management", "it_support"),
+  async (req, res) => {
+    try {
+      const data = await buildCampaignAttribution({ since: req.query.since, until: req.query.until })
+      let insights = []
+      try { insights = await generateCampaignAttributionInsights(data) } catch { insights = [] }
+      const insightMap = new Map(insights.map((item) => [item.internalKey, item.text]))
+      const campaigns = data.campaigns.map((campaign) => ({ ...campaign, insight: insightMap.get(campaign.internalKey) || null }))
+      return res.json({ success: true, message: "Campaign attribution fetched successfully.", data: { campaigns, period: data.period, totalCustomers: data.totalCustomers } })
+    } catch (error) {
+      return res.status(500).json({ success: false, errorCode: "CAMPAIGN_ATTRIBUTION_FAILED", message: "Campaign attribution could not be loaded.", suggestion: "Please run the campaign attribution sync and try again." })
+    }
+  }
+);
 metaRouter.get(
   "/posts",
   authorize("operational", "management", "it_support"),

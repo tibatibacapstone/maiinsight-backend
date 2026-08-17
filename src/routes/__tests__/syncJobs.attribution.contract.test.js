@@ -12,7 +12,7 @@ const segmentationService = read("../../services/rfmSegmentation.service.js")
 const schema = read("../../../prisma/schema.prisma")
 const migration = read("../../../prisma/migrations/20260811100000_add_sync_job_user_attribution/migration.sql")
 
-test("successful and failed file imports persist the authenticated actor", () => {
+test("successful file imports persist the authenticated actor and failed imports are cleaned up", () => {
   const actorCreateIndex = importRoutes.indexOf("performedByUserId: req.user.userId")
   const parseIndex = importRoutes.indexOf("parsedRecords = parseUploadedTransactionFile(req.file)")
   const validationIndex = importRoutes.indexOf("validateTransactionRows(parsedRecords)")
@@ -20,23 +20,19 @@ test("successful and failed file imports persist the authenticated actor", () =>
   assert.ok(actorCreateIndex > -1)
   assert.ok(actorCreateIndex < parseIndex)
   assert.ok(actorCreateIndex < validationIndex)
-  assert.match(
-    importRoutes,
-    /createFailedImportHistory\(\{[\s\S]*?performedByUserId:\s*req\.user\.userId/
-  )
-  assert.match(importRoutes, /friendlyFailure\.batchId\s*=\s*failedBatch\.id/)
+  assert.match(importRoutes, /cleanupImportBatchDataKeepHistory\(prisma, batch\.id\)/)
   assert.doesNotMatch(importRoutes, /performedByUserId:\s*req\.user\?\.userId\s*\|\|\s*null/)
 })
 
-test("import status updates preserve the actor assigned when the batch was created", () => {
-  const failedUpdate = importRoutes.match(
-    /if \(batch\?\.id\)[\s\S]*?prisma\.importBatch\.update\([\s\S]*?friendlyFailure\.batchId = batch\.id/
+test("failed import batches keep reasoning while data is removed", () => {
+  const failedCleanup = importRoutes.match(
+    /if \(batch\?\.id\)[\s\S]*?cleanupImportBatchDataKeepHistory\(prisma, batch\.id\)/
   )?.[0] || ""
 
-  assert.match(failedUpdate, /status:\s*"failed"/)
-  assert.doesNotMatch(failedUpdate, /performedByUserId/)
+  assert.match(failedCleanup, /cleanupImportBatchDataKeepHistory\(prisma, batch\.id\)/)
+  assert.match(importRoutes, /status:\s*"failed"/)
+  assert.match(importRoutes, /errorMessage: friendlyFailure\.message/)
 })
-
 test("Meta, segmentation, and AI jobs capture the triggering authenticated user", () => {
   assert.match(metaRoutes, /syncMetaRawToAnalytics\(\{\s*performedByUserId:\s*req\.user\.userId\s*\}\)/)
   assert.match(metaService, /metaSyncLog\.create\([\s\S]*?performedByUserId/)

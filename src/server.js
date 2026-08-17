@@ -1,6 +1,6 @@
 import { app } from "./app.js";
 import { env, validateRuntimeEnvironment } from "./config/env.js";
-import { startReminderScheduler } from "./config/reminderScheduler.js";
+import { startCampaignAttributionScheduler, startReminderScheduler } from "./config/reminderScheduler.js";
 
 validateRuntimeEnvironment();
 
@@ -9,6 +9,7 @@ const server = app.listen(env.port, "0.0.0.0", () => {
 });
 
 startReminderScheduler();
+startCampaignAttributionScheduler();
 
 server.on("error", (error) => {
   if (error?.code === "EADDRINUSE") {

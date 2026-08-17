@@ -68,6 +68,33 @@ export const getImportBatchImpact = async (database, batchId) => {
   }
 }
 
+export const cleanupImportBatchDataKeepHistory = async (database, batchId) =>
+  database.$transaction(async (transaction) => {
+    const { orphanCustomerIds, retainedCustomerIds } = await resolveBatchCustomerImpact(
+      transaction,
+      batchId
+    )
+
+    const deletedCourtHours = await transaction.courtHourUsage.deleteMany({ where: { batchId } })
+    const deletedTransactions = await transaction.facilityTransaction.deleteMany({ where: { batchId } })
+    const deletedRawRows = await transaction.rawTransactionTable.deleteMany({ where: { batchId } })
+
+    const deletedCustomers = orphanCustomerIds.length
+      ? await transaction.customer.deleteMany({ where: { id: { in: orphanCustomerIds } } })
+      : { count: 0 }
+    const recalculatedCustomers = await recalculateCustomerTypes(
+      transaction,
+      retainedCustomerIds
+    )
+
+    return {
+      deletedCourtHourCount: deletedCourtHours.count,
+      deletedTransactionCount: deletedTransactions.count,
+      deletedRawRowCount: deletedRawRows.count,
+      deletedOrphanCustomerCount: deletedCustomers.count,
+      retainedCustomerCount: recalculatedCustomers.length,
+    }
+  })
 export const deleteImportBatchData = async (database, batchId) =>
   database.$transaction(async (transaction) => {
     const { orphanCustomerIds, retainedCustomerIds } = await resolveBatchCustomerImpact(

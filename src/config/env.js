@@ -41,6 +41,8 @@ export const env = {
     .map((email) => email.trim())
     .filter(Boolean),
   healthReminderCron: process.env.HEALTH_REMINDER_CRON || "0 6,18 * * *",
+  campaignAttributionEnabled: String(process.env.CAMPAIGN_ATTRIBUTION_ENABLED ?? "true").trim() !== "false",
+  campaignAttributionCron: process.env.CAMPAIGN_ATTRIBUTION_CRON || "30 2 * * *",
 };
 
 export const getRequiredJwtSecret = (value = env.jwtSecret) =>

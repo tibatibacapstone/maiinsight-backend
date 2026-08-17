@@ -116,11 +116,17 @@ export const isSupportedImportFile = (file) => {
 
 const parseCsvBuffer = (buffer) => {
   const csvText = buffer.toString("utf8")
+  const firstLine = csvText.split("\n")[0]
+  const usesTabDelimiter = firstLine.includes("\t") && !firstLine.includes(",")
+
+  const delimiter = usesTabDelimiter ? "\t" : ","
+
   return parseCsv(csvText, {
     columns: true,
     skip_empty_lines: true,
     trim: true,
     bom: true,
+    delimiter: delimiter,
   })
 }
 

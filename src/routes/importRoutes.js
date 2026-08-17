@@ -13,6 +13,7 @@ import {
   syncCustomersForTransactions,
 } from "../services/customerCanonicalization.service.js";
 import {
+  cleanupImportBatchDataKeepHistory,
   deleteImportBatchData,
   getImportBatchImpact,
 } from "../services/importBatchDeletion.service.js";
@@ -219,6 +220,36 @@ const syncCourtHourUsageForTransactions = async (transactions, { replaceExisting
   return createdCount;
 };
 
+const persistRawRowErrors = async (batchId, rowErrors) => {
+  const errorsByMessage = new Map()
+
+  rowErrors.forEach((item) => {
+    const message = item.message || "Row could not be processed."
+    const rowNumbers = errorsByMessage.get(message) || []
+    rowNumbers.push(item.rowNumber)
+    errorsByMessage.set(message, rowNumbers)
+  })
+
+  const updates = [...errorsByMessage.entries()].flatMap(([message, rowNumbers]) =>
+    rowNumbers.map((rowNumber) => ({ message, rowNumber }))
+  )
+
+  const concurrency = 6
+  for (let index = 0; index < updates.length; index += concurrency) {
+    const chunk = updates.slice(index, index + concurrency)
+    await Promise.all(
+      chunk.map(({ message, rowNumber }) =>
+        prisma.rawTransactionTable.updateMany({
+          where: { batchId, rowNumber },
+          data: {
+            status: "failed",
+            errorMessage: message,
+          },
+        })
+      )
+    )
+  }
+}
 const syncCanonicalDataForTransactions = async (transactions, options = {}) => {
   const transactionIds = transactions
     .map((transaction) => transaction?.id)
@@ -443,6 +474,7 @@ router.get("/jobs", authorize("operational", "it_support"), async (req, res, nex
       })),
     ]
       .sort((left, right) => new Date(right.startedAt) - new Date(left.startedAt))
+      .filter((job) => job.type === "file")
       .slice(0, 20);
 
     res.json({
@@ -462,6 +494,7 @@ router.post(
   handleImportUpload,
   async (req, res) => {
     let batch = null;
+    let importStage = "initialization";
 let parsedRecords = [];
 let parsedHeaders = [];
 
@@ -499,8 +532,11 @@ try {
         },
       });
 
+      importStage = "file parsing";
       parsedRecords = parseUploadedTransactionFile(req.file);
+      importStage = "template validation";
       parsedHeaders = validateTransactionTemplate(parsedRecords);
+      importStage = "row validation";
       validateTransactionRows(parsedRecords);
 
       const anomalyScan = detectOrderIdAnomalies(parsedRecords);
@@ -536,6 +572,7 @@ try {
         },
       });
 
+      importStage = "staging raw rows";
       await prisma.rawTransactionTable.createMany({
         data: records.map((row, index) => ({
           batchId: batch.id,
@@ -600,6 +637,7 @@ try {
       let insertableTransactions = facilityTransactions;
 
       if (facilityTransactions.length) {
+        importStage = "matching customer profiles";
         const resolved = await resolveCustomersForTransactions(prisma, facilityTransactions);
         // Merge identity errors into rowErrors (partial import supported)
         if (resolved.errors) {
@@ -635,6 +673,7 @@ try {
         insertableTransactions = partitioned.accepted;
       }
 
+      importStage = "saving transaction records";
       if (insertableTransactions.length) {
         const successfullyInserted = [];
 
@@ -658,20 +697,7 @@ try {
       }
 
       if (rowErrors.length) {
-        await Promise.all(
-          rowErrors.map((item) =>
-            prisma.rawTransactionTable.updateMany({
-              where: {
-                batchId: batch.id,
-                rowNumber: item.rowNumber,
-              },
-              data: {
-                status: "failed",
-                errorMessage: item.message,
-              },
-            })
-          )
-        );
+        await persistRawRowErrors(batch.id, rowErrors)
       }
 
       const createdTransactions = await prisma.facilityTransaction.findMany({
@@ -684,6 +710,7 @@ try {
         select: facilityTransactionSyncSelect,
       });
 
+      importStage = "finalizing business data";
       const syncSummary = await syncCanonicalDataForTransactions(createdTransactions);
 
       const updatedBatch = await prisma.importBatch.update({
@@ -749,12 +776,26 @@ try {
       });
     } catch (error) {
       const friendlyFailure = buildFriendlyImportFailure(error);
+      const stageMessages = {
+        initialization: "The upload could not be started. Please try again.",
+        "file parsing": "The file could not be read. Please verify that it is a valid CSV or Excel file.",
+        "template validation": "The file was read, but its columns do not match the required transaction template.",
+        "row validation": "The file contains transaction values that could not be validated.",
+        "staging raw rows": "The file was read, but its rows could not be prepared for processing.",
+        "matching customer profiles": "The file was read, but customer profiles could not be matched reliably.",
+        "saving transaction records": "The file was read, but transaction records could not be saved.",
+        "finalizing business data": "Transactions were read, but business data could not be finalized.",
+      };
+      if (friendlyFailure.errorCode === "IMPORT_FAILED" && stageMessages[importStage]) {
+        friendlyFailure.message = stageMessages[importStage];
+        friendlyFailure.suggestion = "Correct the file or contact IT Support with the upload time and file name.";
+      }
 
       if (batch?.id) {
+        // Keep failed history and reasoning, but remove raw/transaction work data.
+        await cleanupImportBatchDataKeepHistory(prisma, batch.id).catch(() => null);
         await prisma.importBatch.update({
-          where: {
-            id: batch.id,
-          },
+          where: { id: batch.id },
           data: {
             rowCount: parsedRecords.length || batch.rowCount,
             headers: parsedHeaders.length ? parsedHeaders : batch.headers,
@@ -768,20 +809,7 @@ try {
           },
         }).catch(() => null);
         friendlyFailure.batchId = batch.id;
-      } else if (req.file?.originalname) {
-        const failedBatch = await createFailedImportHistory({
-          fileName: req.file.originalname,
-          rowCount: parsedRecords.length || 0,
-          headers: parsedHeaders || [],
-          message: friendlyFailure.message,
-          errorCode: friendlyFailure.errorCode,
-          suggestion: friendlyFailure.suggestion,
-          validationErrors: friendlyFailure.validationErrors,
-          performedByUserId: req.user.userId,
-        }).catch(() => null);
-        if (failedBatch?.id) friendlyFailure.batchId = failedBatch.id;
       }
-
       if (
         friendlyFailure.technicalMessage?.includes("customerKeyConfidence") ||
         friendlyFailure.technicalMessage?.includes("Prisma")

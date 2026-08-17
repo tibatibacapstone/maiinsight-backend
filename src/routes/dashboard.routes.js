@@ -878,75 +878,43 @@ dashboardRouter.get(
       const totalRevenue = Number(revenueResult._sum.netRevenue || 0);
       const previousRevenue = Number(previousRevenueResult._sum.netRevenue || 0);
 
-      // Calculate peak session revenue, bucketed by session + court type so the
-      // label can show the venue too (matching the Lowest-Demand Session card).
+            // Rank peak session by occupancy for each session + court type bucket. Revenue is only a tie-breaker.
       const sessionRevenueByBucket = new Map();
-
       transactions.forEach((tx) => {
-        const hourStr = tx.startHour || "";
-        const hour = Number(String(hourStr).split(":")[0]);
-
+        const hour = Number(String(tx.startHour || "").split(":")[0]);
         const session = resolveSessionNameByHour(hour);
         if (!session || !tx.courtType) return;
-
-        const bucketKey = `${session}|${tx.courtType}`;
-        sessionRevenueByBucket.set(
-          bucketKey,
-          (sessionRevenueByBucket.get(bucketKey) || 0) + Number(tx.netRevenue || 0)
-        );
+        const bucketKey = `${session.name}|${tx.courtType}`;
+        sessionRevenueByBucket.set(bucketKey, (sessionRevenueByBucket.get(bucketKey) || 0) + Number(tx.netRevenue || 0));
       });
-
-      const trackedPeakCourtTypes = courtType ? [courtType] : COURT_TYPES;
-      let peakBucket = null;
-
-      for (const session of SESSION_DEFINITIONS) {
-        for (const trackedCourtType of trackedPeakCourtTypes) {
-          const revenue = sessionRevenueByBucket.get(`${session.name}|${trackedCourtType}`) || 0;
-
-          if (!peakBucket || revenue > peakBucket.revenue) {
-            peakBucket = { sessionName: session.name, courtType: trackedCourtType, revenue };
-          }
-        }
-      }
-
-      const peakCourtSuffix = courtType
-        ? ""
-        : ` - ${COURT_TYPE_LABELS[peakBucket?.courtType] || peakBucket?.courtType}`;
-
-      const peakSessionLabel =
-        peakBucket && peakBucket.revenue > 0 ? `${peakBucket.sessionName}${peakCourtSuffix}` : "No Data";
-      const peakSessionRevenue = peakBucket ? peakBucket.revenue : 0;
-
-      // Occupancy for the peak bucket, computed the same way as the
-      // Lowest-Demand Session card (occupied court-hours / available court-hours
-      // for that exact session + court type over the selected range).
       const peakOccupancyByBucket = new Map();
-
       courtHourUsageRows.forEach((row) => {
         const session = resolveSessionNameByHour(row.hourStart);
         if (!session || !row.courtType) return;
-
-        const bucketKey = `${session}|${row.courtType}`;
+        const bucketKey = `${session.name}|${row.courtType}`;
         peakOccupancyByBucket.set(bucketKey, (peakOccupancyByBucket.get(bucketKey) || 0) + 1);
       });
-
-      const peakSessionDefinition = SESSION_DEFINITIONS.find(
-        (session) => session.name === peakBucket?.sessionName
-      );
-      const peakRangeDays = Math.round(
-        (selectedRange.endDateExclusive.getTime() - selectedRange.startDate.getTime()) / 86400000
-      );
-      const peakAvailableCourtHours = peakSessionDefinition
-        ? peakRangeDays * (peakSessionDefinition.endHour - peakSessionDefinition.startHour + 1)
-        : 0;
-      const peakOccupiedCourtHours = peakBucket
-        ? peakOccupancyByBucket.get(`${peakBucket.sessionName}|${peakBucket.courtType}`) || 0
-        : 0;
-      const peakSessionRate =
-        peakBucket && peakAvailableCourtHours > 0
-          ? Number(((peakOccupiedCourtHours / peakAvailableCourtHours) * 100).toFixed(1))
-          : 0;
-
+      const peakRangeDays = Math.round((selectedRange.endDateExclusive.getTime() - selectedRange.startDate.getTime()) / 86400000);
+      const occupancyRateForBucket = (session, trackedCourtType) => {
+        const availableCourtHours = peakRangeDays * (session.endHour - session.startHour + 1);
+        const occupiedCourtHours = peakOccupancyByBucket.get(`${session.name}|${trackedCourtType}`) || 0;
+        return availableCourtHours > 0 ? Number(((occupiedCourtHours / availableCourtHours) * 100).toFixed(1)) : 0;
+      };
+      const trackedPeakCourtTypes = courtType ? [courtType] : COURT_TYPES;
+      let peakBucket = null;
+      for (const session of SESSION_DEFINITIONS) {
+        for (const trackedCourtType of trackedPeakCourtTypes) {
+          const occupancyRate = occupancyRateForBucket(session, trackedCourtType);
+          const revenue = sessionRevenueByBucket.get(`${session.name}|${trackedCourtType}`) || 0;
+          if (!peakBucket || occupancyRate > peakBucket.occupancyRate || (occupancyRate === peakBucket.occupancyRate && revenue > peakBucket.revenue)) {
+            peakBucket = { sessionName: session.name, courtType: trackedCourtType, revenue, occupancyRate };
+          }
+        }
+      }
+      const peakCourtSuffix = courtType ? "" : ` - ${COURT_TYPE_LABELS[peakBucket?.courtType] || peakBucket?.courtType}`;
+      const peakSessionLabel = peakBucket && peakBucket.occupancyRate > 0 ? `${peakBucket.sessionName}${peakCourtSuffix}` : "No Data";
+      const peakSessionRevenue = peakBucket ? peakBucket.revenue : 0;
+      const peakSessionRate = peakBucket ? peakBucket.occupancyRate : 0;
       const courtCount = getCourtCount(courtType);
       const availableSessions = getAvailableCourtHours(
         selectedRange.startDate,

@@ -315,6 +315,11 @@ model SegmentationRun {
   errorMessage      String?            @db.Text
   silhouetteScore   Float?
   kEvaluation       Json?
+  rfmWindowStartYear Int?            @db.Int
+  rfmWindowEndYear   Int?             @db.Int
+  rfmWindowYears     Int?             @db.Int
+  numberOfTransactionsUsed Int?         @db.Int
+  numberOfCustomersUsed Int?          @db.Int
   clusterProfiles   ClusterProfile[]
   customerScores    CustomerRfmScore[]
   performedByUserId Int?
@@ -426,6 +431,37 @@ model InstagramAccountSnapshot {
   @@map("instagram_account_snapshots")
 }
 
+model CampaignAttribution {
+  id             String                         @id @default(cuid()) @db.VarChar(30)
+  displayName    String                         @db.VarChar(255)
+  matchingName   String                         @db.VarChar(255)
+  internalKey    String                         @unique @db.VarChar(320)
+  startDate      DateTime?
+  endDate        DateTime?
+  status         String                         @default("active") @db.VarChar(50)
+  createdAt      DateTime                       @default(now())
+  updatedAt      DateTime                       @updatedAt
+  contentLinks   CampaignAttributionContent[]
+
+  @@index([matchingName])
+  @@index([startDate, endDate])
+  @@index([status])
+  @@map("campaign_attributions")
+}
+
+model CampaignAttributionContent {
+  campaignId  String              @db.VarChar(30)
+  mediaId     String              @db.VarChar(30)
+  captionHash String              @db.VarChar(64)
+  extractedAt DateTime            @default(now())
+  campaign    CampaignAttribution @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  media       InstagramMedia      @relation(fields: [mediaId], references: [id], onDelete: Cascade)
+
+  @@id([campaignId, mediaId])
+  @@unique([mediaId])
+  @@index([mediaId])
+  @@map("campaign_attribution_content")
+}
 model InstagramMedia {
   id               String                  @id @default(cuid()) @db.VarChar(30)
   igMediaId        String                  @unique @db.VarChar(100)
@@ -443,6 +479,7 @@ model InstagramMedia {
   updatedAt        DateTime                @updatedAt
   account          InstagramAccount        @relation(fields: [accountId], references: [id], onDelete: Cascade)
   insights         InstagramMediaInsight[]
+  campaignLinks    CampaignAttributionContent[]
 
   @@index([accountId], map: "instagram_media_accountId_fkey")
   @@map("instagram_media")

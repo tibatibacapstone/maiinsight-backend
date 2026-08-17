@@ -13,6 +13,7 @@ import {
 const DEFAULT_K = 4
 const DEFAULT_MIN_K = 2
 const DEFAULT_MAX_K = 8
+const DEFAULT_RFM_WINDOW_YEARS = 4
 const SEGMENTATION_METHOD = "RFM_KMEANS"
 const RUNNING_STATUS = "running"
 const COMPLETED_STATUS = "completed"
@@ -109,6 +110,12 @@ const toNumber = (value) => {
 const roundNumber = (value, precision = 2) => Number(value.toFixed(precision))
 
 const getCurrentYear = () => new Date().getFullYear()
+
+const calculateRfmWindow = (latestYear, windowYears = DEFAULT_RFM_WINDOW_YEARS) => {
+  const windowStartYear = latestYear - windowYears + 1
+  const windowEndYear = latestYear
+  return { windowStartYear, windowEndYear, windowYears }
+}
 
 const normalizePeriodType = (value) =>
   String(value ?? "").trim().toUpperCase() === "YTD" ? "YTD" : "MTD"
@@ -1128,7 +1135,12 @@ const serializeRun = (run) => {
     errorMessage: run.errorMessage,
     silhouetteScore: run.silhouetteScore,
     kEvaluation,
-    selectionReason: kEvaluation?.selectionReason ?? null,
+    selectionReason: run.selectionReason ?? null,
+    rfmWindowStartYear: run.rfmWindowStartYear ?? null,
+    rfmWindowEndYear: run.rfmWindowEndYear ?? null,
+    rfmWindowYears: run.rfmWindowYears ?? null,
+    numberOfTransactionsUsed: run.numberOfTransactionsUsed ?? null,
+    numberOfCustomersUsed: run.numberOfCustomersUsed ?? null,
   }
 }
 
@@ -1343,7 +1355,7 @@ export const runRfmSegmentation = async (
     }
 
     if (!scope.isEmptyDateScope) {
-      const transactions = await prisma.facilityTransaction.findMany({
+      const allTransactions = await prisma.facilityTransaction.findMany({
         where: buildSegmentationTransactionWhere(scope),
         orderBy: [{ customerKey: "asc" }, { playDate: "asc" }, { bookingEventKey: "asc" }],
         select: {
@@ -1357,6 +1369,32 @@ export const runRfmSegmentation = async (
           bookingEventKey: true,
           netRevenue: true,
         },
+      })
+
+      // Calculate RFM historical window dynamically
+      // Find the latest transaction year to make the window rolling
+      const latestPlayDate = allTransactions.reduce(
+        (latest, tx) => {
+          if (tx.playDate) {
+            const year = new Date(tx.playDate).getFullYear()
+            return year > latest ? year : latest
+          }
+          return latest
+        },
+        1900
+      )
+
+      const rfmWindow = calculateRfmWindow(
+        latestPlayDate,
+        input.rfmWindowYears ?? DEFAULT_RFM_WINDOW_YEARS
+      )
+      const { windowStartYear, windowEndYear, windowYears } = rfmWindow
+
+      // Filter transactions to the selected historical window only
+      const transactions = allTransactions.filter((tx) => {
+        if (!tx.playDate) return false
+        const txYear = new Date(tx.playDate).getFullYear()
+        return txYear >= windowStartYear && txYear <= windowEndYear
       })
 
       customers = assignRfmScores(aggregateCustomerMetrics(transactions, scope.analysisDate))
@@ -1477,6 +1515,11 @@ export const runRfmSegmentation = async (
           silhouetteScore,
           kEvaluation,
           errorMessage: null,
+          rfmWindowStartYear: rfmWindow.windowStartYear,
+          rfmWindowEndYear: rfmWindow.windowEndYear,
+          rfmWindowYears: rfmWindow.windowYears,
+          numberOfTransactionsUsed: transactions.length,
+          numberOfCustomersUsed: customers.length,
         },
       })
     })
@@ -1611,5 +1654,3 @@ export const getSegmentationCustomers = async (input = {}) => {
     pagination: customerResult.pagination,
   }
 }
-
-
