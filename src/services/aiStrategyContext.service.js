@@ -20,6 +20,7 @@ import {
 import {
   formatIsoDate,
   resolveCustomDateRange,
+  resolveSelectedDateRange,
 } from "./dashboardPeriod.service.js"
 import {
   buildAiBusinessOpportunities,
@@ -590,11 +591,48 @@ export const buildAiStrategyContext = async (input = {}, { now } = {}) => {
     throw error
   }
 
-  const latestRun = await prisma.segmentationRun.findFirst({
+  // The stored RFM profile must actually describe the customer's history
+  // under the same venue / booking-type / period scope the strategy is
+  // being generated for — the globally newest completed run may have been
+  // scoped to a different venue or a single month, which would silently
+  // misrepresent "the customer's overall history" for this context. A run
+  // left unscoped on a given dimension (courtType/bookingType/date) covers
+  // every value on that dimension, so it's treated as compatible with any
+  // requested scope for that dimension; a run scoped to a *different*
+  // specific value is not.
+  const wantedCourtType = venue.key === "all" ? null : venue.key
+  const isRunPeriodCompatible = (run) => {
+    if (!analysisPeriod) return true
+    if (!run.filterYear) return true
+    try {
+      const runRange = resolveSelectedDateRange({
+        selectedYear: run.filterYear,
+        selectedMonth: run.filterMonth,
+        periodType: run.filterPeriodType || "MTD",
+      })
+      return (
+        runRange.startDate <= analysisPeriod.analysisStart &&
+        runRange.endDateExclusive >= analysisPeriod.analysisEndExclusive
+      )
+    } catch {
+      return false
+    }
+  }
+
+  const recentCompletedRuns = await prisma.segmentationRun.findMany({
     where: { status: "completed" },
     orderBy: { runDate: "desc" },
-    select: { id: true },
+    select: { id: true, filterCourtType: true, filterBookingType: true, filterYear: true, filterMonth: true, filterPeriodType: true },
+    take: 50,
   })
+  const latestRun =
+    recentCompletedRuns.find(
+      (run) =>
+        (!run.filterCourtType || run.filterCourtType === wantedCourtType) &&
+        !run.filterBookingType &&
+        isRunPeriodCompatible(run)
+    ) || null
+
   const scores = latestRun
     ? await prisma.customerRfmScore.findMany({
         where: { runId: latestRun.id, segmentName: segment.label },
@@ -602,7 +640,11 @@ export const buildAiStrategyContext = async (input = {}, { now } = {}) => {
       })
     : []
   if (!scores.length) {
-    const error = new Error(`No stored RFM profile exists for ${segment.label}.`)
+    const error = new Error(
+      recentCompletedRuns.length
+        ? `No stored RFM profile for ${segment.label} matches the current venue/period scope. Run segmentation again for this scope, or broaden the filters.`
+        : `No stored RFM profile exists for ${segment.label}.`
+    )
     error.errorCode = "SELECTED_SEGMENT_PROFILE_NOT_FOUND"
     error.statusCode = 404
     throw error
@@ -643,7 +685,8 @@ export const buildAiStrategyContext = async (input = {}, { now } = {}) => {
     },
   })
   const history = aggregateSelectedSegmentHistory({ segment, scores, customers, transactions })
-  history.rfmProfileScope = "latest_completed_segmentation_run"
+  history.rfmProfileScope = "scope_compatible_segmentation_run"
+  history.rfmProfileRunId = latestRun?.id ?? null
   history.transactionHistoryScope = analysisPeriod
     ? analysisPeriod.analysisPeriodKey
     : "outreach_scope"

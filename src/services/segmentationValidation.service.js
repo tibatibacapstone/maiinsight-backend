@@ -201,6 +201,7 @@ export const validateSegmentationCustomerInput = (input = {}) => ({
       maximum: MAX_PAGE_SIZE,
     }) ?? DEFAULT_PAGE_SIZE,
   offset: normalizeNonNegativeInteger(input.offset, "offset"),
+  search: hasValue(input.search) ? String(input.search).trim().slice(0, 120) : null,
 })
 
 export const PAGINATION_DEFAULTS = {

@@ -21,7 +21,7 @@ test("one order with three session rows counts three events and sums session rev
   assert.equal(metrics.monetary, 450000)
 })
 
-test("duplicate event contributes once to frequency while monetary remains row-level", () => {
+test("duplicate event contributes once to both frequency and monetary", () => {
   const transactions = [100000, 50000].map((netRevenue) => ({
     customerKey: "CUST-00001",
     playDate: new Date(2025, 0, 1),
@@ -33,7 +33,7 @@ test("duplicate event contributes once to frequency while monetary remains row-l
   const [metrics] = aggregateCustomerMetrics(transactions, new Date(2025, 0, 2))
 
   assert.equal(metrics.frequency, 1)
-  assert.equal(metrics.monetary, 150000)
+  assert.equal(metrics.monetary, 100000)
 })
 
 test("operational and non-positive customer rows never enter RFM", () => {

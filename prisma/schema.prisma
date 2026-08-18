@@ -115,6 +115,7 @@ model AiStrategy {
   targetSessionKey   String?  @db.VarChar(50)
   campaignObjectiveKey String? @db.VarChar(100)
   offerFrameworkKey  String?  @db.VarChar(100)
+  analysisPeriodKey  String?  @db.VarChar(50)
   strategy           Json
   generatedAt        DateTime @default(now())
   performedByUserId  Int?
@@ -347,6 +348,9 @@ model CustomerRfmScore {
   mScore              Int
   clusterId           Int
   segmentName         String          @db.VarChar(100)
+    centroidDistance   Float?
+    centroidThreshold  Float?
+    clusterFit         String?         @db.VarChar(30)
   createdAt           DateTime        @default(now())
   run                 SegmentationRun @relation(fields: [runId], references: [id], onDelete: Cascade)
 
@@ -363,6 +367,9 @@ model ClusterProfile {
   runId              Int
   clusterId          Int
   segmentName        String          @db.VarChar(100)
+    centroidDistance   Float?
+    centroidThreshold  Float?
+    clusterFit         String?         @db.VarChar(30)
   customerCount      Int
   avgRecency         Float
   avgFrequency       Float
@@ -461,6 +468,22 @@ model CampaignAttributionContent {
   @@unique([mediaId])
   @@index([mediaId])
   @@map("campaign_attribution_content")
+}
+
+model CampaignAttributionExtractionLog {
+  id             String    @id @default(cuid()) @db.VarChar(30)
+  mediaId        String    @db.VarChar(30)
+  campaignId     String?   @db.VarChar(30)
+  status         String    @db.VarChar(50)
+  caption        String    @db.Text
+  geminiResponse String?   @db.Text
+  errorMessage   String?   @db.Text
+  createdAt      DateTime  @default(now())
+
+  @@index([mediaId])
+  @@index([status])
+  @@index([createdAt])
+  @@map("campaign_attribution_extraction_logs")
 }
 model InstagramMedia {
   id               String                  @id @default(cuid()) @db.VarChar(30)

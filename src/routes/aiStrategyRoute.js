@@ -73,13 +73,41 @@ aiStrategyRouter.get(
   }
 );
 
+// A stored strategy is only meaningful to show as "the latest strategy" when
+// it was generated for the same context the user is currently looking at —
+// otherwise it silently misrepresents a different segment/venue/objective as
+// if it applied here. A query param that's *omitted* means the caller hasn't
+// been updated to send that dimension yet, so it isn't filtered on; a param
+// that's present (including "all") is matched exactly, treating "all"/empty
+// the same as the stored `null` used for an unscoped generation.
+const buildLatestStrategyScopeWhere = (query = {}) => {
+  const where = {}
+  const dimensions = [
+    ["segmentKey", "targetSegmentKey"],
+    ["venueKey", "targetVenueKey"],
+    ["sessionKey", "targetSessionKey"],
+    ["campaignObjectiveKey", "campaignObjectiveKey"],
+    ["analysisPeriodKey", "analysisPeriodKey"],
+  ]
+  for (const [param, field] of dimensions) {
+    if (query[param] === undefined) continue
+    const raw = query[param]
+    where[field] = !raw || raw === "all" ? null : String(raw)
+  }
+  return where
+}
+
 aiStrategyRouter.get(
   "/latest",
   authenticate,
   authorize("operational", "management", "it_support"),
-  async (_req, res) => {
+  async (req, res) => {
     try {
-      const stored = await prisma.aiStrategy.findFirst({ orderBy: { generatedAt: "desc" } })
+      const where = buildLatestStrategyScopeWhere(req.query)
+      const stored = await prisma.aiStrategy.findFirst({
+        where: Object.keys(where).length ? where : undefined,
+        orderBy: { generatedAt: "desc" },
+      })
       return res.json({
         success: true,
         data: stored
@@ -88,6 +116,11 @@ aiStrategyRouter.get(
               provider: stored.provider,
               model: stored.model,
               generatedAt: stored.generatedAt,
+              targetSegmentKey: stored.targetSegmentKey,
+              targetVenueKey: stored.targetVenueKey,
+              targetSessionKey: stored.targetSessionKey,
+              campaignObjectiveKey: stored.campaignObjectiveKey,
+              analysisPeriodKey: stored.analysisPeriodKey,
               strategy: normalizeStoredStrategy(stored.strategy),
             }
           : null,
@@ -253,6 +286,7 @@ aiStrategyRouter.post(
               : structuredContext.selected_scope.sessionKey,
           campaignObjectiveKey: structuredContext.selected_scope.campaignObjectiveKey || null,
           offerFrameworkKey: structuredContext.selected_scope.offerFrameworkKey || null,
+          analysisPeriodKey: structuredContext.selected_scope.analysisPeriodKey || null,
           strategy: result.strategy,
           generatedAt: new Date(generatedAt),
           performedByUserId: req.user.userId,

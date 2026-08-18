@@ -795,7 +795,66 @@ const PERSONAL_DATA_PATTERNS = [
   /\bCUST-\d{4,}\b/i,
 ]
 
-export const validateAskAiAnswer = (answer) => {
+const NUMBER_PATTERN = /\d[\d,]*(?:\.\d+)?%?/g
+// Numbers below this are near-universal in ordinary prose (list sizes,
+// "one of two options", ordinals) and would make the check reject almost
+// every answer if treated as facts needing a source; only larger numbers
+// (percentages, revenue, counts) are worth verifying against context.
+const FACTUAL_CHECK_MIN_VALUE = 10
+
+const extractNumbers = (text) =>
+  (String(text || "").match(NUMBER_PATTERN) || [])
+    .map((raw) => ({ raw, numeric: Number(raw.replace(/[,%]/g, "")) }))
+    .filter((entry) => Number.isFinite(entry.numeric))
+
+// Walks the context object (including string values, since dates and
+// pre-formatted labels often carry the only copy of a number) and collects
+// every number that could legitimately be echoed back by the model.
+const collectContextNumbers = (value, out = new Set()) => {
+  if (value == null) return out
+  if (typeof value === "number") {
+    if (Number.isFinite(value)) {
+      out.add(Math.round(value))
+      out.add(Math.round(value * 100))
+    }
+    return out
+  }
+  if (typeof value === "string") {
+    extractNumbers(value).forEach((entry) => out.add(Math.round(entry.numeric)))
+    return out
+  }
+  if (Array.isArray(value)) {
+    value.forEach((item) => collectContextNumbers(item, out))
+    return out
+  }
+  if (typeof value === "object") {
+    Object.values(value).forEach((item) => collectContextNumbers(item, out))
+  }
+  return out
+}
+
+// Simple factual guard: any number/percentage the model states that cannot
+// be traced back to a number somewhere in the context it was given is
+// treated as a likely fabrication. This intentionally only catches numbers
+// the model invented outright — it cannot verify arithmetic the model did
+// correctly derive from context (e.g. a ratio of two context numbers), so
+// it is a floor on correctness, not a full fact-checker.
+const validateFactualNumbers = (answer, strategyContext) => {
+  if (!strategyContext) return
+  const knownNumbers = collectContextNumbers(strategyContext)
+  const unverifiable = extractNumbers(answer).filter((entry) => {
+    if (entry.numeric < FACTUAL_CHECK_MIN_VALUE) return false
+    return !knownNumbers.has(Math.round(entry.numeric))
+  })
+  if (unverifiable.length) {
+    throw createAiServiceError({
+      errorCode: "AI_INVALID_RESPONSE",
+      technicalMessage: `The answer states number(s) not traceable to the provided context: ${unverifiable.map((entry) => entry.raw).join(", ")}.`,
+    })
+  }
+}
+
+export const validateAskAiAnswer = (answer, strategyContext) => {
   requireText(answer, "answer")
   validateWordLimit(answer, "answer", ASK_AI_WORD_LIMIT)
   if (PERSONAL_DATA_PATTERNS.some((pattern) => pattern.test(String(answer)))) {
@@ -804,6 +863,7 @@ export const validateAskAiAnswer = (answer) => {
       technicalMessage: "The answer may contain personal or customer-identifying data.",
     })
   }
+  validateFactualNumbers(answer, strategyContext)
   return answer
 }
 
@@ -862,7 +922,7 @@ export const generateAskAiAnswer = async ({ prompt, strategyContext }) => {
     }
 
     try {
-      const answer = validateAskAiAnswer(await responseText(response))
+      const answer = validateAskAiAnswer(await responseText(response), strategyContext)
       return {
         provider: "gemini",
         model: geminiModel,

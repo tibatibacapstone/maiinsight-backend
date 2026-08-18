@@ -348,11 +348,9 @@ export const aggregateCustomerMetrics = (transactions, analysisDate) => {
     if (!existingCustomer.latestPlayDate || playDate > existingCustomer.latestPlayDate) {
       existingCustomer.latestPlayDate = playDate
     }
-
-    existingCustomer.bookingEventKeys.add(transaction.bookingEventKey)
-    existingCustomer.monetary += toNumber(transaction.netRevenue)
-
-    if (!existingCustomer.bookingTypeEventMap.has(transaction.bookingEventKey)) {
+    if (!existingCustomer.bookingEventKeys.has(transaction.bookingEventKey)) {
+      existingCustomer.bookingEventKeys.add(transaction.bookingEventKey)
+      existingCustomer.monetary += toNumber(transaction.netRevenue)
       existingCustomer.bookingTypeEventMap.set(
         transaction.bookingEventKey,
         transaction.bookingType || "other"
@@ -463,6 +461,79 @@ const zScoreScale = (customers) => {
       return (customer[featureKey] - means[featureKey]) / standardDeviation
     }),
   }))
+}
+
+const median = (values) => {
+  if (!values.length) return 0
+  const sorted = [...values].sort((left, right) => left - right)
+  const middle = Math.floor(sorted.length / 2)
+  return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2
+}
+
+const percentile = (values, fraction) => {
+  if (!values.length) return 0
+  const sorted = [...values].sort((left, right) => left - right)
+  const index = Math.min(sorted.length - 1, Math.max(0, Math.ceil(sorted.length * fraction) - 1))
+  return sorted[index]
+}
+
+const getClusterDistanceThresholds = (points, assignments, centroids) => {
+  const distancesByCluster = new Map()
+  assignments.forEach((clusterId, index) => {
+    const distance = euclideanDistance(points[index].features, centroids[clusterId])
+    const distances = distancesByCluster.get(clusterId) || []
+    distances.push(distance)
+    distancesByCluster.set(clusterId, distances)
+  })
+
+  const thresholds = new Map()
+  distancesByCluster.forEach((distances, clusterId) => {
+    if (distances.length < 4) {
+      thresholds.set(clusterId, Math.max(...distances, 0))
+      return
+    }
+    const center = median(distances)
+    const deviations = distances.map((distance) => Math.abs(distance - center))
+    const mad = median(deviations)
+    const robustThreshold = center + 3 * mad
+    const q1 = percentile(distances, 0.25)
+    const q3 = percentile(distances, 0.75)
+    const iqrThreshold = q3 + 1.5 * (q3 - q1)
+    thresholds.set(clusterId, Math.max(robustThreshold, iqrThreshold))
+  })
+  return thresholds
+}
+
+const applyClusterFitLabels = ({ customers, points, assignments, centroids }) => {
+  const thresholds = getClusterDistanceThresholds(points, assignments, centroids)
+  const clusterCount = centroids.length
+
+  points.forEach((point, index) => {
+    const originalClusterId = assignments[index]
+    const currentDistance = euclideanDistance(point.features, centroids[originalClusterId])
+    const threshold = thresholds.get(originalClusterId) || 0
+    let clusterFit = currentDistance <= threshold ? "representative" : "mixed_borderline"
+    let resolvedClusterId = originalClusterId
+
+    if (clusterFit === "mixed_borderline") {
+      const nearestOther = centroids
+        .map((centroid, clusterId) => ({ clusterId, distance: euclideanDistance(point.features, centroid) }))
+        .filter((candidate) => candidate.clusterId !== originalClusterId)
+        .sort((left, right) => left.distance - right.distance)[0]
+      const nearestOtherThreshold = nearestOther ? thresholds.get(nearestOther.clusterId) || 0 : 0
+      if (nearestOther && nearestOther.distance < currentDistance && nearestOther.distance <= nearestOtherThreshold) {
+        resolvedClusterId = nearestOther.clusterId
+        clusterFit = "reassigned"
+      }
+    }
+
+    customers[index].clusterId = Math.min(Math.max(resolvedClusterId, 0), Math.max(clusterCount - 1, 0))
+    customers[index].centroidDistance = roundNumber(currentDistance, 6)
+    customers[index].centroidThreshold = roundNumber(threshold, 6)
+    customers[index].clusterFit = clusterFit
+  })
+
+  return customers
 }
 
 const euclideanDistance = (leftVector, rightVector) =>
@@ -1172,6 +1243,9 @@ const serializeCustomerScore = (customerScore) => ({
   mScore: customerScore.mScore,
   clusterId: customerScore.clusterId,
   segmentName: customerScore.segmentName,
+  centroidDistance: customerScore.centroidDistance ?? null,
+  centroidThreshold: customerScore.centroidThreshold ?? null,
+  clusterFit: customerScore.clusterFit || null,
 })
 
 const buildPaginationPayload = ({ totalCustomers, limit, offset, returned }) => ({
@@ -1182,9 +1256,16 @@ const buildPaginationPayload = ({ totalCustomers, limit, offset, returned }) => 
   hasMore: offset + returned < totalCustomers,
 })
 
-const buildCustomerScoreWhere = ({ runId, segmentName }) => {
+const buildCustomerScoreWhere = ({ runId, segmentName, search = null }) => {
   const where = {
     runId,
+  }
+
+  if (hasValue(search)) {
+    where.OR = [
+      { customerKey: { contains: search } },
+      { customerName: { contains: search } },
+    ]
   }
 
   if (hasValue(segmentName)) {
@@ -1194,10 +1275,12 @@ const buildCustomerScoreWhere = ({ runId, segmentName }) => {
   return where
 }
 
-const fetchCustomerScoresPage = async ({ runId, segmentName = null, limit, offset }) => {
+const fetchCustomerScoresPage = async ({ runId, segmentName = null, search = null, limit, offset }) => {
   const where = buildCustomerScoreWhere({
     runId,
     segmentName,
+    search,
+  
   })
 
   const [totalCustomers, customerScores] = await prisma.$transaction([
@@ -1344,6 +1427,8 @@ export const runRfmSegmentation = async (
     let clusterProfiles = []
     let silhouetteScore = null
     let selectedK = 0
+    let transactions = []
+    let rfmWindow = { windowStartYear: null, windowEndYear: null, windowYears: null }
     let kEvaluation = {
       testedK: [],
       elbowK: null,
@@ -1384,14 +1469,14 @@ export const runRfmSegmentation = async (
         1900
       )
 
-      const rfmWindow = calculateRfmWindow(
+      rfmWindow = calculateRfmWindow(
         latestPlayDate,
         input.rfmWindowYears ?? DEFAULT_RFM_WINDOW_YEARS
       )
-      const { windowStartYear, windowEndYear, windowYears } = rfmWindow
+      const { windowStartYear, windowEndYear } = rfmWindow
 
       // Filter transactions to the selected historical window only
-      const transactions = allTransactions.filter((tx) => {
+      transactions = allTransactions.filter((tx) => {
         if (!tx.playDate) return false
         const txYear = new Date(tx.playDate).getFullYear()
         return txYear >= windowStartYear && txYear <= windowEndYear
@@ -1432,13 +1517,22 @@ export const runRfmSegmentation = async (
           customers[index].clusterId = clusterId
         })
 
+        applyClusterFitLabels({
+          customers,
+          points: scaledPoints,
+          assignments: selectedClusteringResult.assignments,
+          centroids: selectedClusteringResult.centroids,
+        })
+
         clusterProfiles = buildClusterProfiles(customers)
 
         const labelByClusterId = assignSegmentLabels(clusterProfiles)
 
         customers.forEach((customer) => {
           customer.segmentName =
-            labelByClusterId.get(customer.clusterId)?.segmentName || "Growth Players"
+          customer.clusterFit === "mixed_borderline"
+            ? "Mixed / Borderline"
+            :             labelByClusterId.get(customer.clusterId)?.segmentName || "Growth Players"
         })
 
         clusterProfiles = clusterProfiles.map((profile) => {
@@ -1481,6 +1575,9 @@ export const runRfmSegmentation = async (
             mScore: customer.mScore,
             clusterId: customer.clusterId,
             segmentName: customer.segmentName,
+            centroidDistance: customer.centroidDistance ?? null,
+            centroidThreshold: customer.centroidThreshold ?? null,
+            clusterFit: customer.clusterFit || null,
           })),
         })
       }
@@ -1643,6 +1740,7 @@ export const getSegmentationCustomers = async (input = {}) => {
   const customerResult = await fetchCustomerScoresPage({
     runId: latestResult.run.id,
     segmentName: input.segmentName,
+    search: input.search,
     limit: input.limit,
     offset: input.offset || 0,
   })

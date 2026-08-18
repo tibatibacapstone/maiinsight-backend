@@ -1,5 +1,5 @@
 import { prisma } from "../config/prisma.js"
-import { buildCourtHourUsageWhere } from "./dashboardPeriod.service.js"
+import { buildCourtHourUsageWhere, getCourtCount } from "./dashboardPeriod.service.js"
 import { buildEmptySlotHeatmap } from "./emptySlotHeatmap.service.js"
 import {
   CANONICAL_TRANSACTION_STATUSES,
@@ -135,12 +135,15 @@ const resolveContactInfo = (existingContact, transaction) => {
   }
 }
 
-const buildDateRange = (inputDate) => {
-  const baseDate = inputDate ? new Date(inputDate) : new Date()
+const buildDateRange = ({ date = null, startDate: requestedStartDate = null, endDate: requestedEndDate = null } = {}) => {
+  const start = requestedStartDate || date || formatIsoDate(new Date())
+  const end = requestedEndDate || date || start
+  const startValue = new Date(start)
+  const endValue = new Date(end)
   return {
-    date: formatIsoDate(baseDate),
-    startDate: startOfDay(baseDate),
-    endDate: endOfDay(baseDate),
+    date: start === end ? formatIsoDate(startValue) : formatIsoDate(startValue) + " to " + formatIsoDate(endValue),
+    startDate: startOfDay(startValue),
+    endDate: endOfDay(endValue),
   }
 }
 
@@ -430,8 +433,10 @@ const aggregateCustomerHistory = (transactions, sessionName, courtType) => {
       existingCustomer.latestPlayDate = playDate
     }
 
-    existingCustomer.totalRevenue += toNumber(transaction.netRevenue)
-    existingCustomer.allBookingEventKeys.add(bookingEventKey)
+    if (!existingCustomer.allBookingEventKeys.has(bookingEventKey)) {
+      existingCustomer.allBookingEventKeys.add(bookingEventKey)
+      existingCustomer.totalRevenue += toNumber(transaction.netRevenue)
+    }
 
     if (!existingCustomer.bookingTypeCounts.has(bookingEventKey)) {
       existingCustomer.bookingTypeCounts.set(bookingEventKey, transaction.bookingType || "other")
@@ -505,9 +510,13 @@ const aggregateCustomerHistory = (transactions, sessionName, courtType) => {
   })
 }
 
-export const getLowOccupancySessions = async ({ date, courtType = "all", threshold = 40 }) => {
-  const { date: selectedDate, startDate, endDate } = buildDateRange(date)
+export const getLowOccupancySessions = async ({ date, startDate: requestedStartDate, endDate: requestedEndDate, campaignDay = null, analysisPeriodMonths = 3, courtType = "all", threshold = 40 }) => {
+  const { date: selectedDate, startDate, endDate } = buildDateRange({ date, startDate: requestedStartDate, endDate: requestedEndDate })
   const courtTypes = courtType === "all" ? ["mini_soccer", "basketball"] : [courtType]
+  const weekdayNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
+  const effectiveCampaignDay = campaignDay || weekdayNames[getJakartaWeekdayIndex(startDate)]
+  const campaignDayIndex = weekdayNames.indexOf(effectiveCampaignDay)
+  const analysisRange = buildCampaignAnalysisRange(endDate, analysisPeriodMonths)
 
   const usageRows = await prisma.courtHourUsage.findMany({
     where: buildCourtHourUsageWhere({
@@ -539,6 +548,7 @@ export const getLowOccupancySessions = async ({ date, courtType = "all", thresho
     where: {
       validBooking: true,
       customerKey: { not: "" },
+      playDate: { gte: analysisRange.analysisStart, lte: analysisRange.analysisEnd },
       status: {
         in: [
           CANONICAL_TRANSACTION_STATUSES.PAYMENT_COMPLETED,
@@ -564,6 +574,7 @@ export const getLowOccupancySessions = async ({ date, courtType = "all", thresho
       status: true,
       netRevenue: true,
       startHour: true,
+      playDate: true,
       courtType: true,
     },
   })
@@ -574,6 +585,7 @@ export const getLowOccupancySessions = async ({ date, courtType = "all", thresho
     const hour = parseHourValue(transaction.startHour)
     const derivedSessionName = hour === null ? null : resolveSessionNameByHour(hour)
     if (!derivedSessionName || !transaction.courtType) return
+    if (campaignDayIndex >= 0 && getJakartaWeekdayIndex(transaction.playDate) !== campaignDayIndex) return
 
     const bucketKey = `${transaction.courtType}:${derivedSessionName}`
     const set = potentialTargetBuckets.get(bucketKey) || new Set()
@@ -584,7 +596,10 @@ export const getLowOccupancySessions = async ({ date, courtType = "all", thresho
   return courtTypes.flatMap((selectedCourtType) =>
     SESSION_DEFINITIONS.map((session) => {
       const occupiedCourtHours = occupiedBuckets.get(`${selectedCourtType}:${session.name}`) || 0
-      const availableCourtHours = session.endHour - session.startHour + 1
+      const sessionDurationHours = session.endHour - session.startHour + 1
+      const dayCount = Math.max(1, Math.ceil((endDate.getTime() - startDate.getTime() + 1) / 86400000))
+      const courtCount = getCourtCount(selectedCourtType)
+      const availableCourtHours = sessionDurationHours * courtCount * dayCount
       const occupancyRate = availableCourtHours > 0
         ? roundNumber((occupiedCourtHours / availableCourtHours) * 100)
         : 0
@@ -811,14 +826,14 @@ export const getRecommendedCustomers = async ({
     const matching = allUsage.filter((row) => {
       const playDate = new Date(row.playDate)
       const hour = parseHourValue(row.hourStart)
-      return playDate >= monthStart && playDate <= monthEnd && getJakartaWeekdayIndex(playDate) === dayIndex && hour >= session.startHour && hour <= session.endHour
+      return playDate >= monthStart && playDate <= monthEnd && getJakartaWeekdayIndex(playDate) === dayIndex && (!session || (hour >= session.startHour && hour <= session.endHour))
     })
     const monthUsage = allUsage.filter((row) => new Date(row.playDate) >= monthStart && new Date(row.playDate) <= monthEnd)
     const heatmap = buildEmptySlotHeatmap({ usageRows: monthUsage, startDate: monthStart, endDate: monthEnd, courtCount: capacityCourtCount })
     const dayShort = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][dayIndex]
     const campaignCells = heatmap.slots.filter((cell) => {
       const hour = parseHourValue(cell.startHour)
-      return cell.day_short === dayShort && hour >= session.startHour && hour <= session.endHour
+      return cell.day_short === dayShort && (!session || (hour >= session.startHour && hour <= session.endHour))
     })
     const occupiedSlots = campaignCells.reduce((sum, cell) => sum + cell.occupiedSlots, 0)
     const totalPossibleSlots = campaignCells.reduce((sum, cell) => sum + cell.totalPossibleSlots, 0)
