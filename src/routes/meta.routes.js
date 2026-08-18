@@ -969,6 +969,37 @@ metaRouter.get(
 );
 
 metaRouter.get(
+  "/media/:id/image",
+  authorize("operational", "management", "it_support"),
+  async (req, res) => {
+    try {
+      const media = await prisma.instagramMedia.findUnique({
+        where: { id: req.params.id },
+        select: { cachedImageData: true, cachedImageContentType: true },
+      });
+
+      if (!media?.cachedImageData) {
+        return res.status(404).json({
+          success: false,
+          message: "No cached image is available for this content yet.",
+        });
+      }
+
+      res.setHeader("Cache-Control", "private, max-age=86400");
+      res.setHeader("Content-Type", media.cachedImageContentType || "image/jpeg");
+      return res.send(Buffer.from(media.cachedImageData, "base64"));
+    } catch (error) {
+      return res.status(500).json({
+        success: false,
+        errorCode: "META_MEDIA_IMAGE_FAILED",
+        message: "Instagram content image could not be loaded.",
+        technicalMessage: error instanceof Error ? error.message : "Meta media image failed.",
+      });
+    }
+  }
+);
+
+metaRouter.get(
   ["/audience-summary", "/insights"],
   authorize("operational", "management", "it_support"),
   async (req, res) => {

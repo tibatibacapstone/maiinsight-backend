@@ -882,16 +882,16 @@ dashboardRouter.get(
       const sessionRevenueByBucket = new Map();
       transactions.forEach((tx) => {
         const hour = Number(String(tx.startHour || "").split(":")[0]);
-        const session = resolveSessionNameByHour(hour);
-        if (!session || !tx.courtType) return;
-        const bucketKey = `${session.name}|${tx.courtType}`;
+        const sessionName = resolveSessionNameByHour(hour);
+        if (!sessionName || !tx.courtType) return;
+        const bucketKey = `${sessionName}|${tx.courtType}`;
         sessionRevenueByBucket.set(bucketKey, (sessionRevenueByBucket.get(bucketKey) || 0) + Number(tx.netRevenue || 0));
       });
       const peakOccupancyByBucket = new Map();
       courtHourUsageRows.forEach((row) => {
-        const session = resolveSessionNameByHour(row.hourStart);
-        if (!session || !row.courtType) return;
-        const bucketKey = `${session.name}|${row.courtType}`;
+        const sessionName = resolveSessionNameByHour(row.hourStart);
+        if (!sessionName || !row.courtType) return;
+        const bucketKey = `${sessionName}|${row.courtType}`;
         peakOccupancyByBucket.set(bucketKey, (peakOccupancyByBucket.get(bucketKey) || 0) + 1);
       });
       const peakRangeDays = Math.round((selectedRange.endDateExclusive.getTime() - selectedRange.startDate.getTime()) / 86400000);

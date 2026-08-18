@@ -488,6 +488,7 @@ export async function syncMetaRawToAnalytics({
     saveMediaInsights,
     selectStoredMediaRefreshBatch,
     rebuildMonthlyMediaPerformance,
+    cacheMediaImagesForBatch,
   } = mediaService;
 
   const [historicalBaseline, latestStoredMedia] = await Promise.all([
@@ -550,6 +551,11 @@ export async function syncMetaRawToAnalytics({
     });
     const savedMedia = await saveMediaItems(account.id, mediaItems);
 
+    // These media were just fetched this sync, so their mediaUrl/thumbnailUrl
+    // are still fresh — cache the image bytes immediately, no need to re-hit
+    // the Graph API for a new signed URL.
+    const newlyCachedImageCount = await cacheMediaImagesForBatch(savedMedia);
+
     let mediaInsightCount = 0;
     // Discovery stays incremental, while insight refresh rotates independently
     // across the bounded two-year stored-media warehouse.
@@ -565,6 +571,14 @@ export async function syncMetaRawToAnalytics({
     for (const media of mediaForInsightSync) {
       mediaInsightCount += await saveMediaInsights(media, { now });
     }
+
+    // Older media rotating through the stale-refresh batch may have an
+    // expired stored URL, so force a fresh media_url/thumbnail_url lookup
+    // before downloading. This is how previously-broken photos gradually
+    // get backfilled across normal syncs, not just newly-posted content.
+    const backfilledImageCount = await cacheMediaImagesForBatch(mediaForInsightSync, {
+      refetchFreshUrl: true,
+    });
 
 const monthlyMediaPerformanceCount = await rebuildMonthlyMediaPerformance(account.id);
 
@@ -590,7 +604,7 @@ const viewsBreakdownInsightCount = 0;
       where: { id: log.id },
       data: {
         status: "SUCCESS",
-        message: `Synced ${savedMedia.length} media, refreshed insights for ${mediaForInsightSync.length} media item(s), ${mediaInsightCount} media insights, ${monthlyMediaPerformanceCount} monthly media performance rows, attempted ${historicalAccountSync.monthsAttempted} historical account month(s), ${accountInsightCount} account insights, ${audienceInsightCount} audience insights.`,
+        message: `Synced ${savedMedia.length} media, refreshed insights for ${mediaForInsightSync.length} media item(s), ${mediaInsightCount} media insights, cached ${newlyCachedImageCount + backfilledImageCount} media image(s), ${monthlyMediaPerformanceCount} monthly media performance rows, attempted ${historicalAccountSync.monthsAttempted} historical account month(s), ${accountInsightCount} account insights, ${audienceInsightCount} audience insights.`,
         finishedAt: new Date(),
       },
     });
@@ -603,6 +617,7 @@ const viewsBreakdownInsightCount = 0;
       mediaCount: savedMedia.length,
       mediaInsightCount,
       mediaInsightLimit: mediaForInsightSync.length,
+      mediaImageCachedCount: newlyCachedImageCount + backfilledImageCount,
       monthlyMediaPerformanceCount,
       historicalAccountSync,
       accountInsightCount,

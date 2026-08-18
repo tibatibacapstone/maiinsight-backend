@@ -21,6 +21,8 @@ const COURT_TYPE_LABELS = {
   all: "All Court Types",
 }
 
+const WEEKDAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
+
 const RFM_SEGMENT_SCORE = {
   "Prime Players": 100,
   "Routine Players": 85,
@@ -147,10 +149,11 @@ const buildDateRange = ({ date = null, startDate: requestedStartDate = null, end
   }
 }
 
-const buildBookingTypeFilter = (customerType) => {
-  if (customerType === "membership") return "Manual/Walk-in"
-  if (customerType === "non_membership") return "GeloraApp Booking"
-  return null
+const matchesCustomerTypeFilter = (customerTypeLabel, customerType) => {
+  if (!customerType || customerType === "all") return true
+  if (customerType === "membership") return customerTypeLabel === "Membership"
+  if (customerType === "non_membership") return customerTypeLabel === "Non Membership"
+  return true
 }
 
 const CAMPAIGN_VALID_PLAY_DATE_WHERE = {
@@ -205,7 +208,7 @@ const getJakartaWeekdayIndex = (value) => {
     timeZone: "Asia/Jakarta",
     weekday: "long",
   }).format(new Date(value))
-  return ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"].indexOf(weekday)
+  return WEEKDAY_NAMES.indexOf(weekday)
 }
 
 export const matchesCampaignPlayContext = ({
@@ -222,7 +225,7 @@ export const matchesCampaignPlayContext = ({
   if (rangeStart && date < rangeStart) return false
   if (rangeEnd && date > rangeEnd) return false
 
-  const dayIndex = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"].indexOf(campaignDay)
+  const dayIndex = WEEKDAY_NAMES.indexOf(campaignDay)
   return (
     getJakartaWeekdayIndex(date) === dayIndex &&
     resolveSessionNameByHour(parseHourValue(startHour)) === sessionName
@@ -392,8 +395,9 @@ const buildSegmentMap = async (customerKeys) => {
   return new Map(scores.map((score) => [score.customerKey, score.segmentName]))
 }
 
-const aggregateCustomerHistory = (transactions, sessionName, courtType) => {
+const aggregateCustomerHistory = (transactions, { sessionName, courtType, campaignDay }) => {
   const customerMap = new Map()
+  const campaignDayIndex = WEEKDAY_NAMES.indexOf(campaignDay)
 
   for (const transaction of transactions) {
     if (
@@ -420,8 +424,9 @@ const aggregateCustomerHistory = (transactions, sessionName, courtType) => {
       totalRevenue: 0,
       bookingTypeCounts: new Map(),
       sessionCounts: new Map(),
+      courtTypeCounts: new Map(),
       allBookingEventKeys: new Set(),
-      selectedSessionEventKeys: new Set(),
+      campaignMatchEventKeys: new Set(),
       selectedCourtEventKeys: new Set(),
     }
 
@@ -448,13 +453,19 @@ const aggregateCustomerHistory = (transactions, sessionName, courtType) => {
         existingCustomer.sessionCounts.set(sessionEventKey, derivedSessionName)
       }
 
-      if (derivedSessionName === sessionName) {
-        existingCustomer.selectedSessionEventKeys.add(bookingEventKey)
+      if (derivedSessionName === sessionName && getJakartaWeekdayIndex(playDate) === campaignDayIndex) {
+        existingCustomer.campaignMatchEventKeys.add(bookingEventKey)
       }
     }
 
-    if (transaction.courtType && (!courtType || courtType === "all" || transaction.courtType === courtType)) {
-      existingCustomer.selectedCourtEventKeys.add(bookingEventKey)
+    if (transaction.courtType) {
+      if (!existingCustomer.courtTypeCounts.has(bookingEventKey)) {
+        existingCustomer.courtTypeCounts.set(bookingEventKey, transaction.courtType)
+      }
+
+      if (!courtType || courtType === "all" || transaction.courtType === courtType) {
+        existingCustomer.selectedCourtEventKeys.add(bookingEventKey)
+      }
     }
 
     customerMap.set(transaction.customerKey, existingCustomer)
@@ -486,8 +497,18 @@ const aggregateCustomerHistory = (transactions, sessionName, courtType) => {
       return left[0].localeCompare(right[0])
     })[0]?.[0] || null
 
+    const courtTypeCounter = new Map()
+    customer.courtTypeCounts.forEach((courtTypeValue) => {
+      courtTypeCounter.set(courtTypeValue, (courtTypeCounter.get(courtTypeValue) || 0) + 1)
+    })
+
+    const preferredCourtType = [...courtTypeCounter.entries()].sort((left, right) => {
+      if (right[1] !== left[1]) return right[1] - left[1]
+      return left[0].localeCompare(right[0])
+    })[0]?.[0] || null
+
     const totalBookingCount = customer.allBookingEventKeys.size
-    const selectedSessionBookingCount = customer.selectedSessionEventKeys.size
+    const selectedSessionBookingCount = customer.campaignMatchEventKeys.size
     const selectedCourtBookingCount = customer.selectedCourtEventKeys.size
     const avgSpend = totalBookingCount > 0 ? customer.totalRevenue / totalBookingCount : 0
 
@@ -499,6 +520,7 @@ const aggregateCustomerHistory = (transactions, sessionName, courtType) => {
       bookingTypeDominant,
       customerTypeLabel: mapCustomerTypeLabel(bookingTypeDominant),
       preferredSession,
+      preferredCourtType,
       selectedSessionBookingCount,
       selectedCourtBookingCount,
       totalBookingCount,
@@ -513,7 +535,7 @@ const aggregateCustomerHistory = (transactions, sessionName, courtType) => {
 export const getLowOccupancySessions = async ({ date, startDate: requestedStartDate, endDate: requestedEndDate, campaignDay = null, analysisPeriodMonths = 3, courtType = "all", threshold = 40 }) => {
   const { date: selectedDate, startDate, endDate } = buildDateRange({ date, startDate: requestedStartDate, endDate: requestedEndDate })
   const courtTypes = courtType === "all" ? ["mini_soccer", "basketball"] : [courtType]
-  const weekdayNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
+  const weekdayNames = WEEKDAY_NAMES
   const effectiveCampaignDay = campaignDay || weekdayNames[getJakartaWeekdayIndex(startDate)]
   const campaignDayIndex = weekdayNames.indexOf(effectiveCampaignDay)
   const analysisRange = buildCampaignAnalysisRange(endDate, analysisPeriodMonths)
@@ -640,10 +662,12 @@ export const getRecommendedCustomers = async ({
     analysisPeriodMonths
   )
   const selectedDate = formatIsoDate(latestPlayDate)
-  const bookingType = buildBookingTypeFilter(customerType)
-  const dayIndex = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"].indexOf(campaignDay)
+  const dayIndex = WEEKDAY_NAMES.indexOf(campaignDay)
   const session = getSessionDefinitionByName(sessionName)
 
+  // Recommendations are ranked from each customer's entire booking history,
+  // not just the analysisPeriodMonths window — that window is still used
+  // below for the separate Historical Campaign Performance figures.
   const transactions = await prisma.facilityTransaction.findMany({
     where: {
       validBooking: true,
@@ -661,9 +685,6 @@ export const getRecommendedCustomers = async ({
         },
       },
       bookingEventKey: { not: "" },
-      playDate: { gte: analysisStart, lte: analysisEnd },
-      ...(bookingType ? { bookingType } : {}),
-      ...(courtType && courtType !== "all" ? { courtType } : {}),
       batch: {
         fileName: {
           not: "tmp-upload-sample.csv",
@@ -690,15 +711,7 @@ export const getRecommendedCustomers = async ({
     },
   })
 
-  const campaignTransactions = transactions.filter((transaction) =>
-    matchesCampaignPlayContext({
-      playDate: transaction.playDate,
-      startHour: transaction.startHour,
-      campaignDay,
-      sessionName,
-    })
-  )
-  const aggregatedCustomers = aggregateCustomerHistory(campaignTransactions, sessionName, courtType)
+  const aggregatedCustomers = aggregateCustomerHistory(transactions, { sessionName, courtType, campaignDay })
 
   const segmentByCustomerKey = await buildSegmentMap(
     aggregatedCustomers.map((customer) => customer.customerKey)
@@ -725,6 +738,14 @@ export const getRecommendedCustomers = async ({
       }
     })
     .filter((customer) => (segmentName ? customer.rfmSegmentName === segmentName : true))
+    .filter((customer) => customer.preferredSession === sessionName)
+    .filter((customer) => (courtType && courtType !== "all" ? customer.preferredCourtType === courtType : true))
+    .filter((customer) => matchesCustomerTypeFilter(customer.customerTypeLabel, customerType))
+    // Only recommend customers who have actually booked this exact
+    // campaign weekday + session combination before — matching the
+    // customer's general preferred session isn't enough to call them a
+    // fit for filling this specific campaign slot.
+    .filter((customer) => customer.selectedSessionBookingCount > 0)
 
   const maxSelectedSessionBookingCount = Math.max(
     ...filteredCustomers.map((customer) => customer.selectedSessionBookingCount),

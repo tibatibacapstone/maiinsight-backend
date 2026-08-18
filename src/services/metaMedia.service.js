@@ -255,6 +255,95 @@ export async function saveMediaItems(
   return saved;
 }
 
+// Instagram's media_url/thumbnail_url are temporary, signed CDN links that
+// expire (typically within a day or so) — they are not meant for long-term
+// hotlinking. We download the bytes once and store them ourselves so the
+// displayed photo never depends on Meta's link still being valid.
+const MAX_CACHED_IMAGE_BYTES = 8 * 1024 * 1024;
+
+const pickImageSourceUrl = ({ mediaType, mediaUrl, thumbnailUrl }) => {
+  // Video/Reel media_url points at the video file itself; thumbnail_url is
+  // the still frame we actually want to display and cache.
+  if (String(mediaType || "").toUpperCase() === "VIDEO") {
+    return thumbnailUrl || null;
+  }
+  return mediaUrl || thumbnailUrl || null;
+};
+
+export async function cacheMediaImage(
+  mediaRow,
+  { database = prisma, fetchUrl = fetch, refetchFreshUrl = false } = {}
+) {
+  if (mediaRow.cachedImageData) return false;
+
+  let { mediaType, mediaUrl, thumbnailUrl } = mediaRow;
+
+  if (refetchFreshUrl) {
+    try {
+      const fresh = await metaGet(`/${mediaRow.igMediaId}`, {
+        fields: "media_url,thumbnail_url,media_type",
+      });
+      mediaUrl = fresh?.media_url ?? mediaUrl;
+      thumbnailUrl = fresh?.thumbnail_url ?? thumbnailUrl;
+      mediaType = fresh?.media_type ?? mediaType;
+      await database.instagramMedia
+        .update({ where: { id: mediaRow.id }, data: { mediaUrl, thumbnailUrl } })
+        .catch(() => null);
+    } catch {
+      // Could not get a fresh URL (token expired, media deleted, network
+      // error, etc.) — fall back to whatever URL is already stored rather
+      // than giving up outright. It may already be expired too, but it's
+      // still worth a try instead of guaranteeing failure.
+    }
+  }
+
+  const sourceUrl = pickImageSourceUrl({ mediaType, mediaUrl, thumbnailUrl });
+  if (!sourceUrl) return false;
+
+  try {
+    const response = await fetchUrl(sourceUrl);
+    if (!response.ok) return false;
+
+    const contentType = (response.headers.get("content-type") || "").split(";")[0].trim();
+    if (!contentType.startsWith("image/")) return false;
+
+    const arrayBuffer = await response.arrayBuffer();
+    if (arrayBuffer.byteLength === 0 || arrayBuffer.byteLength > MAX_CACHED_IMAGE_BYTES) return false;
+
+    await database.instagramMedia.update({
+      where: { id: mediaRow.id },
+      data: {
+        cachedImageData: Buffer.from(arrayBuffer).toString("base64"),
+        cachedImageContentType: contentType,
+        cachedImageFetchedAt: new Date(),
+      },
+    });
+
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function cacheMediaImagesForBatch(
+  mediaRows,
+  { database = prisma, refetchFreshUrl = false, concurrency = 3 } = {}
+) {
+  const queue = mediaRows.filter((media) => !media.cachedImageData);
+  let cachedCount = 0;
+
+  const workers = Array.from({ length: Math.min(concurrency, queue.length) || 0 }, async () => {
+    let media;
+    while ((media = queue.shift())) {
+      const cached = await cacheMediaImage(media, { database, refetchFreshUrl });
+      if (cached) cachedCount += 1;
+    }
+  });
+
+  await Promise.all(workers);
+  return cachedCount;
+}
+
 async function fetchFirstSupportedMediaMetric(
   igMediaId,
   metricCandidates = [],
@@ -399,6 +488,9 @@ export async function selectStoredMediaRefreshBatch({
         postedAt: true,
         mediaType: true,
         mediaProductType: true,
+        mediaUrl: true,
+        thumbnailUrl: true,
+        cachedImageData: true,
         insights: {
           where: { metricName: { in: MEDIA_INSIGHT_METRICS } },
           select: { insightDate: true, updatedAt: true },
