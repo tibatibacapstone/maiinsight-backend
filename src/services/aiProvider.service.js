@@ -724,12 +724,21 @@ export const checkGeminiHealth = async () => {
   const model = config.geminiModel || "gemini-2.5-flash"
   try {
     const ai = new GoogleGenAI({ apiKey: config.geminiApiKey })
-    await ai.models.get({ model })
+    const response = await ai.models.generateContent({
+      model,
+      contents: "Reply with only the word ok.",
+      config: { temperature: 0, maxOutputTokens: 5, responseMimeType: "text/plain", thinkingConfig: { thinkingBudget: 0 } },
+    })
+    if (response?.usageMetadata) {
+      return { status: "valid", usage: response.usageMetadata }
+    }
     return { status: "valid" }
   } catch (error) {
+    const message = error instanceof Error ? error.message : "Gemini API check failed."
+    const isQuota = error?.status === 429 && (message.includes("PerDay") || message.includes("free_tier_requests"))
     return {
-      status: "error",
-      error: error instanceof Error ? error.message : "Gemini API check failed.",
+      status: isQuota ? "quota_exhausted" : "error",
+      error: message,
     }
   }
 }

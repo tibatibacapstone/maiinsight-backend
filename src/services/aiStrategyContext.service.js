@@ -629,7 +629,7 @@ export const buildAiStrategyContext = async (input = {}, { now } = {}) => {
     recentCompletedRuns.find(
       (run) =>
         (!run.filterCourtType || run.filterCourtType === wantedCourtType) &&
-        !run.filterBookingType &&
+        (!run.filterBookingType || run.filterBookingType === "all") &&
         isRunPeriodCompatible(run)
     ) || null
 
